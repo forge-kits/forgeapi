@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "forgeapi"
+version = "0.1.0"
+description = "FastAPI toolkit — auth, pagination, CLI generator"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.138",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.14",
+    "typer>=0.26",
+    "jinja2>=3.1.6",
+    "rich>=15.0",
+]
+
+[project.optional-dependencies]
+auth        = ["pyjwt>=2.13"]
+db          = ["tortoise-orm>=1.1.7"]
+permissions = ["forgeapi[db]"]
+full        = ["forgeapi[auth,db,permissions]"]
+
+# core: схемы, контроллеры, события, CLI
+# [db]: + tortoise-orm, pagination
+# [auth]: + jwt/cookie/telegram
+# [permissions]: + spatie-like roles & permissions (requires db)
+
+[project.scripts]
+forgeapi = "forgeapi.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["forgeapi"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

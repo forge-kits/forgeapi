@@ -1,0 +1,11 @@
+from tortoise import fields
+from tortoise.models import Model
+
+
+class {{ class_name }}(Model):
+    # TODO: define your fields here
+    # id = fields.IntField(pk=True)
+    # created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "{{ table_name }}"

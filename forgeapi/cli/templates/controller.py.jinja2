@@ -1,0 +1,16 @@
+from fastapi import HTTPException
+from forgeapi.auth import CurrentUser
+from forgeapi.pagination import Pagination
+from forgeapi.controllers import Controller, route
+{% if with_model %}
+from {{ models_module }}.{{ module_name }} import {{ class_name }}
+{% endif %}
+
+
+class {{ class_name }}Controller(Controller):
+    prefix = "{{ url_prefix }}"
+    tags = ["{{ tag }}"]
+
+    @route("/", methods=["GET"])
+    async def index(self, pagination: Pagination, user: CurrentUser):
+        pass
