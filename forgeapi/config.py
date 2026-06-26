@@ -7,14 +7,16 @@ from pydantic import BaseModel
 class ProjectConfig(BaseModel):
     name: str = "my-app"
     version: str = "0.1.0"
+    description: str = ""
 
 
 class StructureConfig(BaseModel):
-    models_dir: str = "app/models"
+    models_dir: str = "database/models"
     controllers_dir: str = "app/controllers"
     schemas_dir: str = "app/schemas"
     events_dir: str = "app/events"
     listeners_dir: str = "app/listeners"
+    seeds_dir: str = "database/seeds"
     base_prefix: str = "/api/v1"
 
 

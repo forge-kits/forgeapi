@@ -9,15 +9,14 @@ class Permission(Model):
 
     class Meta:
         table = "permissions"
-        app   = "permissions"
 
     def __str__(self) -> str:
         return self.name
 
     @classmethod
     async def find_or_create(cls, name: str, guard: str = "api") -> "Permission":
-        perm, _ = await cls.get_or_create(name=name, defaults={"guard": guard})
-        return perm
+        obj, _ = await cls.get_or_create(name=name, defaults={"guard": guard})
+        return obj
 
 
 class Role(Model):
@@ -25,23 +24,22 @@ class Role(Model):
     name  = fields.CharField(max_length=255, unique=True)
     guard = fields.CharField(max_length=100, default="api")
 
-    permissions: fields.ManyToManyRelation[Permission] = fields.ManyToManyField(
-        "permissions.Permission",
+    permissions: fields.ManyToManyRelation["Permission"] = fields.ManyToManyField(
+        "models.Permission",
         related_name="roles",
         through="role_permissions",
     )
 
     class Meta:
         table = "roles"
-        app   = "permissions"
 
     def __str__(self) -> str:
         return self.name
 
     @classmethod
     async def find_or_create(cls, name: str, guard: str = "api") -> "Role":
-        role, _ = await cls.get_or_create(name=name, defaults={"guard": guard})
-        return role
+        obj, _ = await cls.get_or_create(name=name, defaults={"guard": guard})
+        return obj
 
     async def give_permission(self, *names: str) -> None:
         for name in names:
@@ -60,3 +58,39 @@ class Role(Model):
 
     async def has_permission(self, name: str) -> bool:
         return await self.permissions.filter(name=name).exists()
+
+
+class ModelHasRole(Model):
+    """Polymorphic model → role pivot.
+
+    ``model_type`` is the lowercase class name (e.g. ``"user"``).
+    ``model_id``   is the PK of that model instance.
+    """
+
+    model_type = fields.CharField(max_length=100)
+    model_id   = fields.BigIntField()
+    role: fields.ForeignKeyRelation[Role] = fields.ForeignKeyField(
+        "models.Role",
+        related_name="model_has_roles",
+        on_delete=fields.CASCADE,
+    )
+
+    class Meta:
+        table           = "model_has_roles"
+        unique_together = [("model_type", "model_id", "role_id")]
+
+
+class ModelHasPermission(Model):
+    """Polymorphic model → direct permission pivot."""
+
+    model_type = fields.CharField(max_length=100)
+    model_id   = fields.BigIntField()
+    permission: fields.ForeignKeyRelation[Permission] = fields.ForeignKeyField(
+        "models.Permission",
+        related_name="model_has_permissions",
+        on_delete=fields.CASCADE,
+    )
+
+    class Meta:
+        table           = "model_has_permissions"
+        unique_together = [("model_type", "model_id", "permission_id")]

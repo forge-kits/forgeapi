@@ -1,27 +1,25 @@
 from fastapi import Depends, HTTPException
 
+from forgeapi.auth import CurrentUser
+from .registry import get_user_model
+
 
 def RequirePermission(*permissions: str):
-    """FastAPI dependency — 403 if the authenticated user lacks any of the permissions.
+    """403 if the authenticated user lacks any of the given permissions.
 
     Returns the DB user instance on success.
 
     Usage::
 
-        from forgeapi.permissions import RequirePermission
-
-        @router.delete("/{post_id}")
-        async def destroy(post_id: int, user=RequirePermission("delete:posts")):
+        @route.delete("/{id}")
+        async def destroy(self, id: int, user=RequirePermission("delete:posts")):
             ...
 
-        # multiple — user must have AT LEAST ONE
-        @router.post("/")
-        async def create(payload: PostCreate, user=RequirePermission("create:posts", "admin")):
+        # user must have AT LEAST ONE
+        @route.post("/")
+        async def create(self, payload: PostCreate, user=RequirePermission("create:posts", "admin")):
             ...
     """
-    from forgeapi.auth import CurrentUser
-    from .registry import get_user_model
-
     async def _check(auth_user: CurrentUser):
         UserModel = get_user_model()
         db_user = await UserModel.get_or_none(id=int(auth_user.id))
@@ -38,26 +36,21 @@ def RequirePermission(*permissions: str):
 
 
 def RequireRole(*roles: str):
-    """FastAPI dependency — 403 if the authenticated user lacks any of the roles.
+    """403 if the authenticated user lacks any of the given roles.
 
     Returns the DB user instance on success.
 
     Usage::
 
-        from forgeapi.permissions import RequireRole
-
-        @router.get("/admin/stats")
-        async def stats(user=RequireRole("admin")):
+        @route.get("/admin/stats")
+        async def stats(self, user=RequireRole("admin")):
             ...
 
-        # multiple — user must have AT LEAST ONE of the roles
-        @router.get("/dashboard")
-        async def dashboard(user=RequireRole("admin", "moderator")):
+        # user must have AT LEAST ONE
+        @route.get("/dashboard")
+        async def dashboard(self, user=RequireRole("admin", "moderator")):
             ...
     """
-    from forgeapi.auth import CurrentUser
-    from .registry import get_user_model
-
     async def _check(auth_user: CurrentUser):
         UserModel = get_user_model()
         db_user = await UserModel.get_or_none(id=int(auth_user.id))

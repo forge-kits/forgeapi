@@ -65,11 +65,25 @@ class Core:
         logging: bool = True,
         controllers: bool = True,
         permissions=None,
+        middleware: list | None = None,
         config_path: str = "forgeapi.toml",
     ) -> None:
         self._app = app
         self._cfg: KitConfig = load_config(config_path)
         self._auth: Optional[AuthBackend] = None
+
+        if self._cfg.project.name:
+            self._app.title = self._cfg.project.name
+        if self._cfg.project.description:
+            self._app.description = self._cfg.project.description
+
+        if middleware:
+            for item in middleware:
+                if isinstance(item, tuple):
+                    cls, kwargs = item
+                    self._app.add_middleware(cls, **kwargs)
+                else:
+                    self._app.add_middleware(item)
 
         if logging:
             self._app.add_middleware(LoggingMiddleware)
@@ -164,7 +178,7 @@ class Core:
         from .controllers.base import Controller as BaseController
 
         base = self._cfg.structure.base_prefix
-        for f in sorted(directory.glob("*_controller.py")):
+        for f in sorted(directory.glob("**/*_controller.py")):
             try:
                 rel = f.relative_to(Path.cwd())
             except ValueError:
@@ -200,6 +214,27 @@ class Core:
                     ):
                         obj()
             self._app.include_router(router, prefix=base)
+
+    # ── Middleware ────────────────────────────────────────────────────────────
+
+    def use(self, middleware_cls, **kwargs) -> "Core":
+        """Register a custom global middleware after Core is created.
+
+        Args:
+            middleware_cls: A :class:`~forgeapi.middleware.Middleware` subclass
+                (or any Starlette-compatible middleware class).
+            **kwargs: Extra keyword arguments passed to the middleware constructor.
+
+        Returns:
+            ``self`` for chaining.
+
+        Example::
+
+            core.use(TimingMiddleware)
+            core.use(TenantMiddleware, default_tenant="acme")
+        """
+        self._app.add_middleware(middleware_cls, **kwargs)
+        return self
 
     # ── Router ────────────────────────────────────────────────────────────────
 

@@ -28,24 +28,34 @@ class Post(Model):
 
 # ── Shared — schemas ──────────────────────────────────────────────────────────
 
-_SCHEMA_POST = """\
-from forgeapi import BaseSchema, BaseCreateSchema, BaseUpdateSchema
+_SCHEMA_POST_RESPONSE = """\
+from pydantic import BaseModel
+from forgeapi import BaseSchema
 
 
-class PostSchema(BaseSchema):
+class PostResponse(BaseSchema):
     title:        str
     body:         str
     is_published: bool
     author_id:    int
 
 
-class PostCreateSchema(BaseCreateSchema):
+class PostListResponse(BaseModel):
+    items: list[PostResponse]
+    total: int
+"""
+
+_SCHEMA_POST_PAYLOAD = """\
+from forgeapi import BaseCreateSchema, BaseUpdateSchema
+
+
+class PostCreatePayload(BaseCreateSchema):
     title:        str
     body:         str
     is_published: bool = True
 
 
-class PostUpdateSchema(BaseUpdateSchema):
+class PostUpdatePayload(BaseUpdateSchema):
     title:        str | None = None
     body:         str | None = None
     is_published: bool | None = None
@@ -121,10 +131,15 @@ from pydantic import BaseModel
 from forgeapi import BaseSchema
 
 
-class UserSchema(BaseSchema):
+class UserResponse(BaseSchema):
     username:  str
     email:     str
     is_active: bool
+
+
+class UserListResponse(BaseModel):
+    items: list[UserResponse]
+    total: int
 
 
 class RegisterSchema(BaseModel):
@@ -183,8 +198,8 @@ from fastapi import HTTPException
 from forgeapi.auth import CurrentUser
 from forgeapi.pagination import Pagination
 from .controller import Controller, route
-from app.models import User
-from app.schemas.user import UserSchema, RegisterSchema, LoginSchema, TokenSchema
+from database.models import User
+from app.schemas.user import UserResponse, UserListResponse, RegisterSchema, LoginSchema, TokenSchema
 from app.events.user_registered_event import UserRegisteredEvent
 from app.utils import hash_password, verify_password
 
@@ -202,7 +217,7 @@ class UserController(Controller):
     prefix = "/users"
     tags   = ["users"]
 
-    @route("/register", methods=["POST"], response_model=TokenSchema, summary="Register")
+    @route.post("/register", response_model=TokenSchema, summary="Register")
     async def register(self, payload: RegisterSchema) -> TokenSchema:
         if await User.filter(username=payload.username).exists():
             raise HTTPException(400, "Username already taken")
@@ -216,26 +231,25 @@ class UserController(Controller):
         await UserRegisteredEvent(user_id=user.id, username=user.username, email=user.email).dispatch()
         return TokenSchema(access_token=_make_token(user.id, user.username))
 
-    @route("/login", methods=["POST"], response_model=TokenSchema, summary="Login → JWT token")
+    @route.post("/login", response_model=TokenSchema, summary="Login → JWT token")
     async def login(self, payload: LoginSchema) -> TokenSchema:
         user = await User.filter(username=payload.username, is_active=True).first()
         if not user or not verify_password(payload.password, user.password_hash):
             raise HTTPException(401, "Invalid credentials")
         return TokenSchema(access_token=_make_token(user.id, user.username))
 
-    @route("/me", methods=["GET"], response_model=UserSchema, summary="Current user (Bearer token)")
-    async def me(self, user: CurrentUser) -> UserSchema:
+    @route.get("/me", response_model=UserResponse, summary="Current user (Bearer token)")
+    async def me(self, user: CurrentUser) -> UserResponse:
         db_user = await User.get_or_none(id=int(user.id))
         if not db_user:
             raise HTTPException(404, "User not found")
-        return UserSchema.model_validate(db_user)
+        return UserResponse.model_validate(db_user)
 
-    @route("/", methods=["GET"], summary="List users with pagination")
-    async def index(self, pagination: Pagination) -> dict:
+    @route.get("/", response_model=UserListResponse, summary="List users with pagination")
+    async def index(self, pagination: Pagination) -> UserListResponse:
         total = await User.all().count()
         users = await User.all().offset(pagination.offset).limit(pagination.limit)
-        return {"items": [UserSchema.model_validate(u) for u in users], "total": total,
-                "page": pagination.page, "limit": pagination.limit}
+        return UserListResponse(items=[UserResponse.model_validate(u) for u in users], total=total)
 """
 
 # ── Cookie ────────────────────────────────────────────────────────────────────
@@ -245,8 +259,8 @@ from fastapi import HTTPException, Response
 from forgeapi.auth import CurrentUser, auth
 from forgeapi.pagination import Pagination
 from .controller import Controller, route
-from app.models import User
-from app.schemas.user import UserSchema, RegisterSchema, LoginSchema
+from database.models import User
+from app.schemas.user import UserResponse, UserListResponse, RegisterSchema, LoginSchema
 from app.events.user_registered_event import UserRegisteredEvent
 from app.utils import hash_password, verify_password
 
@@ -255,7 +269,7 @@ class UserController(Controller):
     prefix = "/users"
     tags   = ["users"]
 
-    @route("/register", methods=["POST"], summary="Register → sets session cookie")
+    @route.post("/register", summary="Register → sets session cookie")
     async def register(self, payload: RegisterSchema, response: Response) -> dict:
         if await User.filter(username=payload.username).exists():
             raise HTTPException(400, "Username already taken")
@@ -270,7 +284,7 @@ class UserController(Controller):
         auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
         return {"detail": "registered"}
 
-    @route("/login", methods=["POST"], summary="Login → sets session cookie")
+    @route.post("/login", summary="Login → sets session cookie")
     async def login(self, payload: LoginSchema, response: Response) -> dict:
         user = await User.filter(username=payload.username, is_active=True).first()
         if not user or not verify_password(payload.password, user.password_hash):
@@ -278,24 +292,23 @@ class UserController(Controller):
         auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
         return {"detail": "logged in"}
 
-    @route("/logout", methods=["POST"], summary="Logout → clears session cookie")
+    @route.post("/logout", summary="Logout → clears session cookie")
     async def logout(self, response: Response) -> dict:
         auth.delete_cookie(response)
         return {"detail": "logged out"}
 
-    @route("/me", methods=["GET"], response_model=UserSchema, summary="Current user (cookie auth)")
-    async def me(self, user: CurrentUser) -> UserSchema:
+    @route.get("/me", response_model=UserResponse, summary="Current user (cookie auth)")
+    async def me(self, user: CurrentUser) -> UserResponse:
         db_user = await User.get_or_none(id=int(user.id))
         if not db_user:
             raise HTTPException(404, "User not found")
-        return UserSchema.model_validate(db_user)
+        return UserResponse.model_validate(db_user)
 
-    @route("/", methods=["GET"], summary="List users with pagination")
-    async def index(self, pagination: Pagination) -> dict:
+    @route.get("/", response_model=UserListResponse, summary="List users with pagination")
+    async def index(self, pagination: Pagination) -> UserListResponse:
         total = await User.all().count()
         users = await User.all().offset(pagination.offset).limit(pagination.limit)
-        return {"items": [UserSchema.model_validate(u) for u in users], "total": total,
-                "page": pagination.page, "limit": pagination.limit}
+        return UserListResponse(items=[UserResponse.model_validate(u) for u in users], total=total)
 """
 
 # ── Post controller (JWT + Cookie) ────────────────────────────────────────────
@@ -305,8 +318,9 @@ from fastapi import HTTPException
 from forgeapi.auth import CurrentUser
 from forgeapi.pagination import Pagination
 from .controller import Controller, route
-from app.models import Post
-from app.schemas.post import PostSchema, PostCreateSchema, PostUpdateSchema
+from database.models import Post
+from app.schemas.response.post import PostResponse, PostListResponse
+from app.schemas.payload.post import PostCreatePayload, PostUpdatePayload
 from app.events.post_created_event import PostCreatedEvent
 
 
@@ -314,15 +328,14 @@ class PostController(Controller):
     prefix = "/posts"
     tags   = ["posts"]
 
-    @route("/", methods=["GET"], summary="List published posts")
-    async def index(self, pagination: Pagination) -> dict:
+    @route.get("/", response_model=PostListResponse, summary="List published posts")
+    async def index(self, pagination: Pagination) -> PostListResponse:
         total = await Post.filter(is_published=True).count()
         posts = await Post.filter(is_published=True).offset(pagination.offset).limit(pagination.limit)
-        return {"items": [PostSchema.model_validate(p) for p in posts], "total": total,
-                "page": pagination.page, "limit": pagination.limit}
+        return PostListResponse(items=[PostResponse.model_validate(p) for p in posts], total=total)
 
-    @route("/", methods=["POST"], response_model=PostSchema, summary="Create post (auth required)")
-    async def create(self, payload: PostCreateSchema, user: CurrentUser) -> PostSchema:
+    @route.post("/", response_model=PostResponse, summary="Create post (auth required)")
+    async def create(self, payload: PostCreatePayload, user: CurrentUser) -> PostResponse:
         post = await Post.create(
             title=payload.title,
             body=payload.body,
@@ -330,26 +343,26 @@ class PostController(Controller):
             author_id=int(user.id),
         )
         await PostCreatedEvent(post_id=post.id, title=post.title, author_id=int(user.id)).dispatch()
-        return PostSchema.model_validate(post)
+        return PostResponse.model_validate(post)
 
-    @route("/{post_id}", methods=["GET"], response_model=PostSchema, summary="Get post by id")
-    async def show(self, post_id: int) -> PostSchema:
+    @route.get("/{post_id}", response_model=PostResponse, summary="Get post by id")
+    async def show(self, post_id: int) -> PostResponse:
         post = await Post.get_or_none(id=post_id, is_published=True)
         if not post:
             raise HTTPException(404, "Post not found")
-        return PostSchema.model_validate(post)
+        return PostResponse.model_validate(post)
 
-    @route("/{post_id}", methods=["PATCH"], response_model=PostSchema, summary="Update own post")
-    async def update(self, post_id: int, payload: PostUpdateSchema, user: CurrentUser) -> PostSchema:
+    @route.patch("/{post_id}", response_model=PostResponse, summary="Update own post")
+    async def update(self, post_id: int, payload: PostUpdatePayload, user: CurrentUser) -> PostResponse:
         post = await Post.get_or_none(id=post_id, author_id=int(user.id))
         if not post:
             raise HTTPException(404, "Post not found or not yours")
         for field, value in payload.model_dump(exclude_none=True).items():
             setattr(post, field, value)
         await post.save()
-        return PostSchema.model_validate(post)
+        return PostResponse.model_validate(post)
 
-    @route("/{post_id}", methods=["DELETE"], summary="Delete own post")
+    @route.delete("/{post_id}", summary="Delete own post")
     async def destroy(self, post_id: int, user: CurrentUser) -> dict:
         post = await Post.get_or_none(id=post_id, author_id=int(user.id))
         if not post:
@@ -381,15 +394,21 @@ class User(Model):
 """
 
 _SCHEMA_USER_TELEGRAM = """\
+from pydantic import BaseModel
 from forgeapi import BaseSchema
 
 
-class UserSchema(BaseSchema):
+class UserResponse(BaseSchema):
     telegram_id: int
     username:    str | None
     first_name:  str | None
     last_name:   str | None
     is_active:   bool
+
+
+class UserListResponse(BaseModel):
+    items: list[UserResponse]
+    total: int
 """
 
 _EVENT_USER_FIRST_LOGIN = """\
@@ -429,8 +448,8 @@ from fastapi import HTTPException
 from forgeapi.auth import CurrentUser
 from forgeapi.pagination import Pagination
 from .controller import Controller, route
-from app.models import User
-from app.schemas.user import UserSchema
+from database.models import User
+from app.schemas.response.user import UserResponse, UserListResponse
 from app.events.user_first_login_event import UserFirstLoginEvent
 
 
@@ -438,9 +457,9 @@ class UserController(Controller):
     prefix = "/users"
     tags   = ["users"]
 
-    @route("/me", methods=["GET"], response_model=UserSchema,
-           summary="Current Telegram user (auto-registers on first call)")
-    async def me(self, user: CurrentUser) -> UserSchema:
+    @route.get("/me", response_model=UserResponse,
+               summary="Current Telegram user (auto-registers on first call)")
+    async def me(self, user: CurrentUser) -> UserResponse:
         db_user, created = await User.get_or_create(
             telegram_id=int(user.id),
             defaults={
@@ -453,14 +472,13 @@ class UserController(Controller):
             await UserFirstLoginEvent(
                 user_id=db_user.id, telegram_id=int(user.id), username=user.username,
             ).dispatch()
-        return UserSchema.model_validate(db_user)
+        return UserResponse.model_validate(db_user)
 
-    @route("/", methods=["GET"], summary="List users with pagination")
-    async def index(self, pagination: Pagination) -> dict:
+    @route.get("/", response_model=UserListResponse, summary="List users with pagination")
+    async def index(self, pagination: Pagination) -> UserListResponse:
         total = await User.all().count()
         users = await User.all().offset(pagination.offset).limit(pagination.limit)
-        return {"items": [UserSchema.model_validate(u) for u in users], "total": total,
-                "page": pagination.page, "limit": pagination.limit}
+        return UserListResponse(items=[UserResponse.model_validate(u) for u in users], total=total)
 """
 
 _CONTROLLER_POST_TELEGRAM = """\
@@ -468,8 +486,9 @@ from fastapi import HTTPException
 from forgeapi.auth import CurrentUser
 from forgeapi.pagination import Pagination
 from .controller import Controller, route
-from app.models import Post, User
-from app.schemas.post import PostSchema, PostCreateSchema, PostUpdateSchema
+from database.models import Post, User
+from app.schemas.response.post import PostResponse, PostListResponse
+from app.schemas.payload.post import PostCreatePayload, PostUpdatePayload
 from app.events.post_created_event import PostCreatedEvent
 
 
@@ -484,15 +503,14 @@ class PostController(Controller):
     prefix = "/posts"
     tags   = ["posts"]
 
-    @route("/", methods=["GET"], summary="List published posts")
-    async def index(self, pagination: Pagination) -> dict:
+    @route.get("/", response_model=PostListResponse, summary="List published posts")
+    async def index(self, pagination: Pagination) -> PostListResponse:
         total = await Post.filter(is_published=True).count()
         posts = await Post.filter(is_published=True).offset(pagination.offset).limit(pagination.limit)
-        return {"items": [PostSchema.model_validate(p) for p in posts], "total": total,
-                "page": pagination.page, "limit": pagination.limit}
+        return PostListResponse(items=[PostResponse.model_validate(p) for p in posts], total=total)
 
-    @route("/", methods=["POST"], response_model=PostSchema, summary="Create post (Telegram auth)")
-    async def create(self, payload: PostCreateSchema, user: CurrentUser) -> PostSchema:
+    @route.post("/", response_model=PostResponse, summary="Create post (Telegram auth)")
+    async def create(self, payload: PostCreatePayload, user: CurrentUser) -> PostResponse:
         author_id = await _resolve_author(user)
         post = await Post.create(
             title=payload.title,
@@ -501,17 +519,17 @@ class PostController(Controller):
             author_id=author_id,
         )
         await PostCreatedEvent(post_id=post.id, title=post.title, author_id=author_id).dispatch()
-        return PostSchema.model_validate(post)
+        return PostResponse.model_validate(post)
 
-    @route("/{post_id}", methods=["GET"], response_model=PostSchema, summary="Get post by id")
-    async def show(self, post_id: int) -> PostSchema:
+    @route.get("/{post_id}", response_model=PostResponse, summary="Get post by id")
+    async def show(self, post_id: int) -> PostResponse:
         post = await Post.get_or_none(id=post_id, is_published=True)
         if not post:
             raise HTTPException(404, "Post not found")
-        return PostSchema.model_validate(post)
+        return PostResponse.model_validate(post)
 
-    @route("/{post_id}", methods=["PATCH"], response_model=PostSchema, summary="Update own post")
-    async def update(self, post_id: int, payload: PostUpdateSchema, user: CurrentUser) -> PostSchema:
+    @route.patch("/{post_id}", response_model=PostResponse, summary="Update own post")
+    async def update(self, post_id: int, payload: PostUpdatePayload, user: CurrentUser) -> PostResponse:
         author_id = await _resolve_author(user)
         post = await Post.get_or_none(id=post_id, author_id=author_id)
         if not post:
@@ -519,9 +537,9 @@ class PostController(Controller):
         for field, value in payload.model_dump(exclude_none=True).items():
             setattr(post, field, value)
         await post.save()
-        return PostSchema.model_validate(post)
+        return PostResponse.model_validate(post)
 
-    @route("/{post_id}", methods=["DELETE"], summary="Delete own post")
+    @route.delete("/{post_id}", summary="Delete own post")
     async def destroy(self, post_id: int, user: CurrentUser) -> dict:
         author_id = await _resolve_author(user)
         post = await Post.get_or_none(id=post_id, author_id=author_id)
@@ -532,6 +550,66 @@ class PostController(Controller):
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Seeders
+# ══════════════════════════════════════════════════════════════════════════════
+
+_SEEDER_USER_PASSWORD = """\
+from forgeapi.database import Seeder
+from database.models import User
+from app.utils import hash_password
+
+
+class UserSeeder(Seeder):
+    async def run(self) -> None:
+        await User.get_or_create(
+            username="admin",
+            defaults={
+                "email":         "admin@example.com",
+                "password_hash": hash_password("admin123"),
+                "is_active":     True,
+            },
+        )
+"""
+
+_SEEDER_USER_TELEGRAM = """\
+from forgeapi.database import Seeder
+from database.models import User
+
+
+class UserSeeder(Seeder):
+    async def run(self) -> None:
+        await User.get_or_create(
+            telegram_id=123456789,
+            defaults={
+                "username":   "demo_user",
+                "first_name": "Demo",
+                "last_name":  "User",
+                "is_active":  True,
+            },
+        )
+"""
+
+_SEEDER_POST = """\
+from forgeapi.database import Seeder
+from database.models import Post, User
+
+
+class PostSeeder(Seeder):
+    async def run(self) -> None:
+        user = await User.first()
+        if not user:
+            return
+        await Post.get_or_create(
+            title="Hello World",
+            defaults={
+                "body":         "This is the first post.",
+                "is_published": True,
+                "author_id":    user.id,
+            },
+        )
+"""
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -539,28 +617,34 @@ def run(root: Path, strategy: str) -> None:
     is_telegram = strategy == "telegram"
 
     # ── Shared ────────────────────────────────────────────────────────────────
-    _write(root / "app/models/__init__.py",         _MODELS_INIT)
-    _write(root / "app/models/post.py",             _MODEL_POST)
-    _write(root / "app/schemas/post.py",            _SCHEMA_POST)
-    _write(root / "app/events/post_created_event.py", _EVENT_POST_CREATED)
-    _write(root / "app/listeners/post_listener.py", _LISTENER_POST)
+    _write(root / "database/models/__init__.py",         _MODELS_INIT)
+    _write(root / "database/models/post.py",             _MODEL_POST)
+    _write(root / "app/schemas/response/__init__.py",    "")
+    _write(root / "app/schemas/payload/__init__.py",     "")
+    _write(root / "app/schemas/response/post.py",        _SCHEMA_POST_RESPONSE)
+    _write(root / "app/schemas/payload/post.py",         _SCHEMA_POST_PAYLOAD)
+    _write(root / "app/events/post_created_event.py",    _EVENT_POST_CREATED)
+    _write(root / "app/listeners/post_listener.py",      _LISTENER_POST)
+    _write(root / "database/seeds/post_seeder.py",       _SEEDER_POST)
 
     if is_telegram:
-        _write(root / "app/models/user.py",                          _MODEL_USER_TELEGRAM)
-        _write(root / "app/schemas/user.py",                         _SCHEMA_USER_TELEGRAM)
+        _write(root / "database/models/user.py",                     _MODEL_USER_TELEGRAM)
+        _write(root / "app/schemas/response/user.py",                _SCHEMA_USER_TELEGRAM)
         _write(root / "app/events/user_first_login_event.py",        _EVENT_USER_FIRST_LOGIN)
         _write(root / "app/events/__init__.py",                      _EVENTS_INIT_TELEGRAM)
         _write(root / "app/listeners/user_listener.py",              _LISTENER_USER_TELEGRAM)
         _write(root / "app/controllers/user_controller.py",          _CONTROLLER_USER_TELEGRAM)
         _write(root / "app/controllers/post_controller.py",          _CONTROLLER_POST_TELEGRAM)
+        _write(root / "database/seeds/user_seeder.py",               _SEEDER_USER_TELEGRAM)
     else:
-        _write(root / "app/models/user.py",                          _MODEL_USER_PASSWORD)
+        _write(root / "database/models/user.py",                     _MODEL_USER_PASSWORD)
         _write(root / "app/utils.py",                                _UTILS_PASSWORD)
         _write(root / "app/schemas/user.py",                         _SCHEMA_USER_PASSWORD)
         _write(root / "app/events/user_registered_event.py",         _EVENT_USER_REGISTERED)
         _write(root / "app/events/__init__.py",                      _EVENTS_INIT_PASSWORD)
         _write(root / "app/listeners/user_listener.py",              _LISTENER_USER_PASSWORD)
         _write(root / "app/controllers/post_controller.py",          _CONTROLLER_POST_STD)
+        _write(root / "database/seeds/user_seeder.py",               _SEEDER_USER_PASSWORD)
         if strategy == "jwt":
             _write(root / "app/controllers/user_controller.py",      _CONTROLLER_USER_JWT)
         else:

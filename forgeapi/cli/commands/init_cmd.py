@@ -4,15 +4,17 @@ from pathlib import Path
 
 _TOML_TEMPLATE = """\
 [project]
-name = "{name}"
-version = "0.1.0"
+name        = "{name}"
+version     = "0.1.0"
+description = ""
 
 [structure]
-models_dir      = "app/models"
+models_dir      = "database/models"
 controllers_dir = "app/controllers"
 schemas_dir     = "app/schemas"
 events_dir      = "app/events"
 listeners_dir   = "app/listeners"
+seeds_dir       = "database/seeds"
 base_prefix     = "/api/v1"
 
 [auth]
@@ -63,9 +65,9 @@ TORTOISE_ORM = {{
     }},
     "apps": {{
         "models": {{
-            "models":             ["app.models"],
+            "models":             ["database.models"],
             "default_connection": "default",
-            "migrations":         "app.migrations",
+            "migrations":         "database.migrations",
         }}
     }},
 }}
@@ -87,9 +89,9 @@ TORTOISE_ORM = {{
     }},
     "apps": {{
         "models": {{
-            "models":             ["app.models"],
+            "models":             ["database.models"],
             "default_connection": "default",
-            "migrations":         "app.migrations",
+            "migrations":         "database.migrations",
         }}
     }},
 }}
@@ -115,9 +117,9 @@ TORTOISE_ORM = {{
     }},
     "apps": {{
         "models": {{
-            "models":             ["app.models"],
+            "models":             ["database.models"],
             "default_connection": "default",
-            "migrations":         "app.migrations",
+            "migrations":         "database.migrations",
         }}
     }},
 }}
@@ -180,6 +182,21 @@ register_tortoise(
 )
 """
 
+_PYPROJECT_TEMPLATE = """\
+[project]
+name            = "{name}"
+version         = "0.1.0"
+requires-python = ">=3.11"
+dependencies    = [
+    "forgeapi[auth,{driver}]>=0.1.0",
+    "uvicorn[standard]>=0.34",
+    "python-dotenv>=1.1",
+]
+
+[tool.tortoise]
+tortoise_orm = "app.config.TORTOISE_ORM"
+"""
+
 _CONTROLLER_BASE = """\
 from forgeapi.controllers import Controller, route
 
@@ -234,7 +251,8 @@ def run(name: str) -> None:
     typer.echo("")
     root.mkdir()
 
-    for d in ["app/models", "app/controllers", "app/schemas", "app/events", "app/listeners", "app/migrations"]:
+    for d in ["app/controllers", "app/schemas", "app/events", "app/listeners",
+              "database/models", "database/migrations", "database/seeds"]:
         p = root / d
         p.mkdir(parents=True, exist_ok=True)
         (p / "__init__.py").touch()
@@ -267,6 +285,12 @@ def run(name: str) -> None:
     )
 
     _write(root / "main.py", _MAIN_TEMPLATE, name, typer)
+
+    _write(
+        root / "pyproject.toml",
+        _PYPROJECT_TEMPLATE.format(name=name, driver=driver),
+        name, typer,
+    )
 
     typer.echo("")
     if typer.confirm("Create a welcome project? (User + Post, auth, pagination, events)", default=False):

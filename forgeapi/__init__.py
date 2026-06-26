@@ -4,6 +4,7 @@ from .settings import BaseAppSettings
 from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
 from .events import Event, EventBus, listen
 from .controllers import Controller, route
+from .middleware import Middleware, Guard
 
 __all__ = [
     # Facade
@@ -23,6 +24,9 @@ __all__ = [
     # Controllers
     "Controller",
     "route",
+    # Middleware
+    "Middleware",
+    "Guard",
 ]
 
 

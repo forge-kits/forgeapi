@@ -1,3 +1,4 @@
+import re
 import typer
 from pathlib import Path
 
@@ -10,6 +11,7 @@ _ALLOWED_EXTRA: dict[str, set[str]] = {
     "schema":     {"model", "controller"},
     "event":      set(),
     "listener":   set(),
+    "seed":       set(),
 }
 
 
@@ -52,13 +54,15 @@ def _relative_import(from_dir: str, to_dir: str) -> str:
     from_parts = PurePosixPath(from_dir.replace("\\", "/")).parts
     to_parts   = PurePosixPath(to_dir.replace("\\", "/")).parts
     common = sum(1 for a, b in zip(from_parts, to_parts) if a == b)
-    ups    = len(from_parts) - common
-    downs  = to_parts[common:]
+    # Different top-level packages — use absolute import
+    if common == 0:
+        return ".".join(to_parts)
+    ups   = len(from_parts) - common
+    downs = to_parts[common:]
     return "." * (ups + 1) + ".".join(downs)
 
 
 def _to_snake(name: str) -> str:
-    import re
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
@@ -70,6 +74,24 @@ def _to_plural(name: str) -> str:
     return name + "s"
 
 
+def _parse_namespace(class_name: str) -> tuple[str, str]:
+    """Split CamelCase into (namespace_path, resource_word).
+
+    All CamelCase words except the last form the namespace path (joined with '/').
+    The last word is the resource.
+
+    'User'              → ('',               'User')
+    'AdminUser'         → ('admin',           'User')
+    'SuperAdminUser'    → ('super/admin',     'User')
+    'ApiV1AdminUser'    → ('api/v1/admin',    'User')
+    """
+    parts = re.findall(r'[A-Z][a-z0-9]*', class_name)
+    if len(parts) >= 2:
+        namespace = "/".join(p.lower() for p in parts[:-1])
+        return namespace, parts[-1]
+    return "", class_name
+
+
 def _render(template_name: str, **context) -> str:
     from jinja2 import Environment, FileSystemLoader
     templates_dir = Path(__file__).parent.parent / "templates"
@@ -77,10 +99,24 @@ def _render(template_name: str, **context) -> str:
     return env.get_template(template_name).render(**context)
 
 
-def _write(path: Path, content: str) -> None:
+def _write(path: Path, content: str) -> bool:
+    """Write file; skip and print 'exists' if already present. Returns True if created."""
+    if path.exists():
+        typer.echo(f"  exists   {path}")
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     typer.echo(f"  created  {path}")
+    return True
+
+
+def _ensure_init(directory: Path) -> None:
+    """Create an empty __init__.py if it doesn't exist."""
+    init = directory / "__init__.py"
+    if not init.exists():
+        directory.mkdir(parents=True, exist_ok=True)
+        init.touch()
+        typer.echo(f"  created  {init}")
 
 
 # ── Generators ────────────────────────────────────────────────────────────────
@@ -89,13 +125,14 @@ def _gen_model(class_name: str, module_name: str, plural: str, st) -> None:
     content = _render("model.py.jinja2", class_name=class_name, table_name=plural)
     _write(Path(st.models_dir) / f"{module_name}.py", content)
 
+    # Always update __init__.py (idempotent — checks for duplicate line)
     init_file   = Path(st.models_dir) / "__init__.py"
     import_line = f"from .{module_name} import {class_name}\n"
     existing    = init_file.read_text(encoding="utf-8") if init_file.exists() else ""
     if import_line not in existing:
         with open(init_file, "a", encoding="utf-8") as f:
             f.write(import_line)
-    typer.echo(f"  updated  {init_file}")
+        typer.echo(f"  updated  {init_file}")
 
 
 def _gen_schema(class_name: str, module_name: str, st) -> None:
@@ -106,22 +143,38 @@ def _gen_schema(class_name: str, module_name: str, st) -> None:
 def _gen_controller(
     class_name: str,
     module_name: str,
+    ctrl_filename: str,
     url_prefix: str,
-    plural: str,
+    tag: str,
     models_module: str,
     with_model: bool,
     st,
+    namespace: str = "",
 ) -> None:
     content = _render(
         "controller.py.jinja2",
         class_name=class_name,
         module_name=module_name,
         url_prefix=url_prefix,
-        tag=plural.replace("_", " "),
+        tag=tag,
         models_module=models_module,
         with_model=with_model,
     )
-    _write(Path(st.controllers_dir) / f"{module_name}_controller.py", content)
+    if namespace:
+        ns_parts = namespace.split("/")
+        # Ensure __init__.py exists at every level of the namespace path
+        for i in range(1, len(ns_parts) + 1):
+            _ensure_init(Path(st.controllers_dir).joinpath(*ns_parts[:i]))
+        ctrl_dir = Path(st.controllers_dir).joinpath(*ns_parts)
+        _write(ctrl_dir / f"{ctrl_filename}_controller.py", content)
+    else:
+        _write(Path(st.controllers_dir) / f"{ctrl_filename}_controller.py", content)
+
+
+def _gen_seed(class_name: str, module_name: str, st) -> None:
+    content = _render("seeder.py.jinja2", class_name=class_name)
+    seeds_dir = getattr(st, "seeds_dir", "database/seeds")
+    _write(Path(seeds_dir) / f"{module_name}_seeder.py", content)
 
 
 def _gen_event(class_name: str, module_name: str, st) -> None:
@@ -168,6 +221,11 @@ def run_make(kind: str, name: str, flags: dict[str, bool]) -> None:
     class_name  = name[0].upper() + name[1:]
     module_name = _to_snake(class_name)
 
+    if kind == "seed":
+        _gen_seed(class_name, module_name, st)
+        typer.echo("Done.")
+        return
+
     if kind == "event":
         _gen_event(class_name, module_name, st)
         typer.echo("Done.")
@@ -183,15 +241,37 @@ def run_make(kind: str, name: str, flags: dict[str, bool]) -> None:
     gen_controller = (kind == "controller") or flags.get("controller", False)
     gen_schema     = (kind == "schema")     or flags.get("schema",     False)
 
-    plural        = _to_plural(module_name)
-    url_prefix    = "/" + plural.replace("_", "-")
-    models_module = _relative_import(st.controllers_dir, st.models_dir)
+    # Detect namespace: last CamelCase word = resource, all preceding = namespace path
+    namespace, resource_word = _parse_namespace(class_name)
+    resource_module = _to_snake(resource_word)
+
+    if namespace:
+        resource_plural = _to_plural(resource_module)
+        url_prefix      = f"/{namespace}/{resource_plural.replace('_', '-')}"
+        tag             = f"{namespace.replace('/', ' ')} {resource_plural.replace('_', ' ')}"
+        ns_parts        = namespace.split("/")
+        ctrl_dir        = str(Path(st.controllers_dir).joinpath(*ns_parts))
+        models_module   = _relative_import(ctrl_dir, st.models_dir)
+        ctrl_filename   = resource_module
+    else:
+        plural        = _to_plural(module_name)
+        url_prefix    = "/" + plural.replace("_", "-")
+        tag           = plural.replace("_", " ")
+        models_module = _relative_import(st.controllers_dir, st.models_dir)
+        ctrl_filename = module_name
+
+    # model and schema always use the full module_name (e.g. super_admin_user.py)
+    plural = _to_plural(module_name)
 
     if gen_model:
         _gen_model(class_name, module_name, plural, st)
     if gen_schema:
         _gen_schema(class_name, module_name, st)
     if gen_controller:
-        _gen_controller(class_name, module_name, url_prefix, plural, models_module, gen_model, st)
+        _gen_controller(
+            class_name, module_name, ctrl_filename,
+            url_prefix, tag, models_module, gen_model, st,
+            namespace=namespace,
+        )
 
     typer.echo("Done.")

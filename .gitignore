@@ -2,3 +2,5 @@ CLAUDE.md
 .venv
 __pycache__
 backend
+.idea
+.claude

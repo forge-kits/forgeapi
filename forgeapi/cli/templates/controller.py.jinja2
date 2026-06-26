@@ -11,6 +11,6 @@ class {{ class_name }}Controller(Controller):
     prefix = "{{ url_prefix }}"
     tags = ["{{ tag }}"]
 
-    @route("/", methods=["GET"])
+    @route.get("/")
     async def index(self, pagination: Pagination, user: CurrentUser):
         pass
