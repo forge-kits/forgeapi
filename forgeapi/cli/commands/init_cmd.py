@@ -297,7 +297,7 @@ def run(name: str) -> None:
         from .boilerplate_cmd import run as run_boilerplate
         run_boilerplate(root, strategy=strategy)
     else:
-        typer.echo(f"\nDone. Next:")
+        typer.echo("\nDone. Next:")
         typer.echo(f"  cd {name}")
         typer.echo("  forgeapi make:controller User --ms")
         typer.echo("  forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate")
@@ -309,5 +309,4 @@ def _write(path: Path, content: str, project_name: str, typer) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-    rel = path.relative_to(Path(project_name).parent) if Path(project_name).parent != Path(".") else path
     typer.echo(f"  created  {path}")

@@ -39,7 +39,7 @@ def __getattr__(name: str):
 
     if name in _auth_exports:
         try:
-            from .auth import (
+            from .auth import (  # noqa: F401
                 AuthBackend, CurrentUser, OptionalUser,
                 JWTStrategy, CookieStrategy, TelegramStrategy,
             )
@@ -51,7 +51,7 @@ def __getattr__(name: str):
 
     if name in _db_exports:
         try:
-            from .pagination import Paginator, Pagination
+            from .pagination import Paginator, Pagination  # noqa: F401
         except ImportError:
             raise ImportError(
                 f"'{name}' requires tortoise-orm. Install it: pip install forgeapi[db]"

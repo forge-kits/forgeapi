@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 from fastapi import FastAPI
 
@@ -70,7 +69,7 @@ class Core:
     ) -> None:
         self._app = app
         self._cfg: KitConfig = load_config(config_path)
-        self._auth: Optional[AuthBackend] = None
+        self._auth = None
 
         if self._cfg.project.name:
             self._app.title = self._cfg.project.name
