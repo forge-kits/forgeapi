@@ -104,7 +104,7 @@ class Core:
             try:
                 from .auth.backend import AuthBackend, set_global_backend
             except ImportError:
-                raise ImportError("Auth requires PyJWT. Install it: pip install forgeapi[auth]")
+                raise ImportError("Auth requires PyJWT. Install it: pip install forge-kits[auth]")
             strategy_name = auth if isinstance(auth, str) else ""
             self._auth = AuthBackend(strategy=self._build_strategy(strategy_name))
             set_global_backend(self._auth)

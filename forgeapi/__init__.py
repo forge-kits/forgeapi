@@ -45,7 +45,7 @@ def __getattr__(name: str):
             )
         except ImportError:
             raise ImportError(
-                f"'{name}' requires PyJWT. Install it: pip install forgeapi[auth]"
+                f"'{name}' requires PyJWT. Install it: pip install forge-kits[auth]"
             )
         return locals()[name]
 
@@ -54,7 +54,7 @@ def __getattr__(name: str):
             from .pagination import Paginator, Pagination  # noqa: F401
         except ImportError:
             raise ImportError(
-                f"'{name}' requires tortoise-orm. Install it: pip install forgeapi[db]"
+                f"'{name}' requires tortoise-orm. Install it: pip install forge-kits[db]"
             )
         return locals()[name]
 

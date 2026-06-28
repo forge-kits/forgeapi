@@ -5,7 +5,7 @@ from typing import Optional
 try:
     import jwt
 except ImportError:
-    raise ImportError("JWTStrategy requires PyJWT. Install it: pip install forgeapi[auth]")
+    raise ImportError("JWTStrategy requires PyJWT. Install it: pip install forge-kits[auth]")
 
 from fastapi import Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
