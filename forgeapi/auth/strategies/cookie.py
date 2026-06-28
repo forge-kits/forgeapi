@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 from typing import Optional
 
@@ -9,6 +10,8 @@ from fastapi import Request, Response
 
 from .base import AuthStrategy
 from ..models import AuthUser
+
+logger = logging.getLogger("forgeapi.auth.cookie")
 
 
 class CookieStrategy(AuthStrategy):
@@ -65,6 +68,7 @@ class CookieStrategy(AuthStrategy):
         self._httponly = httponly
         self._secure = secure
         self._samesite = samesite
+        logger.debug("CookieStrategy ready: cookie='%s' httponly=%s secure=%s", cookie_name, httponly, secure)
 
     def create_session(self, data: dict) -> str:
         """Encode and sign session data for use as a cookie value.
@@ -139,9 +143,11 @@ class CookieStrategy(AuthStrategy):
         """
         raw = request.cookies.get(self._cookie_name)
         if not raw:
+            logger.debug("Cookie auth: no '%s' cookie in request", self._cookie_name)
             return None
 
         data = self._verify(raw)
+        logger.debug("Cookie auth OK: user_id=%s", data.get("sub"))
         return AuthUser(
             id=data.get("sub"),
             username=data.get("username"),
@@ -158,9 +164,11 @@ class CookieStrategy(AuthStrategy):
         try:
             payload, sig = cookie_value.rsplit(".", 1)
         except ValueError:
+            logger.warning("Cookie auth rejected: malformed cookie value")
             raise HTTPException(status_code=401, detail="Malformed session cookie")
 
         if not hmac.compare_digest(self._sign(payload), sig):
+            logger.warning("Cookie auth rejected: signature mismatch")
             raise HTTPException(status_code=401, detail="Session cookie signature mismatch")
 
         try:

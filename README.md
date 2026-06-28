@@ -121,6 +121,7 @@ core = Core(
     permissions=User,    # enable permissions (pass your User model)
     logging=True,        # access log (default True)
     controllers=True,    # auto-discover controllers (default True)
+    debug=False,         # debug mode — relaxes security checks
 )
 ```
 
@@ -137,7 +138,24 @@ core = Core(
 | `permissions` | `Type \| None` | `None` | Pass your User model class to enable `RequirePermission`/`RequireRole` |
 | `logging` | `bool` | `True` | Logs method + path + status + duration for every request |
 | `controllers` | `bool` | `True` | Auto-imports `*_controller.py` (recursive) and registers routers |
+| `debug` | `bool` | `False` | Debug mode — relaxes security checks (see below). **Never use in production.** |
 | `config_path` | `str` | `"forgeapi.toml"` | Path to the TOML config file |
+
+### Debug mode
+
+```python
+core = Core(app, auth="telegram", debug=True)
+```
+
+`debug=True` disables security checks that are inconvenient during development:
+
+| Component | Normal | Debug |
+|---|---|---|
+| Telegram `auth_date` | Rejected if older than 24 h | Skipped — any age accepted |
+
+All debug activity is logged as `WARNING` so it's visible in the console even without configuring log levels. **Never use `debug=True` in production.**
+
+---
 
 ### Accessing after setup
 
@@ -275,7 +293,11 @@ strategy = "telegram"
 ```
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:ABC-your-token
+# single bot
+BOT_TOKEN=123456:ABC-your-token
+
+# multiple bots — comma-separated, no spaces required
+BOT_TOKEN=123456:ABC-bot-one,789012:DEF-bot-two
 ```
 
 Client sends `window.Telegram.WebApp.initData` in:

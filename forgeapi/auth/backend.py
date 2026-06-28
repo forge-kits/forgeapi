@@ -1,8 +1,11 @@
+import logging
 from typing import Annotated, Optional
 from fastapi import Depends, HTTPException, Request
 
 from .models import AuthUser
 from .strategies.base import AuthStrategy
+
+logger = logging.getLogger("forgeapi.auth")
 
 _global_backend: Optional["AuthBackend"] = None
 
@@ -74,6 +77,7 @@ def set_global_backend(backend: "AuthBackend") -> None:
     """
     global _global_backend
     _global_backend = backend
+    logger.debug("Global auth backend set: strategy=%s", type(backend.strategy).__name__)
 
 
 class AuthBackend:
@@ -173,6 +177,7 @@ class AuthBackend:
     async def _resolve_user(self, request: Request, required: bool) -> Optional[AuthUser]:
         user = await self._strategy.authenticate(request)
         if required and not user:
+            logger.debug("Auth: unauthenticated request to %s %s", request.method, request.url.path)
             raise HTTPException(
                 status_code=401,
                 detail="Not authenticated",

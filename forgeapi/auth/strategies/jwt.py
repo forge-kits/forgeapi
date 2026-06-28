@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -12,6 +13,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from .base import AuthStrategy
 from ..models import AuthUser
+
+logger = logging.getLogger("forgeapi.auth.jwt")
 
 
 class JWTStrategy(AuthStrategy):
@@ -59,6 +62,7 @@ class JWTStrategy(AuthStrategy):
         self._algorithm = algorithm
         self._access_ttl = access_token_expire_minutes
         self._refresh_ttl = refresh_token_expire_days
+        logger.debug("JWTStrategy ready: algorithm=%s access_ttl=%dm refresh_ttl=%dd", algorithm, access_token_expire_minutes, refresh_token_expire_days)
 
     def create_access_token(self, payload: dict) -> str:
         """Create a signed access token.
@@ -116,9 +120,11 @@ class JWTStrategy(AuthStrategy):
             return jwt.decode(token, self._secret, algorithms=[self._algorithm])
         except jwt.ExpiredSignatureError:
             from fastapi import HTTPException
+            logger.debug("JWT decode failed: token expired")
             raise HTTPException(status_code=401, detail="Token has expired")
         except jwt.InvalidTokenError:
             from fastapi import HTTPException
+            logger.debug("JWT decode failed: invalid token")
             raise HTTPException(status_code=401, detail="Invalid token")
 
     def blacklist(self, token: str) -> None:
@@ -144,10 +150,12 @@ class JWTStrategy(AuthStrategy):
         """
         credentials: Optional[HTTPAuthorizationCredentials] = await self._bearer(request)
         if not credentials:
+            logger.debug("JWT auth: no Bearer token in request")
             return None
 
         payload = self.decode(credentials.credentials)
         reserved = {"sub", "username", "exp", "iat", "type"}
+        logger.debug("JWT auth OK: user_id=%s", payload.get("sub"))
 
         return AuthUser(
             id=payload.get("sub"),
