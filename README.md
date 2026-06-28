@@ -44,7 +44,7 @@
 ## 1. Quick start
 
 ```bash
-pip install forgeapi
+pip install forge-kits
 forgeapi init my-project
 cd my-project
 
@@ -64,18 +64,18 @@ After `forgeapi init my-project`:
 my-project/
   main.py                    # entry point — FastAPI app + Core(...)
   forgeapi.toml              # project config
+  pyproject.toml             # dependencies — pip install -e .
   .env                       # secrets (JWT_SECRET, DB_* etc.)
-  pyproject.toml
   app/
     config.py                # TORTOISE_ORM dict
-    models/                  # Tortoise models
     controllers/             # *_controller.py files, auto-loaded by Core
-    schemas/
-      payload/               # request / input schemas
-      response/              # response / output schemas
+    schemas/                 # Pydantic schemas
     events/                  # Event subclasses
     listeners/               # @listen(...) handlers
-    migrations/
+  database/
+    models/                  # Tortoise models
+    migrations/              # migration files (tortoise CLI)
+    seeds/                   # Seeder classes
 ```
 
 **`main.py`**:
@@ -1158,6 +1158,38 @@ forgeapi runserver --port 9000 --host 0.0.0.0 --reload
 
 ---
 
+### `forgeapi routers`
+
+Print every registered route across all controllers — no DB connection needed.
+
+```bash
+forgeapi routers
+# METHOD  PATH                          HANDLER
+# GET     /api/v1/users/                UserController.index
+# POST    /api/v1/users/register        UserController.register
+```
+
+---
+
+### `forgeapi models`
+
+List all Tortoise model classes found in `models_dir` with their table names and fields.
+
+```bash
+forgeapi models
+```
+
+---
+
+### `forgeapi make:seed <Name>`
+
+```bash
+forgeapi make:seed User
+# → database/seeds/user_seeder.py
+```
+
+---
+
 ### `forgeapi db:<subcommand>`
 
 ```bash
@@ -1167,6 +1199,9 @@ forgeapi db:makemigrations -n add_email_field
 forgeapi db:migrate
 forgeapi db:downgrade
 forgeapi db:history
+forgeapi db:seed              # run all seeders
+forgeapi db:seed User Post    # run specific seeders
+forgeapi db:fresh             # TRUNCATE all tables (asks confirmation)
 ```
 
 ---
@@ -1179,11 +1214,12 @@ name    = "my-app"
 version = "0.1.0"
 
 [structure]
-models_dir      = "app/models"
+models_dir      = "database/models"
 controllers_dir = "app/controllers"
 schemas_dir     = "app/schemas"
 events_dir      = "app/events"
 listeners_dir   = "app/listeners"
+seeds_dir       = "database/seeds"
 base_prefix     = "/api/v1"
 
 [auth]

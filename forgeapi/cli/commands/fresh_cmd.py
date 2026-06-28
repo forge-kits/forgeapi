@@ -34,24 +34,54 @@ async def _truncate_all(config: dict) -> list[str]:
     conn = Tortoise.get_connection("default")
     engine = _detect_engine(config)
 
-    tables = [
-        model._meta.db_table
+    def _sql_ref(model, eng: str = "postgres") -> str:
+        schema = getattr(model._meta, "schema", None)
+        table = model._meta.db_table
+        if eng == "mysql":
+            return f"`{table}`"
+        return f'"{schema}"."{table}"' if schema else f'"{table}"'
+
+    def _label(model) -> str:
+        schema = getattr(model._meta, "schema", None)
+        table = model._meta.db_table
+        return f"{schema}.{table}" if schema else table
+
+    model_list = [
+        model
         for app_models in Tortoise.apps.values()
         for model in app_models.values()
         if model._meta.db_table not in _SKIP_TABLES
     ]
 
+    truncated = []
+
     if engine == "mysql":
         await conn.execute_query("SET FOREIGN_KEY_CHECKS = 0")
-        for table in tables:
-            await conn.execute_query(f"TRUNCATE TABLE `{table}`")
+        for model in model_list:
+            try:
+                await conn.execute_query(f"TRUNCATE TABLE {_sql_ref(model, engine)}")
+                truncated.append(_label(model))
+            except Exception:
+                pass
         await conn.execute_query("SET FOREIGN_KEY_CHECKS = 1")
     elif engine == "sqlite":
-        for table in tables:
-            await conn.execute_query(f'DELETE FROM "{table}"')
+        for model in model_list:
+            try:
+                await conn.execute_query(f"DELETE FROM {_sql_ref(model, engine)}")
+                truncated.append(_label(model))
+            except Exception:
+                pass
     else:
-        joined = ", ".join(f'"{t}"' for t in tables)
-        await conn.execute_query(f"TRUNCATE TABLE {joined} RESTART IDENTITY CASCADE")
+        for model in model_list:
+            try:
+                await conn.execute_query(
+                    f"TRUNCATE TABLE {_sql_ref(model, engine)} RESTART IDENTITY CASCADE"
+                )
+                truncated.append(_label(model))
+            except Exception:
+                pass
+
+    tables = truncated
 
     await Tortoise.close_connections()
     return tables

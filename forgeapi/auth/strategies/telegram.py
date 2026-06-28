@@ -48,8 +48,12 @@ class TelegramStrategy(AuthStrategy):
             return {"tg_id": user.id, "username": user.username}
     """
 
-    def __init__(self, bot_token: str, max_age_seconds: int = 86400) -> None:
-        self._secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    def __init__(self, bot_token: str | list[str], max_age_seconds: Optional[int] = 86400) -> None:
+        tokens = [bot_token] if isinstance(bot_token, str) else bot_token
+        self._secret_keys = [
+            hmac.new(b"WebAppData", t.encode(), hashlib.sha256).digest()
+            for t in tokens
+        ]
         self._max_age = max_age_seconds
 
     def validate_init_data(self, init_data: str) -> TelegramUser:
@@ -81,13 +85,18 @@ class TelegramStrategy(AuthStrategy):
             raise HTTPException(status_code=401, detail="Missing hash in Telegram init data")
 
         auth_date = int(params.get("auth_date", 0))
-        if time.time() - auth_date > self._max_age:
+        if self._max_age is not None and time.time() - auth_date > self._max_age:
             raise HTTPException(status_code=401, detail="Telegram init data has expired")
 
         data_check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
-        expected = hmac.new(self._secret_key, data_check.encode(), hashlib.sha256).hexdigest()
-
-        if not hmac.compare_digest(expected, received_hash):
+        valid = any(
+            hmac.compare_digest(
+                hmac.new(key, data_check.encode(), hashlib.sha256).hexdigest(),
+                received_hash,
+            )
+            for key in self._secret_keys
+        )
+        if not valid:
             raise HTTPException(status_code=401, detail="Telegram init data signature is invalid")
 
         user_data = json.loads(params.get("user", "{}") or "{}")
