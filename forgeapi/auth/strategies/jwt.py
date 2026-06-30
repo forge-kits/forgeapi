@@ -6,7 +6,11 @@ from typing import Optional
 try:
     import jwt
 except ImportError:
-    raise ImportError("JWTStrategy requires PyJWT. Install it: pip install forge-kits[auth]")
+    from forgeapi.exceptions import ForgeAPIImportError
+    raise ForgeAPIImportError(
+        "JWTStrategy requires PyJWT.",
+        hint="pip install forge-kits[auth]",
+    )
 
 from fastapi import Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -58,7 +62,11 @@ class JWTStrategy(AuthStrategy):
     ) -> None:
         self._secret = secret_key or os.getenv("JWT_SECRET", "")
         if not self._secret:
-            raise ValueError("JWT secret key required. Pass secret_key= or set JWT_SECRET env var.")
+            from forgeapi.exceptions import ForgeAPIConfigError
+            raise ForgeAPIConfigError(
+                "JWT secret key is not set.",
+                hint="Pass secret_key= to JWTStrategy or set the JWT_SECRET environment variable.",
+            )
         self._algorithm = algorithm
         self._access_ttl = access_token_expire_minutes
         self._refresh_ttl = refresh_token_expire_days

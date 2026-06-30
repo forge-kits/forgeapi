@@ -122,13 +122,18 @@ Usage: forgeapi make:model <Name> [flags]
 Generates a Tortoise ORM model in models_dir.
 
 Flags:
-  -c, --controller   Also generate controller
-  -s, --schema       Also generate stub schemas
+  -c, --controller      Also generate controller
+  -s, --schema          Also generate stub schemas
+  --alias <FileName>    Write model into models/<filename>.py instead of the
+                        default <name>.py. If the file already exists and is
+                        non-empty the new class is appended at the end.
   Compound: --cs  --mc  etc.
 
 Examples:
   forgeapi make:model Post
   forgeapi make:model Post -cs
+  forgeapi make:model Employee --alias Worker
+  forgeapi make:model Contractor --alias Worker
 """
 
 _HELP_MAKE_SCHEMA = """\
@@ -329,11 +334,23 @@ def main(ctx: typer.Context) -> None:
             raise typer.Exit(code=1)
         name = args[1]
         from .commands.generate_cmd import parse_flags, run_make
-        flags, unknown = parse_flags(args[2:])
+
+        # Extract --alias <value> before general flag parsing
+        alias: str | None = None
+        remaining = list(args[2:])
+        if "--alias" in remaining:
+            idx = remaining.index("--alias")
+            if idx + 1 >= len(remaining) or remaining[idx + 1].startswith("-"):
+                typer.echo("Error: --alias requires a value.  Example: --alias Worker", err=True)
+                raise typer.Exit(code=1)
+            alias = remaining[idx + 1]
+            remaining = remaining[:idx] + remaining[idx + 2:]
+
+        flags, unknown = parse_flags(remaining)
         if unknown:
             typer.echo(f"Error: unknown flags: {' '.join(unknown)}", err=True)
             raise typer.Exit(code=1)
-        run_make(kind=kind, name=name, flags=flags)
+        run_make(kind=kind, name=name, flags=flags, alias=alias)
         return
 
     if cmd == "generate:schema":

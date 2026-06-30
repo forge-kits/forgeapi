@@ -1,6 +1,10 @@
+import logging
+
 from tortoise.models import Model
 
 from .models import Permission, Role, ModelHasRole, ModelHasPermission
+
+logger = logging.getLogger("forgeapi.permissions")
 
 
 class PermissionsMixin(Model):

@@ -1,7 +1,11 @@
+import logging
+
 from fastapi import Depends, HTTPException
 
 from forgeapi.auth import CurrentUser
 from .registry import get_user_model
+
+logger = logging.getLogger("forgeapi.permissions")
 
 
 def RequirePermission(*permissions: str):

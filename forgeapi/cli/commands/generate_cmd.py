@@ -121,13 +121,29 @@ def _ensure_init(directory: Path) -> None:
 
 # ── Generators ────────────────────────────────────────────────────────────────
 
-def _gen_model(class_name: str, module_name: str, plural: str, st) -> None:
-    content = _render("model.py.jinja2", class_name=class_name, table_name=plural)
-    _write(Path(st.models_dir) / f"{module_name}.py", content)
+def _gen_model(class_name: str, module_name: str, plural: str, st, alias: str | None = None) -> None:
+    file_name = _to_snake(alias[0].upper() + alias[1:]) if alias else module_name
+    file_path = Path(st.models_dir) / f"{file_name}.py"
+
+    existing_text = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
+    append_mode   = bool(existing_text.strip())
+
+    if append_mode and f"class {class_name}(Model):" in existing_text:
+        typer.echo(f"  exists   {file_path} (class {class_name} already defined)")
+    elif append_mode:
+        chunk = _render("model.py.jinja2", class_name=class_name, table_name=plural, append=True)
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + chunk)
+        typer.echo(f"  updated  {file_path}")
+    else:
+        content = _render("model.py.jinja2", class_name=class_name, table_name=plural, append=False)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+        typer.echo(f"  created  {file_path}")
 
     # Always update __init__.py (idempotent — checks for duplicate line)
     init_file   = Path(st.models_dir) / "__init__.py"
-    import_line = f"from .{module_name} import {class_name}\n"
+    import_line = f"from .{file_name} import {class_name}\n"
     existing    = init_file.read_text(encoding="utf-8") if init_file.exists() else ""
     if import_line not in existing:
         with open(init_file, "a", encoding="utf-8") as f:
@@ -195,11 +211,15 @@ def _gen_listener(class_name: str, module_name: str, st) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def run_make(kind: str, name: str, flags: dict[str, bool]) -> None:
+def run_make(kind: str, name: str, flags: dict[str, bool], alias: str | None = None) -> None:
     from forgeapi.config import load_config
 
     cfg = load_config()
     st  = cfg.structure
+
+    if alias and kind != "model":
+        typer.echo("Error: --alias is only supported for make:model.", err=True)
+        raise typer.Exit(code=1)
 
     allowed = _ALLOWED_EXTRA[kind]
     for flag_name, val in flags.items():
@@ -264,7 +284,7 @@ def run_make(kind: str, name: str, flags: dict[str, bool]) -> None:
     plural = _to_plural(module_name)
 
     if gen_model:
-        _gen_model(class_name, module_name, plural, st)
+        _gen_model(class_name, module_name, plural, st, alias=alias)
     if gen_schema:
         _gen_schema(class_name, module_name, st)
     if gen_controller:

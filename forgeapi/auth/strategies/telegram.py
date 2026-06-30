@@ -11,7 +11,7 @@ from fastapi import Request
 from .base import AuthStrategy
 from ..models import AuthUser, TelegramUser
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("forgeapi.auth.telegram")
 
 
 class TelegramStrategy(AuthStrategy):

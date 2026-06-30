@@ -62,7 +62,11 @@ class CookieStrategy(AuthStrategy):
     ) -> None:
         self._secret = secret_key or os.getenv("COOKIE_SECRET", "")
         if not self._secret:
-            raise ValueError("Cookie secret key required. Pass secret_key= or set COOKIE_SECRET env var.")
+            from forgeapi.exceptions import ForgeAPIConfigError
+            raise ForgeAPIConfigError(
+                "Cookie secret key is not set.",
+                hint="Pass secret_key= to CookieStrategy or set the COOKIE_SECRET environment variable.",
+            )
         self._cookie_name = cookie_name
         self._max_age = max_age
         self._httponly = httponly

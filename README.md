@@ -5,39 +5,40 @@
 1. [Quick start](#1-quick-start)
 2. [Project structure](#2-project-structure)
 3. [Core](#3-core)
-4. [Auth](#4-auth)
+4. [Exceptions](#4-exceptions)
+5. [Auth](#5-auth)
    - [How it works](#how-it-works)
    - [CurrentUser and OptionalUser](#currentuser-and-optionaluser)
    - [JWT strategy](#jwt-strategy)
    - [Cookie strategy](#cookie-strategy)
    - [Telegram strategy](#telegram-strategy)
-5. [Pagination](#5-pagination)
-6. [Events](#6-events)
+6. [Pagination](#6-pagination)
+7. [Events](#7-events)
    - [Defining events](#defining-events)
    - [@listen decorator](#listen-decorator)
    - [Dispatching](#dispatching)
    - [EventBus](#eventbus)
-7. [Controllers](#7-controllers)
+8. [Controllers](#8-controllers)
    - [Base pattern](#base-pattern)
    - [Route decorator](#route-decorator)
    - [Auto-prefix and namespace](#auto-prefix-and-namespace)
-8. [Schemas](#8-schemas)
+9. [Schemas](#9-schemas)
    - [Base classes](#base-classes)
    - [Schema directories](#schema-directories)
    - [generate:schema](#generateschema)
-9. [Permissions](#9-permissions)
-   - [Setup](#setup)
-   - [PermissionsMixin](#permissionsmixin)
-   - [Dependencies](#dependencies)
-   - [Role and Permission models](#role-and-permission-models)
-10. [Middleware](#10-middleware)
+10. [Permissions](#10-permissions)
+    - [Setup](#setup)
+    - [PermissionsMixin](#permissionsmixin)
+    - [Dependencies](#dependencies)
+    - [Role and Permission models](#role-and-permission-models)
+11. [Middleware](#11-middleware)
     - [CORS](#cors)
     - [Rate limiting](#rate-limiting)
     - [Request ID](#request-id)
     - [Access logging](#access-logging)
-11. [Settings](#11-settings)
-12. [CLI reference](#12-cli-reference)
-13. [forgeapi.toml reference](#13-forgeapitoml-reference)
+12. [Settings](#12-settings)
+13. [CLI reference](#13-cli-reference)
+14. [forgeapi.toml reference](#14-forgeapitoml-reference)
 
 ---
 
@@ -112,16 +113,16 @@ from forgeapi import Core
 
 core = Core(
     app,
-    auth=True,           # auth strategy
+    auth=True,           # auth strategy from forgeapi.toml, or "jwt"/"cookie"/"telegram"
     cors=["*"],          # CORS origins
-    rate_limit=60,       # requests per minute
+    rate_limit=60,       # requests per minute per IP
     pagination=20,       # default page size
-    request_id=True,     # X-Request-ID header
-    events=True,         # auto-load listeners
-    permissions=User,    # enable permissions (pass your User model)
-    logging=True,        # access log (default True)
-    controllers=True,    # auto-discover controllers (default True)
-    debug=False,         # debug mode — relaxes security checks
+    request_id=True,     # inject X-Request-ID header
+    events=True,         # auto-load listeners from listeners_dir
+    permissions=True,    # auto-detect PermissionsMixin model in models_dir
+    logging=True,        # access log per request (default True)
+    controllers=True,    # auto-discover *_controller.py files (default True)
+    debug=False,         # relaxes security checks — never use in production
 )
 ```
 
@@ -135,11 +136,27 @@ core = Core(
 | `pagination` | `bool \| int` | `False` | `True` = limits from toml; int = default_limit |
 | `request_id` | `bool` | `False` | Injects `X-Request-ID` header into every response |
 | `events` | `bool` | `False` | Auto-loads all `*.py` files from `listeners_dir` |
-| `permissions` | `Type \| None` | `None` | Pass your User model class to enable `RequirePermission`/`RequireRole` |
+| `permissions` | `bool \| Type \| None` | `None` | `True` = auto-detect; pass model class = explicit; `None` = disabled |
 | `logging` | `bool` | `True` | Logs method + path + status + duration for every request |
 | `controllers` | `bool` | `True` | Auto-imports `*_controller.py` (recursive) and registers routers |
 | `debug` | `bool` | `False` | Debug mode — relaxes security checks (see below). **Never use in production.** |
 | `config_path` | `str` | `"forgeapi.toml"` | Path to the TOML config file |
+
+### permissions=True — auto-detection
+
+When `permissions=True`, Core scans `models_dir` for a class that inherits `PermissionsMixin` and registers it automatically. No need to import the model in `main.py`.
+
+```python
+# Auto — scans models_dir, finds User (or any PermissionsMixin subclass)
+core = Core(app, auth=True, permissions=True)
+
+# Explicit — use when you have multiple PermissionsMixin models
+from database.models import User
+core = Core(app, auth=True, permissions=User)
+```
+
+If zero models are found → `ForgeAPIConfigError` with a hint.  
+If more than one model is found → `ForgeAPIConfigError` listing the models — pass explicitly.
 
 ### Debug mode
 
@@ -173,7 +190,70 @@ core.include_router(admin_router, prefix="/admin")   # prefix: /api/v1/admin
 
 ---
 
-## 4. Auth
+## 4. Exceptions
+
+ForgeAPI uses a typed exception hierarchy so you can catch errors precisely.
+
+```python
+from forgeapi import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
+```
+
+| Class | Inherits | When raised |
+|---|---|---|
+| `ForgeAPIError` | `Exception` | Base — all ForgeAPI errors |
+| `ForgeAPIConfigError` | `ForgeAPIError` | Misconfiguration: missing secret, unknown strategy, model not found |
+| `ForgeAPIImportError` | `ForgeAPIError`, `ImportError` | Optional dependency not installed |
+
+Every exception includes a `hint` field with a fix suggestion. The hint is appended to the message automatically:
+
+```
+ForgeAPIConfigError: Auth backend is not configured.
+  Hint: Enable auth in Core: Core(app, auth=True).
+```
+
+### Catching examples
+
+```python
+from forgeapi import ForgeAPIConfigError, ForgeAPIImportError
+
+# Catch a specific error
+try:
+    core = Core(app, auth=True)
+except ForgeAPIConfigError as e:
+    print(e)        # full message + hint
+    print(e.hint)   # just the hint string
+
+# ForgeAPIImportError is also an ImportError — existing except clauses still work
+try:
+    from forgeapi.auth.strategies.jwt import JWTStrategy
+except ImportError as e:
+    print("missing dep:", e)
+```
+
+### When each error is raised
+
+**`ForgeAPIConfigError`**
+
+| Trigger | Message |
+|---|---|
+| `Core(app, auth=True)` without JWT_SECRET set | `JWT secret key is not set.` |
+| `Core(app, auth="unknown")` | `Unknown auth strategy 'unknown'.` |
+| `Core(app, permissions=True)` — no PermissionsMixin model found | `No model with PermissionsMixin found in '…'.` |
+| `Core(app, permissions=True)` — multiple PermissionsMixin models | `Multiple PermissionsMixin models found: User, Team.` |
+| `forgeapi.auth.auth.<method>` called before `Core(app, auth=True)` | `Auth backend is not configured.` |
+| `RequirePermission` / `RequireRole` used before `permissions=` set | `User model not registered.` |
+| `COOKIE_SECRET` env var missing for CookieStrategy | `Cookie secret key is not set.` |
+
+**`ForgeAPIImportError`**
+
+| Trigger | Message |
+|---|---|
+| `Core(app, auth=True)` without PyJWT installed | `Auth backend could not be loaded.` |
+| `JWTStrategy` imported without PyJWT | `JWTStrategy requires PyJWT.` |
+
+---
+
+## 5. Auth
 
 ### How it works
 
@@ -321,7 +401,7 @@ tg_user = _global_backend.strategy.validate_init_data(raw_init_data_string)
 
 ---
 
-## 5. Pagination
+## 6. Pagination
 
 Inject `Pagination` as a dependency — reads `?page` and `?limit` from the query string.
 
@@ -356,7 +436,7 @@ Core(app, pagination=True)  # both from toml
 
 ---
 
-## 6. Events
+## 7. Events
 
 Events decouple side effects (emails, notifications, cache) from business logic.
 
@@ -439,7 +519,7 @@ def reset_bus():
 
 ---
 
-## 7. Controllers
+## 8. Controllers
 
 Controllers are classes that group routes. `Core` auto-discovers all `*_controller.py` files in `controllers_dir` (recursively) and registers their routers under `base_prefix`.
 
@@ -555,7 +635,7 @@ controllers/
 
 ---
 
-## 8. Schemas
+## 9. Schemas
 
 ### Base classes
 
@@ -652,7 +732,7 @@ If the model isn't found, `pass` stubs are generated — the command still succe
 
 ---
 
-## 9. Permissions
+## 10. Permissions
 
 Spatie-style roles and permissions using **polymorphic pivot tables**. Any number of models can have roles and permissions without creating extra junction tables per model.
 
@@ -723,8 +803,11 @@ TORTOISE_ORM = {
 **3. Register in `Core`:**
 
 ```python
-from database.models import User
+# Auto-detect — Core scans models_dir and finds the PermissionsMixin subclass
+core = Core(app, auth=True, permissions=True)
 
+# Explicit — required when you have multiple PermissionsMixin models
+from database.models import User
 core = Core(app, auth=True, permissions=User)
 ```
 
@@ -835,7 +918,7 @@ await user.can("edit:posts")   # → True (via role)
 
 ---
 
-## 10. Middleware
+## 11. Middleware
 
 Two extension points: **global middleware** wraps every request, **guards** are scoped to a route or controller via DI.
 
@@ -1024,7 +1107,7 @@ logging.getLogger("forgeapi.access").setLevel(logging.WARNING)
 
 ---
 
-## 11. Settings
+## 12. Settings
 
 `BaseAppSettings` wraps `pydantic-settings` with `.env` file loading out of the box.
 
@@ -1054,7 +1137,7 @@ All env vars are case-insensitive. Unknown vars are ignored (`extra="ignore"`).
 
 ---
 
-## 12. CLI reference
+## 13. CLI reference
 
 Add `-h` after any command for detailed help:
 
@@ -1105,13 +1188,19 @@ Compound: `--ms` `--mc` `--mcs` `-ms` `-cs` etc.
 
 ```bash
 forgeapi make:model Post
-forgeapi make:model Post -cs    # + controller + schema
+forgeapi make:model Post -cs            # + controller + schema
+
+# --alias: write into a specific file instead of the default <name>.py
+# If the file already exists and is non-empty, the class is appended at the end
+forgeapi make:model Employee --alias Worker     # → models/worker.py  (creates)
+forgeapi make:model Contractor --alias Worker   # → models/worker.py  (appends)
 ```
 
-| Flag | Short | Generates |
+| Flag | Short | Description |
 |---|---|---|
-| `--controller` | `-c` | Controller |
-| `--schema` | `-s` | Stub schemas |
+| `--controller` | `-c` | Also generate controller |
+| `--schema` | `-s` | Also generate stub schemas |
+| `--alias <FileName>` | — | Target file name in models_dir (snake_case). Appends if file exists. |
 
 ---
 
@@ -1228,7 +1317,7 @@ forgeapi db:fresh             # TRUNCATE all tables (asks confirmation)
 
 ---
 
-## 13. forgeapi.toml reference
+## 14. forgeapi.toml reference
 
 ```toml
 [project]

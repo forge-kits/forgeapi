@@ -1,5 +1,6 @@
 from .kit import Core
 from .config import KitConfig, load_config
+from .exceptions import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 from .settings import BaseAppSettings
 from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
 from .events import Event, EventBus, listen
@@ -11,6 +12,10 @@ __all__ = [
     "Core",
     "KitConfig",
     "load_config",
+    # Exceptions
+    "ForgeAPIError",
+    "ForgeAPIConfigError",
+    "ForgeAPIImportError",
     # Settings
     "BaseAppSettings",
     # Schemas

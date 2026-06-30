@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI
 
 from .config import KitConfig, load_config
+from .exceptions import ForgeAPIConfigError, ForgeAPIImportError
 from .middleware.cors import add_cors
 from .middleware.rate_limit import RateLimitMiddleware
 from .middleware.request_id import RequestIDMiddleware
@@ -66,7 +67,7 @@ class Core:
         events: bool = False,
         logging: bool = True,
         controllers: bool = True,
-        permissions=None,
+        permissions: "bool | type | None" = None,
         middleware: list | None = None,
         debug: bool = False,
         config_path: str = "forgeapi.toml",
@@ -77,7 +78,13 @@ class Core:
         self._debug = debug
 
         if debug:
-            logger.warning("ForgeAPI running in DEBUG mode — security checks relaxed, do not use in production")
+            logger.warning(
+                "ForgeAPI running in DEBUG mode — "
+                "Telescope active at /_forge/telescope/requests. "
+                "Do not use in production."
+            )
+            from .telescope import setup_telescope
+            setup_telescope(self._app)
 
         if self._cfg.project.name:
             self._app.title = self._cfg.project.name
@@ -117,7 +124,10 @@ class Core:
             try:
                 from .auth.backend import AuthBackend, set_global_backend
             except ImportError:
-                raise ImportError("Auth requires PyJWT. Install it: pip install forge-kits[auth]")
+                raise ForgeAPIImportError(
+                    "Auth backend could not be loaded.",
+                    hint="Install the auth extra: pip install forge-kits[auth]",
+                )
             strategy_name = auth if isinstance(auth, str) else ""
             self._auth = AuthBackend(strategy=self._build_strategy(strategy_name))
             set_global_backend(self._auth)
@@ -126,7 +136,9 @@ class Core:
             from .events.bus import EventBus
             EventBus.get_instance().load_from_dir(self._cfg.structure.listeners_dir)
             logger.debug("Events: listeners loaded from '%s'", self._cfg.structure.listeners_dir)
-        if permissions is not None:
+        if permissions is True:
+            permissions = self._find_permissions_model()
+        if permissions not in (None, False):
             from .permissions.registry import setup_permissions
             setup_permissions(user_model=permissions)
             logger.debug("Permissions: enabled for model '%s'", getattr(permissions, "__name__", permissions))
@@ -149,7 +161,10 @@ class Core:
         }
         builder = builders.get(resolved)
         if not builder:
-            raise ValueError(f"Unknown auth strategy '{resolved}'. Choose: jwt, cookie, telegram")
+            raise ForgeAPIConfigError(
+                f"Unknown auth strategy '{resolved}'.",
+                hint="Valid values: jwt, cookie, telegram. Check forgeapi.toml [auth] strategy.",
+            )
         return builder(**kwargs)
 
     def _build_jwt(self, cls, **kwargs):
@@ -177,6 +192,69 @@ class Core:
             kwargs["bot_token"] = tokens or [""]
         kwargs.setdefault("debug", self._debug)
         return cls(**kwargs)
+
+    # ── Permissions auto-discovery ────────────────────────────────────────────
+
+    def _find_permissions_model(self) -> type:
+        """Scan models_dir for the first class that inherits PermissionsMixin."""
+        import importlib
+        import sys
+        from pathlib import Path
+        from .permissions.mixins import PermissionsMixin
+
+        directory = Path(self._cfg.structure.models_dir)
+        if not directory.exists():
+            raise ForgeAPIConfigError(
+                f"models_dir '{directory}' does not exist.",
+                hint=(
+                    "Create the directory or update models_dir in forgeapi.toml. "
+                    "Alternatively pass the model explicitly: Core(app, permissions=User)."
+                ),
+            )
+
+        cwd = str(Path.cwd())
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
+
+        found: list[type] = []
+        for f in sorted(directory.glob("*.py")):
+            if f.name.startswith("_"):
+                continue
+            try:
+                rel = f.relative_to(Path.cwd())
+            except ValueError:
+                rel = f
+            module_path = rel.with_suffix("").as_posix().replace("/", ".")
+            try:
+                mod = importlib.import_module(module_path)
+            except Exception:
+                continue
+            for _, obj in vars(mod).items():
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, PermissionsMixin)
+                    and obj is not PermissionsMixin
+                    and obj.__module__ == mod.__name__
+                ):
+                    found.append(obj)
+
+        if not found:
+            raise ForgeAPIConfigError(
+                f"No model with PermissionsMixin found in '{directory}'.",
+                hint=(
+                    "Add PermissionsMixin to your User model, "
+                    "or pass it explicitly: Core(app, permissions=User)."
+                ),
+            )
+        if len(found) > 1:
+            names = ", ".join(c.__name__ for c in found)
+            raise ForgeAPIConfigError(
+                f"Multiple PermissionsMixin models found: {names}.",
+                hint=f"Pass the model explicitly: Core(app, permissions=User).",
+            )
+
+        logger.debug("Permissions: auto-detected model '%s'", found[0].__name__)
+        return found[0]
 
     # ── Controllers ───────────────────────────────────────────────────────────
 

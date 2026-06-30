@@ -12,9 +12,10 @@ _global_backend: Optional["AuthBackend"] = None
 
 def _get_global_backend() -> "AuthBackend":
     if _global_backend is None:
-        raise RuntimeError(
-            "Global auth backend not configured. "
-            "Call Core(app, auth=True)() or forgeapi.auth.set_global_backend(auth) first."
+        from forgeapi.exceptions import ForgeAPIConfigError
+        raise ForgeAPIConfigError(
+            "Global auth backend is not configured.",
+            hint="Enable auth in Core: Core(app, auth=True).",
         )
     return _global_backend
 

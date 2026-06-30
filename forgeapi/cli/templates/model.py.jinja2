@@ -1,8 +1,8 @@
-from tortoise import fields
+{% if not append %}from tortoise import fields
 from tortoise.models import Model
 
 
-class {{ class_name }}(Model):
+{% endif %}class {{ class_name }}(Model):
     # TODO: define your fields here
     # id = fields.IntField(pk=True)
     # created_at = fields.DatetimeField(auto_now_add=True)

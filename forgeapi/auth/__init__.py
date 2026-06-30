@@ -18,8 +18,10 @@ class _AuthProxy:
     def __getattr__(self, name: str):
         from .backend import _global_backend
         if _global_backend is None:
-            raise RuntimeError(
-                "Auth not configured. Use Core(app, auth=True) first."
+            from forgeapi.exceptions import ForgeAPIConfigError
+            raise ForgeAPIConfigError(
+                "Auth backend is not configured.",
+                hint="Enable auth in Core: Core(app, auth=True).",
             )
         return getattr(_global_backend.strategy, name)
 
