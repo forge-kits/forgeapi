@@ -4,5 +4,5 @@ __pycache__
 backend
 .idea
 .claude
-.DB_Store
+.DS_Store
 nuxt-forgeapi/
