@@ -180,3 +180,23 @@ class PermissionsMixin(Model):
             model_id=self.pk,
         ).delete()
         await self.assign_role(*roles)
+
+    # ── Class-level role filters ──────────────────────────────────────────────
+
+    @classmethod
+    async def with_role(cls, *roles: str):
+        """Return a QuerySet of instances that have any of the given roles."""
+        ids = await ModelHasRole.filter(
+            model_type=cls.__name__.lower(),
+            role__name__in=list(roles),
+        ).values_list("model_id", flat=True)
+        return cls.filter(id__in=ids)
+
+    @classmethod
+    async def without_role(cls, *roles: str):
+        """Return a QuerySet of instances that have none of the given roles."""
+        ids = await ModelHasRole.filter(
+            model_type=cls.__name__.lower(),
+            role__name__in=list(roles),
+        ).values_list("model_id", flat=True)
+        return cls.exclude(id__in=ids)

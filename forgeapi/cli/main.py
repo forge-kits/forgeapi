@@ -232,6 +232,7 @@ Migration and seed commands.
   db:seed              Run all seeders
   db:seed <Name>       Run specific seeder(s) by name
   db:fresh             TRUNCATE all tables (asks for confirmation)
+  db:fresh --force     DROP all tables including structure (irreversible)
 
 Options for db:makemigrations:
   -n <name>   Migration name
@@ -399,8 +400,9 @@ def main(ctx: typer.Context) -> None:
             from .commands.seed_cmd import run as run_seed
             run_seed(names=names)
         elif subcmd == "fresh":
+            force = "--force" in args
             from .commands.fresh_cmd import run as run_fresh
-            run_fresh()
+            run_fresh(force=force)
         else:
             from .commands.db_cmd import run as run_db
             run_db(subcmd=subcmd, extra_args=args[1:])

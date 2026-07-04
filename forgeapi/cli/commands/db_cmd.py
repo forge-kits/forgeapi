@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -40,5 +41,6 @@ def run(subcmd: str, extra_args: list[str], config_path: str = "forgeapi.toml") 
         raise typer.Exit(code=1)
 
     cmd = [tortoise_bin, "-c", orm_path, subcmd] + extra_args
-    result = subprocess.run(cmd)
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run(cmd, env=env)
     sys.exit(result.returncode)

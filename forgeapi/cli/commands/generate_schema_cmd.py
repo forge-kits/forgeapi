@@ -292,7 +292,7 @@ def run(model_name: str, extra_args: list[str] | None = None, config_path: str =
 
     class_name = model_name[0].upper() + model_name[1:]
     module_name = _to_snake(class_name)
-    module_dotted = st.models_dir.replace("\\", "/").replace("/", ".") + "." + module_name
+    module_dotted = Path(st.models_dir).as_posix().replace("/", ".") + "." + module_name
 
     cwd = str(Path.cwd())
     if cwd not in sys.path:

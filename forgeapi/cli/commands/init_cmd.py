@@ -138,6 +138,7 @@ DB_SCHEMA=public
 """,
     "aiosqlite": """\
 DB_ENGINE=tortoise.backends.sqlite
+# On Windows use forward slashes or double backslashes: DB_PATH=C:/data/db.sqlite3
 DB_PATH=./db.sqlite3
 """,
     "aiomysql": """\

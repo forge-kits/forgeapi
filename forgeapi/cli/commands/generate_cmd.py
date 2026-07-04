@@ -51,8 +51,8 @@ def parse_flags(args: list[str]) -> tuple[dict[str, bool], list[str]]:
 
 def _relative_import(from_dir: str, to_dir: str) -> str:
     from pathlib import PurePosixPath
-    from_parts = PurePosixPath(from_dir.replace("\\", "/")).parts
-    to_parts   = PurePosixPath(to_dir.replace("\\", "/")).parts
+    from_parts = PurePosixPath(Path(from_dir).as_posix()).parts
+    to_parts   = PurePosixPath(Path(to_dir).as_posix()).parts
     common = sum(1 for a, b in zip(from_parts, to_parts) if a == b)
     # Different top-level packages — use absolute import
     if common == 0:
@@ -132,7 +132,7 @@ def _gen_model(class_name: str, module_name: str, plural: str, st, alias: str | 
         typer.echo(f"  exists   {file_path} (class {class_name} already defined)")
     elif append_mode:
         chunk = _render("model.py.jinja2", class_name=class_name, table_name=plural, append=True)
-        with open(file_path, "a", encoding="utf-8") as f:
+        with open(file_path, "a", encoding="utf-8", newline="") as f:
             f.write("\n\n" + chunk)
         typer.echo(f"  updated  {file_path}")
     else:
@@ -146,7 +146,7 @@ def _gen_model(class_name: str, module_name: str, plural: str, st, alias: str | 
     import_line = f"from .{file_name} import {class_name}\n"
     existing    = init_file.read_text(encoding="utf-8") if init_file.exists() else ""
     if import_line not in existing:
-        with open(init_file, "a", encoding="utf-8") as f:
+        with open(init_file, "a", encoding="utf-8", newline="") as f:
             f.write(import_line)
         typer.echo(f"  updated  {init_file}")
 

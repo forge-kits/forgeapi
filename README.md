@@ -861,6 +861,32 @@ await user.remove_role("editor", "viewer")   # one or many
 await user.sync_roles(["admin"])             # replaces all roles
 ```
 
+#### Filtering collections by role
+
+Class-level methods — return a Tortoise `QuerySet` that you can chain freely.
+
+```python
+# all non-admins
+users = await (await User.without_role("admin"))
+
+# all admins
+users = await (await User.with_role("admin"))
+
+# chain additional filters
+qs = await User.without_role("admin")
+users = await qs.filter(is_active=True).order_by("id").all()
+
+# count
+count = await User.without_role("admin").count()  # still async
+```
+
+`with_role` / `without_role` accept multiple role names — any match is sufficient:
+
+```python
+# users that are neither admin nor moderator
+users = await (await User.without_role("admin", "moderator"))
+```
+
 ---
 
 ### Dependencies
@@ -1312,7 +1338,8 @@ forgeapi db:downgrade
 forgeapi db:history
 forgeapi db:seed              # run all seeders
 forgeapi db:seed User Post    # run specific seeders
-forgeapi db:fresh             # TRUNCATE all tables (asks confirmation)
+forgeapi db:fresh             # TRUNCATE all tables — clears data, keeps structure (asks confirmation)
+forgeapi db:fresh --force     # DROP all tables including structure (asks confirmation, irreversible)
 ```
 
 ---
