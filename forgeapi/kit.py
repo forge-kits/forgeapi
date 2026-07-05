@@ -250,7 +250,7 @@ class Core:
             names = ", ".join(c.__name__ for c in found)
             raise ForgeAPIConfigError(
                 f"Multiple PermissionsMixin models found: {names}.",
-                hint=f"Pass the model explicitly: Core(app, permissions=User).",
+                hint="Pass the model explicitly: Core(app, permissions=User).",
             )
 
         logger.debug("Permissions: auto-detected model '%s'", found[0].__name__)
