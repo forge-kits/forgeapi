@@ -18,12 +18,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-auth      = ["pyjwt>=2.13"]
-asyncpg   = ["tortoise-orm>=1.1.7", "asyncpg>=0.30"]
-aiosqlite = ["tortoise-orm>=1.1.7", "aiosqlite>=0.21"]
-aiomysql  = ["tortoise-orm>=1.1.7", "aiomysql>=0.2"]
-db        = ["tortoise-orm>=1.1.7"]
-full      = ["forge-kits[auth,asyncpg,aiosqlite,aiomysql]"]
+auth          = ["pyjwt>=2.13"]
+asyncpg       = ["tortoise-orm>=1.1.7", "asyncpg>=0.30"]
+aiosqlite     = ["tortoise-orm>=1.1.7", "aiosqlite>=0.21"]
+aiomysql      = ["tortoise-orm>=1.1.7", "aiomysql>=0.2"]
+db            = ["tortoise-orm>=1.1.7"]
+full-asyncpg  = ["forge-kits[auth,asyncpg]"]
+full-aiosqlite = ["forge-kits[auth,aiosqlite]"]
+full-aiomysql = ["forge-kits[auth,aiomysql]"]
+full          = ["forge-kits[auth,asyncpg,aiosqlite,aiomysql]"]
 
 [project.scripts]
 forgeapi = "forgeapi.cli.main:app"
