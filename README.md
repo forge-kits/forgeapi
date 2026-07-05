@@ -37,8 +37,9 @@
     - [Request ID](#request-id)
     - [Access logging](#access-logging)
 12. [Settings](#12-settings)
-13. [CLI reference](#13-cli-reference)
-14. [forgeapi.toml reference](#14-forgeapitoml-reference)
+13. [Seeders](#13-seeders)
+14. [CLI reference](#14-cli-reference)
+15. [forgeapi.toml reference](#15-forgeapitoml-reference)
 
 ---
 
@@ -1163,7 +1164,69 @@ All env vars are case-insensitive. Unknown vars are ignored (`extra="ignore"`).
 
 ---
 
-## 13. CLI reference
+## 13. Seeders
+
+Seeders populate the database with initial or test data. The `database/seeds/` directory is created automatically by `forgeapi init`.
+
+### Creating a seeder
+
+```bash
+forgeapi make:seed User
+# → database/seeds/user_seeder.py
+```
+
+Generated file:
+
+```python
+from forgeapi.database import Seeder
+
+class UserSeeder(Seeder):
+    async def run(self) -> None:
+        pass
+```
+
+Implement `run()` using Tortoise ORM — it runs inside an active DB connection:
+
+```python
+from forgeapi.database import Seeder
+from database.models import User
+from app.utils import hash_password
+
+class UserSeeder(Seeder):
+    async def run(self) -> None:
+        await User.get_or_create(
+            username="admin",
+            defaults={
+                "email":         "admin@example.com",
+                "password_hash": hash_password("admin123"),
+                "is_active":     True,
+            },
+        )
+```
+
+### Running seeders
+
+```bash
+forgeapi db:seed              # run all *_seeder.py files in seeds_dir
+forgeapi db:seed User         # run only UserSeeder
+forgeapi db:seed User Post    # run specific seeders in order
+```
+
+Seeders are discovered by filename: `forgeapi db:seed User` looks for `database/seeds/user_seeder.py`.
+
+### Seeder base class
+
+```python
+from forgeapi.database import Seeder
+```
+
+| Method | Description |
+|---|---|
+| `async run(self) -> None` | Override to define seed logic. Called once per seeder run. |
+
+---
+
+## 14. CLI reference
 
 Add `-h` after any command for detailed help:
 
@@ -1187,6 +1250,8 @@ Asks for:
 - Auth strategy: `jwt` / `cookie` / `telegram`
 - DB driver: `asyncpg` / `aiosqlite` / `aiomysql`
 - Welcome boilerplate: User + Post + events (y/n)
+
+Creates the full project skeleton including `database/seeds/` for seeders.
 
 ---
 
@@ -1344,7 +1409,7 @@ forgeapi db:fresh --force     # DROP all tables including structure (asks confir
 
 ---
 
-## 14. forgeapi.toml reference
+## 15. forgeapi.toml reference
 
 ```toml
 [project]
