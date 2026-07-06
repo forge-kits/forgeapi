@@ -3,7 +3,7 @@ from .config import KitConfig, load_config
 from .exceptions import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 from .settings import BaseAppSettings
 from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
-from .events import Event, EventBus, listen
+from .events import Event, EventBus, listen, RedisBus
 from .controllers import Controller, route
 from .middleware import Middleware, Guard
 
@@ -26,6 +26,7 @@ __all__ = [
     "Event",
     "EventBus",
     "listen",
+    "RedisBus",
     # Controllers
     "Controller",
     "route",

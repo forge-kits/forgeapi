@@ -18,6 +18,8 @@
    - [@listen decorator](#listen-decorator)
    - [Dispatching](#dispatching)
    - [EventBus](#eventbus)
+   - [Redis pub/sub — EventBus](#redis-pubsub--eventbus)
+   - [RedisBus — cross-project bridge](#redisbus--cross-project-bridge)
 8. [Controllers](#8-controllers)
    - [Base pattern](#base-pattern)
    - [Route decorator](#route-decorator)
@@ -517,6 +519,191 @@ def reset_bus():
     yield
     EventBus.reset()
 ```
+
+---
+
+### Redis pub/sub — EventBus
+
+The built-in `EventBus` supports Redis pub/sub for distributing events across multiple workers (replicas) of the **same project**.
+
+Add `redis = True` and optionally `ttl` to any event class:
+
+```python
+# app/events/order_shipped_event.py
+from forgeapi import Event
+
+class OrderShipped(Event):
+    background = True
+    redis = True      # publish to Redis; all workers receive it
+    ttl = 300         # dedup window — only the first worker that wins the lock processes it
+
+    def __init__(self, order_id: int) -> None:
+        self.order_id = order_id
+```
+
+Wire up Redis in the app lifespan:
+
+```python
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+import redis.asyncio as aioredis
+from forgeapi import Core, EventBus
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    redis_client = aioredis.from_url("redis://localhost:6379")
+    bus = EventBus.get_instance()
+    bus.set_redis(redis_client)
+    task = asyncio.create_task(bus.start_redis_subscriber())
+    yield
+    task.cancel()
+    await redis_client.aclose()
+
+app = FastAPI(lifespan=lifespan)
+Core(app, events=True)
+```
+
+Dispatching is unchanged — `await OrderShipped(order_id=42).dispatch()`.
+
+**How dedup works:** every event instance has a unique `event_id` (UUID4). When `ttl` is set, the subscriber attempts `SET NX EX {ttl}` in Redis before running listeners. Only the first worker that acquires the lock processes the event; others skip it silently.
+
+| `redis` | `ttl` | Behaviour |
+|---|---|---|
+| `False` (default) | — | Local dispatch only, no Redis |
+| `True` | `None` | Published to Redis, all subscribers run listeners |
+| `True` | `60` | Published to Redis, exactly one subscriber processes per 60 s |
+
+Listeners are still registered with `@listen` or `@bus.on` — no change needed there.
+
+---
+
+### RedisBus — cross-project bridge
+
+`RedisBus` is a **standalone** Redis pub/sub bus for communication between **different projects** on the same server. It has no connection to the per-process `EventBus` singleton — both projects only share a Redis URL.
+
+```python
+from forgeapi import RedisBus
+```
+
+#### Setup — both projects
+
+```python
+# project_a/events.py  AND  project_b/events.py — same code, same Redis URL
+bus = RedisBus("redis://localhost:6379", namespace="shop")
+```
+
+`namespace` is a channel prefix that isolates projects. Two projects with different namespaces never receive each other's events. Two projects with the **same** namespace share all events — which is exactly what cross-project communication needs.
+
+#### Publishing
+
+```python
+# plain dict
+await bus.emit("order:created", {"id": 42, "total": 99.9})
+
+# Tortoise model — scalar fields are serialised automatically
+order = await Order.get(id=42)
+await bus.emit("order:created", order)
+
+# prefetch relations to include them in the payload
+order = await Order.get(id=42).prefetch_related("items")
+await bus.emit("order:created", order)
+```
+
+`datetime`, `Decimal`, and `UUID` are converted to JSON automatically.  
+Un-fetched FK relations are skipped; only the `_id` column is included.
+
+#### Subscribing
+
+```python
+@bus.on("order:created")
+async def handle_order(data: dict) -> None:
+    await telegram.send(f"New order #{data['id']}, total: {data['total']}")
+    # reply back to Project A
+    await bus.emit("notification:sent", {"order_id": data["id"]})
+```
+
+Multiple handlers on the same channel all run in parallel. Handlers receive a plain `dict` — no shared Python classes needed between projects.
+
+#### Lifecycle — FastAPI
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from forgeapi import RedisBus
+
+bus = RedisBus("redis://localhost:6379", namespace="shop")
+
+@bus.on("order:created")
+async def handle_order(data: dict) -> None:
+    await telegram.send(f"Order #{data['id']}")
+    await bus.emit("notification:sent", {"order_id": data["id"]})
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with bus:   # connects + starts listener coroutine in existing event loop
+        yield         # disconnects + cancels listener on shutdown
+
+app = FastAPI(lifespan=lifespan)
+```
+
+#### Lifecycle — standalone script (no FastAPI)
+
+```python
+import asyncio
+from forgeapi import RedisBus
+
+bus = RedisBus("redis://localhost:6379", namespace="shop")
+
+@bus.on("order:created")
+async def handle(data: dict) -> None:
+    print("received:", data)
+
+async def main():
+    async with bus:
+        await asyncio.sleep(float("inf"))
+
+asyncio.run(main())
+```
+
+#### Manual control
+
+```python
+await bus.connect()
+task = asyncio.create_task(bus.listen())  # safe in existing event loop
+
+# later
+task.cancel()
+await bus.disconnect()
+```
+
+#### Full cross-project example
+
+```
+Project A (shop)                Redis (namespace="shop")       Project B (notifier)
+────────────────                ───────────────────────        ────────────────────
+order = await Order.get(42)              │                     @bus.on("order:created")
+await bus.emit(                          │                     async def handle(data):
+  "order:created", order     ──publish──►│◄──subscribe──         await tg.send(...)
+)                                        │                       await bus.emit(
+                                         │                         "notification:sent",
+@bus.on("notification:sent") ◄──subscribe│──publish──►             {"order_id": data["id"]}
+async def handle(data):                  │                       )
+  await Order.filter(                    │
+    id=data["order_id"]                  │
+  ).update(notified=True)               │
+```
+
+#### `RedisBus` vs `EventBus`
+
+| | `EventBus` | `RedisBus` |
+|---|---|---|
+| Scope | Same project, multiple workers | Different projects |
+| Channel key | Python class | String name |
+| Payload | Typed `Event` instance | Plain `dict` |
+| Shared code needed | Yes — event classes | No |
+| Transport | Optional Redis via `set_redis()` | Always Redis |
+| Dedup | `ttl` on event class | Not built-in |
 
 ---
 

@@ -72,6 +72,11 @@ class CookieStrategy(AuthStrategy):
         self._httponly = httponly
         self._secure = secure
         self._samesite = samesite
+        if not secure:
+            logger.warning(
+                "CookieStrategy: secure=False — session cookies will be sent over plain HTTP. "
+                "Set secure=True in production."
+            )
         logger.debug("CookieStrategy ready: cookie='%s' httponly=%s secure=%s", cookie_name, httponly, secure)
 
     def create_session(self, data: dict) -> str:

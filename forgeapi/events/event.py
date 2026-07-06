@@ -1,32 +1,26 @@
-from typing import ClassVar
+import uuid
+from typing import Any, ClassVar
 
 
 class Event:
     """Base class for all application events.
 
-    Subclass this to define your own events.  Override ``background = True``
-    to make the event non-blocking (fire-and-forget via ``asyncio.create_task``).
+    Subclass this to define your own events.  Override class variables to
+    control dispatch behaviour:
 
-    Attributes:
-        background: When ``True``, :meth:`dispatch` schedules listeners as a
-            background task and returns immediately without awaiting them.
-            Defaults to ``False``.
+    * ``background`` — fire-and-forget via ``asyncio.create_task`` (default ``False``).
+    * ``redis`` — publish to Redis pub/sub so all workers receive the event
+      (default ``False``).  Requires :meth:`~forgeapi.events.bus.EventBus.set_redis`
+      to be called before dispatch.
+    * ``ttl`` — deduplication window in seconds.  When set, the first worker
+      that acquires the Redis lock processes the event; others skip it.
+      Only meaningful when ``redis = True``.
 
-    Example — synchronous event (blocks until all listeners finish)::
+    Every instance automatically gets a unique ``event_id`` (UUID4) on
+    creation.  This ID is preserved through Redis serialisation so the same
+    event is never processed twice within the ``ttl`` window.
 
-        class OrderCreated(Event):
-            def __init__(self, order_id: int, total: float) -> None:
-                self.order_id = order_id
-                self.total = total
-
-        @listen(OrderCreated)
-        async def send_confirmation(event: OrderCreated):
-            await email.send(f"Order #{event.order_id} confirmed, total: {event.total}")
-
-        # inside a route
-        await OrderCreated(order_id=42, total=99.90).dispatch()
-
-    Example — background event (does NOT block the HTTP response)::
+    Example — local background event (unchanged from before)::
 
         class UserLoggedIn(Event):
             background = True
@@ -34,28 +28,73 @@ class Event:
             def __init__(self, user_id: int) -> None:
                 self.user_id = user_id
 
-        @listen(UserLoggedIn)
-        async def update_last_seen(event: UserLoggedIn):
-            await User.filter(id=event.user_id).update(last_seen=now())
+    Example — Redis event with deduplication::
 
-        # route returns instantly; listener runs in the background
-        await UserLoggedIn(user_id=user.id).dispatch()
+        class OrderShipped(Event):
+            redis = True
+            ttl = 300  # skip if same event_id seen within 5 minutes
+
+            def __init__(self, order_id: int) -> None:
+                self.order_id = order_id
+
+        # inside a route — unchanged call
+        await OrderShipped(order_id=42).dispatch()
+
+    Serialisation:
+        Override :meth:`to_dict` / :meth:`from_dict` if your event holds
+        non-JSON-serialisable objects.  By default ``to_dict`` dumps all
+        instance ``__dict__`` attributes; ``from_dict`` restores them.
     """
 
+    _registry: ClassVar[dict[str, type["Event"]]] = {}
+
     background: ClassVar[bool] = False
+    redis: ClassVar[bool] = False
+    ttl: ClassVar[int | None] = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        Event._registry[cls.__name__] = cls
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> "Event":
+        instance = super().__new__(cls)
+        instance.event_id = str(uuid.uuid4())
+        return instance
 
     async def dispatch(self) -> None:
-        """Fire this event.
+        """Fire this event via the global :class:`~forgeapi.events.bus.EventBus`.
 
-        Looks up all registered listeners for this event type in the global
-        :class:`~forgeapi.events.bus.EventBus` and executes them via
-        ``asyncio.gather``.
-
-        * ``background = False`` (default) — awaits all listeners before
-          returning.  Any listener exceptions are logged but do **not**
-          propagate.
-        * ``background = True`` — schedules listeners as an
-          ``asyncio.create_task`` and returns immediately.
+        * If ``redis = True`` and Redis is configured — publishes to the Redis
+          channel; local listeners are invoked by the subscriber worker.
+        * Otherwise — runs all local listeners directly (existing behaviour).
         """
         from .bus import EventBus
         await EventBus.get_instance().dispatch(self)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise this event to a plain dict for Redis transport.
+
+        The ``_event_type`` key is added automatically and is used by
+        :meth:`from_dict` to reconstruct the correct subclass.
+        """
+        return {"_event_type": type(self).__name__, **self.__dict__}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Event":
+        """Reconstruct an event from a serialised dict.
+
+        Args:
+            data: Dict produced by :meth:`to_dict` (must contain ``_event_type``).
+
+        Returns:
+            The concrete :class:`Event` subclass instance.
+
+        Raises:
+            KeyError: If ``_event_type`` is missing or unknown.
+        """
+        data = dict(data)
+        event_type = data.pop("_event_type")
+        klass = cls._registry[event_type]
+        instance = klass.__new__(klass)
+        instance.__dict__.update(data)
+        return instance

@@ -102,11 +102,14 @@ class TelegramStrategy(AuthStrategy):
             logger.warning("Telegram auth rejected: missing 'hash' field in init data")
             raise HTTPException(status_code=401, detail="Missing hash in Telegram init data")
 
-        auth_date = int(params.get("auth_date", 0))
+        try:
+            auth_date = int(params.get("auth_date", 0))
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Invalid auth_date in Telegram init data")
         age = time.time() - auth_date
         if self._debug:
             logger.debug("Telegram DEBUG: skipping auth_date expiry check (age=%.0f s)", age)
-        elif self._max_age is not None and age > self._max_age:
+        elif self._max_age is not None and (age < 0 or age > self._max_age):
             logger.warning(
                 "Telegram auth rejected: init data expired (age=%.0f s, max=%s s)",
                 age, self._max_age,
@@ -133,9 +136,15 @@ class TelegramStrategy(AuthStrategy):
         # comes from a client that double-encodes it).  Try to decode once if needed.
         if user_raw.startswith("%"):
             user_raw = unquote(user_raw)
-        user_data = json.loads(user_raw or "{}")
+        try:
+            user_data = json.loads(user_raw or "{}")
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=401, detail="Malformed user field in Telegram init data")
 
         tg_id = user_data.get("id", 0)
+        if not tg_id:
+            logger.warning("Telegram auth rejected: no user id in init data (bot update or missing user field)")
+            raise HTTPException(status_code=401, detail="No user in Telegram init data")
         logger.debug("Telegram auth OK: user_id=%s username=%s", tg_id, user_data.get("username"))
 
         return TelegramUser(

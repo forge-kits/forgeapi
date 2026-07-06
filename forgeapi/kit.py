@@ -280,7 +280,11 @@ class Core:
             except ValueError:
                 rel = f
             module_path = rel.with_suffix("").as_posix().replace("/", ".")
-            mod = importlib.import_module(module_path)
+            try:
+                mod = importlib.import_module(module_path)
+            except Exception as exc:
+                logger.error("Failed to load controller '%s': %s", f, exc, exc_info=exc)
+                continue
 
             # New style: Controller subclasses with @route decorators
             ctrl_classes = [

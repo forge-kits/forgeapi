@@ -70,6 +70,8 @@ class Paginator:
 
             Paginator.configure(default_limit=10, max_limit=50)
         """
+        if default_limit < 1 or max_limit < 1:
+            raise ValueError("default_limit and max_limit must be >= 1")
         cls.DEFAULT_LIMIT = default_limit
         cls.MAX_LIMIT = max_limit
 

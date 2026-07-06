@@ -67,10 +67,8 @@ class PermissionsMixin(Model):
 
     async def has_all_permissions(self, *permissions: str) -> bool:
         """``True`` only if the model has **all** of the given permissions."""
-        for perm in permissions:
-            if not await self.can(perm):
-                return False
-        return True
+        all_perms = set(await self.get_all_permissions())
+        return set(permissions).issubset(all_perms)
 
     async def get_all_permissions(self) -> list[str]:
         """All permission names — direct + via roles, deduplicated."""
@@ -99,23 +97,36 @@ class PermissionsMixin(Model):
     # ── Direct permissions ────────────────────────────────────────────────────
 
     async def give_permission(self, *permissions: str) -> None:
-        for name in permissions:
-            perm = await Permission.find_or_create(name)
-            await ModelHasPermission.get_or_create(
-                model_type=self._model_type,
-                model_id=self.pk,
-                permission_id=perm.pk,
+        names = list(permissions)
+        existing = await Permission.filter(name__in=names).all()
+        existing_names = {p.name for p in existing}
+        missing = [n for n in names if n not in existing_names]
+        if missing:
+            await Permission.bulk_create(
+                [Permission(name=n) for n in missing],
+                ignore_conflicts=True,
             )
-
-    async def revoke_permission(self, *permissions: str) -> None:
-        for name in permissions:
-            perm = await Permission.get_or_none(name=name)
-            if perm:
-                await ModelHasPermission.filter(
+            existing = await Permission.filter(name__in=names).all()
+        await ModelHasPermission.bulk_create(
+            [
+                ModelHasPermission(
                     model_type=self._model_type,
                     model_id=self.pk,
-                    permission_id=perm.pk,
-                ).delete()
+                    permission_id=p.pk,
+                )
+                for p in existing
+            ],
+            ignore_conflicts=True,
+        )
+
+    async def revoke_permission(self, *permissions: str) -> None:
+        perm_ids = await Permission.filter(name__in=list(permissions)).values_list("id", flat=True)
+        if perm_ids:
+            await ModelHasPermission.filter(
+                model_type=self._model_type,
+                model_id=self.pk,
+                permission_id__in=list(perm_ids),
+            ).delete()
 
     async def sync_permissions(self, permissions: list[str]) -> None:
         await ModelHasPermission.filter(
@@ -139,40 +150,59 @@ class PermissionsMixin(Model):
 
     async def has_all_roles(self, *roles: str) -> bool:
         """``True`` only if the model has **all** of the given roles."""
-        for role in roles:
-            if not await self.has_role(role):
-                return False
-        return True
+        requested_ids = set(
+            await Role.filter(name__in=list(roles)).values_list("id", flat=True)
+        )
+        if len(requested_ids) != len(roles):
+            return False
+        held_ids = set(
+            await ModelHasRole.filter(
+                model_type=self._model_type,
+                model_id=self.pk,
+                role_id__in=list(requested_ids),
+            ).values_list("role_id", flat=True)
+        )
+        return held_ids == requested_ids
 
     async def get_role_names(self) -> list[str]:
-        role_ids = await ModelHasRole.filter(
-            model_type=self._model_type,
-            model_id=self.pk,
-        ).values_list("role_id", flat=True)
-        if not role_ids:
-            return []
         return list(
-            await Role.filter(id__in=list(role_ids)).values_list("name", flat=True)
+            await ModelHasRole.filter(
+                model_type=self._model_type,
+                model_id=self.pk,
+            ).values_list("role__name", flat=True)
         )
 
     async def assign_role(self, *roles: str) -> None:
-        for name in roles:
-            role = await Role.find_or_create(name)
-            await ModelHasRole.get_or_create(
-                model_type=self._model_type,
-                model_id=self.pk,
-                role_id=role.pk,
+        names = list(roles)
+        existing = await Role.filter(name__in=names).all()
+        existing_names = {r.name for r in existing}
+        missing = [n for n in names if n not in existing_names]
+        if missing:
+            await Role.bulk_create(
+                [Role(name=n) for n in missing],
+                ignore_conflicts=True,
             )
-
-    async def remove_role(self, *roles: str) -> None:
-        for name in roles:
-            role = await Role.get_or_none(name=name)
-            if role:
-                await ModelHasRole.filter(
+            existing = await Role.filter(name__in=names).all()
+        await ModelHasRole.bulk_create(
+            [
+                ModelHasRole(
                     model_type=self._model_type,
                     model_id=self.pk,
-                    role_id=role.pk,
-                ).delete()
+                    role_id=r.pk,
+                )
+                for r in existing
+            ],
+            ignore_conflicts=True,
+        )
+
+    async def remove_role(self, *roles: str) -> None:
+        role_ids = await Role.filter(name__in=list(roles)).values_list("id", flat=True)
+        if role_ids:
+            await ModelHasRole.filter(
+                model_type=self._model_type,
+                model_id=self.pk,
+                role_id__in=list(role_ids),
+            ).delete()
 
     async def sync_roles(self, roles: list[str]) -> None:
         await ModelHasRole.filter(

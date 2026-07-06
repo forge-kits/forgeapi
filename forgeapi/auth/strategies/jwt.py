@@ -162,6 +162,10 @@ class JWTStrategy(AuthStrategy):
             return None
 
         payload = self.decode(credentials.credentials)
+        if payload.get("type") != "access":
+            from fastapi import HTTPException
+            logger.warning("JWT auth rejected: token type='%s', expected 'access'", payload.get("type"))
+            raise HTTPException(status_code=401, detail="Invalid token type")
         reserved = {"sub", "username", "exp", "iat", "type"}
         logger.debug("JWT auth OK: user_id=%s", payload.get("sub"))
 

@@ -16,3 +16,4 @@ class ForgeAPIConfigError(ForgeAPIError):
 
 class ForgeAPIImportError(ForgeAPIError, ImportError):
     """Raised when an optional dependency is not installed."""
+

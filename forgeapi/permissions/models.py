@@ -42,15 +42,23 @@ class Role(Model):
         return obj
 
     async def give_permission(self, *names: str) -> None:
-        for name in names:
-            perm = await Permission.find_or_create(name)
-            await self.permissions.add(perm)
+        name_list = list(names)
+        existing = await Permission.filter(name__in=name_list).all()
+        existing_names = {p.name for p in existing}
+        missing = [n for n in name_list if n not in existing_names]
+        if missing:
+            await Permission.bulk_create(
+                [Permission(name=n) for n in missing],
+                ignore_conflicts=True,
+            )
+            existing = await Permission.filter(name__in=name_list).all()
+        if existing:
+            await self.permissions.add(*existing)
 
     async def revoke_permission(self, *names: str) -> None:
-        for name in names:
-            perm = await Permission.get_or_none(name=name)
-            if perm:
-                await self.permissions.remove(perm)
+        perms = await Permission.filter(name__in=list(names)).all()
+        if perms:
+            await self.permissions.remove(*perms)
 
     async def sync_permissions(self, names: list[str]) -> None:
         await self.permissions.clear()

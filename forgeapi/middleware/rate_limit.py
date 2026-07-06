@@ -18,13 +18,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._store: dict[str, deque] = defaultdict(deque)
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP", "")
+            or (request.client.host if request.client else "unknown")
+        )
         now = time.time()
         window_start = now - self._window
 
         timestamps = self._store[client_ip]
         while timestamps and timestamps[0] < window_start:
             timestamps.popleft()
+        if not timestamps and client_ip in self._store:
+            del self._store[client_ip]
+            timestamps = self._store[client_ip]
 
         if len(timestamps) >= self._rpm:
             logger.warning("Rate limit exceeded: ip=%s requests=%d limit=%d", client_ip, len(timestamps), self._rpm)

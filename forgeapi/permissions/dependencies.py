@@ -26,9 +26,13 @@ def RequirePermission(*permissions: str):
     """
     async def _check(auth_user: CurrentUser):
         UserModel = get_user_model()
-        db_user = await UserModel.get_or_none(id=int(auth_user.id))
+        try:
+            user_id = int(auth_user.id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=401, detail="Invalid user identity")
+        db_user = await UserModel.get_or_none(id=user_id)
         if not db_user:
-            raise HTTPException(status_code=403, detail="User not found")
+            raise HTTPException(status_code=401, detail="User not found")
         if not await db_user.can(*permissions):
             raise HTTPException(
                 status_code=403,
@@ -57,9 +61,13 @@ def RequireRole(*roles: str):
     """
     async def _check(auth_user: CurrentUser):
         UserModel = get_user_model()
-        db_user = await UserModel.get_or_none(id=int(auth_user.id))
+        try:
+            user_id = int(auth_user.id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=401, detail="Invalid user identity")
+        db_user = await UserModel.get_or_none(id=user_id)
         if not db_user:
-            raise HTTPException(status_code=403, detail="User not found")
+            raise HTTPException(status_code=401, detail="User not found")
         if not await db_user.has_role(*roles):
             raise HTTPException(
                 status_code=403,
