@@ -20,6 +20,13 @@ async def _connect(cfg) -> None:
     await Tortoise.init(config=tortoise_config)
 
 
+async def _run_seeder(cls, name: str) -> None:
+    import typer
+    typer.echo(f"  running  {name}...")
+    await cls().run()
+    typer.echo(f"  done     {name}")
+
+
 async def _execute(files: list[Path]) -> None:
     import typer
     from forgeapi.database import Seeder
@@ -38,9 +45,29 @@ async def _execute(files: list[Path]) -> None:
             typer.echo(f"  skip     {f.name}  (no Seeder subclass)")
             continue
 
-        typer.echo(f"  running  {seeder_cls.__name__}...")
-        await seeder_cls().run()
-        typer.echo(f"  done     {seeder_cls.__name__}")
+        await _run_seeder(seeder_cls, seeder_cls.__name__)
+
+
+async def _execute_from_init(seeds_dir: Path) -> None:
+    import typer
+    from forgeapi.database import Seeder
+
+    init_file = seeds_dir / "__init__.py"
+    spec = importlib.util.spec_from_file_location("_seeds_pkg", init_file)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    names = getattr(mod, "__all__", None)
+    if not names:
+        typer.echo("  __init__.py has no __all__ — nothing to run.")
+        return
+
+    for name in names:
+        cls = getattr(mod, name, None)
+        if cls is None or not (isinstance(cls, type) and issubclass(cls, Seeder) and cls is not Seeder):
+            typer.echo(f"  skip     {name}  (not a Seeder subclass)")
+            continue
+        await _run_seeder(cls, name)
 
 
 def run(names: list[str], config_path: str = "forgeapi.toml") -> None:
@@ -67,20 +94,32 @@ def run(names: list[str], config_path: str = "forgeapi.toml") -> None:
                 typer.echo(f"Error: seeder not found: {f}", err=True)
                 raise typer.Exit(code=1)
             files.append(f)
+
+        async def _main() -> None:
+            await _connect(cfg)
+            try:
+                await _execute(files)
+            finally:
+                from tortoise import Tortoise
+                await Tortoise.close_connections()
     else:
-        files = sorted(seeds_dir.glob("*_seeder.py"))
+        init_file = seeds_dir / "__init__.py"
 
-    if not files:
-        typer.echo("No seeders found.")
-        return
+        if not init_file.exists():
+            typer.echo(
+                f"Error: '{seeds_dir}/__init__.py' not found. "
+                "Create it and define __all__ with the seeders to run.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
 
-    async def _main() -> None:
-        await _connect(cfg)
-        try:
-            await _execute(files)
-        finally:
-            from tortoise import Tortoise
-            await Tortoise.close_connections()
+        async def _main() -> None:
+            await _connect(cfg)
+            try:
+                await _execute_from_init(seeds_dir)
+            finally:
+                from tortoise import Tortoise
+                await Tortoise.close_connections()
 
     typer.echo("")
     asyncio.run(_main())
