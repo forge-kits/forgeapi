@@ -1013,14 +1013,17 @@ All methods are `async`.
 
 #### Checking permissions
 
-```python
-await user.can("edit:posts")                      # True if has ANY of the given perms (direct or via role)
-await user.can("edit:posts", "admin")             # True if has ANY one of the two
-await user.cannot("delete:users")                 # inverse of can()
-await user.has_all_permissions("read", "write")   # True only if has ALL
+All check methods accept an optional `guard` keyword argument (default `"api"`) that scopes the lookup to a specific auth guard, preventing cross-guard permission leakage.
 
-await user.get_all_permissions()
-# → ["edit:posts", "admin", ...]   direct + via roles, deduplicated
+```python
+await user.can("edit:posts")                         # True if has ANY of the given perms (direct or via role)
+await user.can("edit:posts", "admin")                # True if has ANY one of the two
+await user.can("edit:posts", guard="web")            # check against a specific guard
+await user.cannot("delete:users")                    # inverse of can()
+await user.has_all_permissions("read", "write")      # True only if has ALL
+
+await user.get_all_permissions()                     # → ["edit:posts", "admin", ...]
+await user.get_all_permissions(guard="web")          # scoped to a guard
 ```
 
 #### Granting / revoking permissions
@@ -1028,7 +1031,6 @@ await user.get_all_permissions()
 ```python
 await user.give_permission("edit:posts", "delete:posts")
 await user.revoke_permission("delete:posts", "edit:posts")   # one or many
-await user.sync_permissions(["read:posts", "edit:posts"])    # replaces all direct perms
 ```
 
 #### Checking roles
@@ -1046,7 +1048,6 @@ await user.get_role_names()   # → ["admin", "editor"]
 ```python
 await user.assign_role("admin", "editor")
 await user.remove_role("editor", "viewer")   # one or many
-await user.sync_roles(["admin"])             # replaces all roles
 ```
 
 #### Filtering collections by role
@@ -1079,35 +1080,42 @@ users = await (await User.without_role("admin", "moderator"))
 
 ### Dependencies
 
-Enforce access control in route handlers. Both return the DB user instance on success or raise `403`.
+Enforce access control in route handlers. Both return the DB user instance on success, raise `401` for an invalid/inactive user, or raise `403` (with a generic `"Forbidden"` detail — no internal permission names are exposed) when the check fails.
 
 ```python
+from forgeapi.permissions import require_permission, require_role
+
+# Aliases kept for backward compatibility
 from forgeapi.permissions import RequirePermission, RequireRole
 ```
 
-**`RequirePermission(*permissions)`** — user must have **at least one**:
+**`require_permission(*permissions)`** — user must have **at least one**:
 
 ```python
 @route.delete("/{id}")
-async def destroy(self, id: int, user=RequirePermission("delete:posts")):
+async def destroy(self, id: int, user=require_permission("delete:posts")):
     ...
 
 @route.post("/")
-async def create(self, payload: PostCreatePayload, user=RequirePermission("create:posts", "admin")):
+async def create(self, payload: PostCreatePayload, user=require_permission("create:posts", "admin")):
     ...
 ```
 
-**`RequireRole(*roles)`** — user must have **at least one**:
+**`require_role(*roles)`** — user must have **at least one**:
 
 ```python
 @route.get("/admin/stats")
-async def stats(self, user=RequireRole("admin")):
+async def stats(self, user=require_role("admin")):
     ...
 
 @route.get("/dashboard")
-async def dashboard(self, user=RequireRole("admin", "moderator")):
+async def dashboard(self, user=require_role("admin", "moderator")):
     ...
 ```
+
+Both dependencies also check `db_user.is_active` when the field exists on the model — inactive users receive `401` rather than proceeding to the permission check.
+
+To resolve the user model per FastAPI app instance (useful in multi-app or multi-tenant setups) set `app.state.user_model = YourUserModel` in your lifespan; the dependencies prefer `request.app.state.user_model` and fall back to the global registry set by `Core`.
 
 ---
 
@@ -1122,8 +1130,8 @@ role = await Role.find_or_create("editor")
 
 await role.give_permission("edit:posts", "read:posts")
 await role.revoke_permission("read:posts")
-await role.sync_permissions(["edit:posts"])
-await role.has_permission("edit:posts")   # → bool
+await role.has_permission("edit:posts")            # → bool
+await role.has_permission("edit:posts", guard="web")  # scoped to guard
 
 # assigning a role gives the user all permissions of that role
 await user.assign_role("editor")

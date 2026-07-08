@@ -25,8 +25,8 @@
   - [PermissionsMixin](#permissionsmixin)
   - [Permission](#permission)
   - [Role](#role)
-  - [RequirePermission](#requirepermission)
-  - [RequireRole](#requirerole)
+  - [require_permission / RequirePermission](#require_permission--requirepermission)
+  - [require_role / RequireRole](#require_role--requirerole)
 - [Schemas](#schemas)
 - [Settings](#settings)
 - [Pagination](#pagination)
@@ -992,34 +992,37 @@ class User(PermissionsMixin):
         table = "users"
 ```
 
+All check methods accept an optional `guard: str = "api"` keyword argument that scopes lookups to a specific auth guard, preventing cross-guard permission leakage. The result of `get_all_permissions()` is cached per-instance per guard and invalidated automatically on any mutation.
+
 #### Permission methods
 
 | Method | Returns | Description |
 |---|---|---|
-| `await user.can(*perms)` | `bool` | `True` if user has **any** of the permissions (direct or via role) |
-| `await user.cannot(*perms)` | `bool` | Inverse of `can()` |
-| `await user.has_all_permissions(*perms)` | `bool` | `True` only if user has **all** permissions |
-| `await user.get_all_permissions()` | `list[str]` | All permission names (direct + via roles, deduplicated) |
-| `await user.give_permission(*perms)` | `None` | Grant direct permissions |
-| `await user.revoke_permission(*perms)` | `None` | Revoke direct permissions |
-| `await user.sync_permissions(perms)` | `None` | Replace all direct permissions with the given list |
+| `await user.can(*perms, guard="api")` | `bool` | `True` if user has **any** of the permissions (direct or via role). Runs two DB queries in parallel. |
+| `await user.cannot(*perms, guard="api")` | `bool` | Inverse of `can()` |
+| `await user.has_all_permissions(*perms, guard="api")` | `bool` | `True` only if user has **all** permissions |
+| `await user.get_all_permissions(guard="api")` | `list[str]` | All permission names (direct + via roles, deduplicated). Result is cached for the lifetime of the instance. |
+| `await user.give_permission(*perms)` | `None` | Grant direct permissions. Clears the permission cache. |
+| `await user.revoke_permission(*perms)` | `None` | Revoke direct permissions. Clears the permission cache. |
 
 #### Role methods
 
 | Method | Returns | Description |
 |---|---|---|
-| `await user.has_role(*roles)` | `bool` | `True` if user has **any** of the roles |
-| `await user.has_all_roles(*roles)` | `bool` | `True` only if user has **all** roles |
+| `await user.has_role(*roles, guard="api")` | `bool` | `True` if user has **any** of the roles |
+| `await user.has_all_roles(*roles, guard="api")` | `bool` | `True` only if user has **all** roles (deduplicates input before comparing) |
 | `await user.get_role_names()` | `list[str]` | All role names |
-| `await user.assign_role(*roles)` | `None` | Assign roles (creates if not exist) |
-| `await user.remove_role(*roles)` | `None` | Remove roles |
-| `await user.sync_roles(roles)` | `None` | Replace all roles with the given list |
+| `await user.assign_role(*roles)` | `None` | Assign roles (creates if not exist). Clears the permission cache. |
+| `await user.remove_role(*roles)` | `None` | Remove roles. Clears the permission cache. |
 
 #### Class-level filters
+
+Both accept an optional `guard: str = "api"` keyword to filter roles by guard.
 
 ```python
 # QuerySet of users who have any of the given roles
 qs = await User.with_role("admin", "moderator")
+qs = await User.with_role("admin", guard="web")
 
 # QuerySet of users who have none of the given roles
 qs = await User.without_role("banned")
@@ -1033,12 +1036,10 @@ user = await User.get(id=1)
 await user.assign_role("editor")
 await user.give_permission("publish:posts", "delete:comments")
 
-print(await user.can("publish:posts"))        # True
-print(await user.has_role("editor"))          # True
-print(await user.get_all_permissions())       # ["publish:posts", "delete:comments", ...]
-
-await user.sync_roles(["viewer"])             # replaces all roles
-await user.sync_permissions([])              # removes all direct permissions
+print(await user.can("publish:posts"))           # True
+print(await user.can("publish:posts", guard="api"))  # scoped check
+print(await user.has_role("editor"))             # True
+print(await user.get_all_permissions())          # ["publish:posts", "delete:comments", ...]
 ```
 
 ---
@@ -1065,8 +1066,8 @@ perm = await Permission.find_or_create("publish:posts")
 role = await Role.find_or_create("editor")
 await role.give_permission("edit:posts", "publish:posts")
 await role.revoke_permission("delete:posts")
-await role.sync_permissions(["edit:posts"])
-print(await role.has_permission("edit:posts"))  # True
+print(await role.has_permission("edit:posts"))            # True
+print(await role.has_permission("edit:posts", guard="web"))  # scoped to guard
 ```
 
 ---
@@ -1092,56 +1093,61 @@ Tortoise model. Roles group permissions and can be assigned to any model.
 |---|---|
 | `await role.give_permission(*names)` | Add permissions to the role |
 | `await role.revoke_permission(*names)` | Remove permissions from the role |
-| `await role.sync_permissions(names)` | Replace all role permissions |
-| `await role.has_permission(name)` | Check if role has a specific permission |
+| `await role.has_permission(name, guard="api")` | Check if role has a specific permission (scoped by guard) |
 
 ---
 
-### RequirePermission
+### require_permission / RequirePermission
 
 ```python
+from forgeapi.permissions import require_permission
+# Alias kept for backward compatibility
 from forgeapi.permissions import RequirePermission
 ```
 
-FastAPI dependency. Returns HTTP 403 if the authenticated user lacks any of the given permissions. On success, injects the DB user instance.
+FastAPI dependency factory. Raises `401` for an invalid or inactive user, `403` (detail: `"Forbidden"`) if the check fails. On success, injects the DB user instance.
+
+The user model is resolved from `request.app.state.user_model` first, falling back to the global registry set by `Core`.
 
 ```python
-RequirePermission(*permissions: str)
+require_permission(*permissions: str)
 ```
 
 ```python
 @route.delete("/{id}")
-async def destroy(self, id: int, user=RequirePermission("delete:posts")):
+async def destroy(self, id: int, user=require_permission("delete:posts")):
     await Post.filter(id=id).delete()
 
 # User must have AT LEAST ONE of the permissions
 @route.post("/")
-async def store(self, payload: PostCreate, user=RequirePermission("create:posts", "admin")):
+async def store(self, payload: PostCreate, user=require_permission("create:posts", "admin")):
     ...
 ```
 
 ---
 
-### RequireRole
+### require_role / RequireRole
 
 ```python
+from forgeapi.permissions import require_role
+# Alias kept for backward compatibility
 from forgeapi.permissions import RequireRole
 ```
 
-FastAPI dependency. Returns HTTP 403 if the authenticated user lacks any of the given roles. On success, injects the DB user instance.
+FastAPI dependency factory. Raises `401` for an invalid or inactive user, `403` (detail: `"Forbidden"`) if the check fails. On success, injects the DB user instance.
 
 ```python
-RequireRole(*roles: str)
+require_role(*roles: str)
 ```
 
 ```python
 @route.get("/admin/stats")
-async def stats(self, user=RequireRole("admin")):
+async def stats(self, user=require_role("admin")):
     ...
 
 # User must have AT LEAST ONE of the roles
 @route.get("/dashboard")
-async def dashboard(self, user=RequireRole("admin", "moderator")):
+async def dashboard(self, user=require_role("admin", "moderator")):
     ...
 ```
 

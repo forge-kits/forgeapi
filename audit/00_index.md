@@ -19,8 +19,8 @@
 
 | Файл | Модуль | Критических | High | Medium |
 |------|--------|-------------|------|--------|
-| [01_auth.md](01_auth.md) | Auth (JWT, Cookie, Telegram) | 2 | 5 | 9 |
-| [02_permissions.md](02_permissions.md) | Permissions (RBAC) | 2 | 5 | 5 |
+| [01_auth.md](01_auth_done.md) | Auth (JWT, Cookie, Telegram) | 2 | 5 | 9 |
+| [02_permissions.md](02_permissions_done.md) | Permissions (RBAC) | 2 | 5 | 5 |
 | [03_events.md](03_events.md) | Events (Bus, RedisBus) | 2 | 5 | 6 |
 | [04_middleware.md](04_middleware.md) | Middleware | 2 | 6 | 6 |
 | [05_core.md](05_core.md) | Core (exceptions, pagination, controllers) | 2 | 6 | 7 |

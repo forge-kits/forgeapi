@@ -1,6 +1,7 @@
 import pytest
 from forgeapi.events.bus import EventBus
 from forgeapi.pagination.paginator import Paginator
+from tortoise import Tortoise
 
 
 # Restrict anyio async tests to asyncio only (trio has incompatible version installed)
@@ -23,3 +24,6 @@ def reset_paginator():
     yield
     Paginator.DEFAULT_LIMIT = default
     Paginator.MAX_LIMIT = maximum
+
+
+
