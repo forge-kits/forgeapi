@@ -1,11 +1,11 @@
-from typing import Any, Optional
-from pydantic import BaseModel
+from typing import Any, Optional, Union
+from pydantic import BaseModel, Field
 
 
 class AuthUser(BaseModel):
-    id: Any
+    id: Union[str, int]
     username: Optional[str] = None
-    extra: dict = {}
+    extra: dict[str, Any] = Field(default_factory=dict)
     auth_method: str
 
 

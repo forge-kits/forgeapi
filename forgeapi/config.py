@@ -26,7 +26,7 @@ class AuthTomlConfig(BaseModel):
     refresh_ttl_days: int = 7
     cookie_name: str = "session"
     cookie_httponly: bool = True
-    cookie_secure: bool = False
+    cookie_secure: bool = True
 
 
 class PaginationConfig(BaseModel):

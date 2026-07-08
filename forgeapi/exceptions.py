@@ -1,4 +1,11 @@
-__all__ = ["ForgeAPIError", "ForgeAPIConfigError", "ForgeAPIImportError"]
+__all__ = [
+    "ForgeAPIError",
+    "ForgeAPIConfigError",
+    "ForgeAPIImportError",
+    "ForgeAPIAuthError",
+    "TokenExpiredError",
+    "TokenInvalidError",
+]
 
 
 class ForgeAPIError(Exception):
@@ -16,4 +23,16 @@ class ForgeAPIConfigError(ForgeAPIError):
 
 class ForgeAPIImportError(ForgeAPIError, ImportError):
     """Raised when an optional dependency is not installed."""
+
+
+class ForgeAPIAuthError(ForgeAPIError):
+    """Base exception for authentication failures raised by auth strategies."""
+
+
+class TokenExpiredError(ForgeAPIAuthError):
+    """Raised when a JWT token has expired."""
+
+
+class TokenInvalidError(ForgeAPIAuthError):
+    """Raised when a JWT token has an invalid signature, type, or structure."""
 

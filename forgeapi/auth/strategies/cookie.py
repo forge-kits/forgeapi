@@ -1,12 +1,14 @@
 import base64
+import binascii
 import hashlib
 import hmac
 import json
 import logging
 import os
+import time
 from typing import Optional
 
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response
 
 from .base import AuthStrategy
 from ..models import AuthUser
@@ -57,7 +59,7 @@ class CookieStrategy(AuthStrategy):
         cookie_name: str = "session",
         max_age: int = 3600,
         httponly: bool = True,
-        secure: bool = False,
+        secure: bool = True,
         samesite: str = "lax",
     ) -> None:
         self._secret = secret_key or os.getenv("COOKIE_SECRET", "")
@@ -75,7 +77,7 @@ class CookieStrategy(AuthStrategy):
         if not secure:
             logger.warning(
                 "CookieStrategy: secure=False — session cookies will be sent over plain HTTP. "
-                "Set secure=True in production."
+                "Set secure=True for any deployment accessible over the internet."
             )
         logger.debug("CookieStrategy ready: cookie='%s' httponly=%s secure=%s", cookie_name, httponly, secure)
 
@@ -86,6 +88,7 @@ class CookieStrategy(AuthStrategy):
             data: Any JSON-serialisable dict.  Include ``"sub"`` (user id) and
                 ``"username"`` — those will be mapped to
                 :class:`~forgeapi.auth.models.AuthUser` fields on read.
+                An ``"exp"`` (Unix timestamp) claim is added automatically.
 
         Returns:
             Signed cookie string in the form ``<b64payload>.<signature>``.
@@ -95,6 +98,7 @@ class CookieStrategy(AuthStrategy):
             value = strategy.create_session({"sub": "42", "username": "alice"})
             response.set_cookie("session", value)
         """
+        data = {**data, "exp": int(time.time()) + self._max_age}
         payload = base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
         return f"{payload}.{self._sign(payload)}"
 
@@ -116,6 +120,7 @@ class CookieStrategy(AuthStrategy):
             key=self._cookie_name,
             value=self.create_session(data),
             max_age=self._max_age,
+            path="/",
             httponly=self._httponly,
             secure=self._secure,
             samesite=self._samesite,
@@ -134,7 +139,13 @@ class CookieStrategy(AuthStrategy):
                 strategy.delete_cookie(response)
                 return {"ok": True}
         """
-        response.delete_cookie(self._cookie_name)
+        response.delete_cookie(
+            self._cookie_name,
+            path="/",
+            httponly=self._httponly,
+            secure=self._secure,
+            samesite=self._samesite,
+        )
 
     async def authenticate(self, request: Request) -> Optional[AuthUser]:
         """Read and verify the session cookie from the request.
@@ -156,11 +167,14 @@ class CookieStrategy(AuthStrategy):
             return None
 
         data = self._verify(raw)
+        if data.get("exp", 0) <= time.time():
+            logger.warning("Cookie auth rejected: session expired (sub=%s)", data.get("sub"))
+            raise HTTPException(status_code=401, detail="Session has expired")
         logger.debug("Cookie auth OK: user_id=%s", data.get("sub"))
         return AuthUser(
             id=data.get("sub"),
             username=data.get("username"),
-            extra={k: v for k, v in data.items() if k not in ("sub", "username")},
+            extra={k: v for k, v in data.items() if k not in ("sub", "username", "exp")},
             auth_method="cookie",
         )
 
@@ -169,7 +183,6 @@ class CookieStrategy(AuthStrategy):
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
     def _verify(self, cookie_value: str) -> dict:
-        from fastapi import HTTPException
         try:
             payload, sig = cookie_value.rsplit(".", 1)
         except ValueError:
@@ -182,5 +195,6 @@ class CookieStrategy(AuthStrategy):
 
         try:
             return json.loads(base64.urlsafe_b64decode(payload + "==").decode())
-        except Exception:
-            raise HTTPException(status_code=401, detail="Invalid session cookie payload")
+        except (json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
+            logger.warning("Cookie auth rejected: invalid session payload: %s", exc)
+            raise HTTPException(status_code=401, detail="Invalid session")

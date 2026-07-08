@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 from fastapi import Depends, HTTPException, Request
 
 from .models import AuthUser
@@ -118,7 +118,7 @@ class AuthBackend:
     def __init__(self, strategy: AuthStrategy) -> None:
         self._strategy = strategy
 
-    def current_user(self) -> type:
+    def current_user(self) -> Any:
         """Return an ``Annotated`` type that requires a valid authenticated user.
 
         Use the return value as a **type annotation** in endpoint function
@@ -150,7 +150,7 @@ class AuthBackend:
 
         return Annotated[AuthUser, Depends(_get_user)]
 
-    def optional_user(self) -> type:
+    def optional_user(self) -> Any:
         """Return an ``Annotated`` type for an optional authenticated user.
 
         Returns ``None`` instead of raising 401 when credentials are absent.

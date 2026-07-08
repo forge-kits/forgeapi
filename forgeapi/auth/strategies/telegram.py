@@ -3,7 +3,7 @@ import hmac
 import json
 import logging
 import time
-from typing import Optional
+from typing import List, Optional, Union
 from urllib.parse import parse_qsl, unquote
 
 from fastapi import Request
@@ -51,7 +51,7 @@ class TelegramStrategy(AuthStrategy):
             return {"tg_id": user.id, "username": user.username}
     """
 
-    def __init__(self, bot_token: str | list[str], max_age_seconds: Optional[int] = 86400, debug: bool = False) -> None:
+    def __init__(self, bot_token: Union[str, List[str]], max_age_seconds: Optional[int] = 86400, debug: bool = False) -> None:
         tokens = [bot_token] if isinstance(bot_token, str) else list(bot_token)
         tokens = [t for t in tokens if t]
         if not tokens:
@@ -105,6 +105,7 @@ class TelegramStrategy(AuthStrategy):
         try:
             auth_date = int(params.get("auth_date", 0))
         except ValueError:
+            logger.warning("Telegram auth rejected: invalid auth_date value: %r", params.get("auth_date"))
             raise HTTPException(status_code=401, detail="Invalid auth_date in Telegram init data")
         age = time.time() - auth_date
         if self._debug:
@@ -117,13 +118,14 @@ class TelegramStrategy(AuthStrategy):
             raise HTTPException(status_code=401, detail="Telegram init data has expired")
 
         data_check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
-        valid = any(
+        results = [
             hmac.compare_digest(
                 hmac.new(key, data_check.encode(), hashlib.sha256).hexdigest(),
                 received_hash,
             )
             for key in self._secret_keys
-        )
+        ]
+        valid = any(results)
         if not valid:
             logger.warning(
                 "Telegram auth rejected: HMAC signature mismatch (tried %d token(s))",
@@ -139,6 +141,7 @@ class TelegramStrategy(AuthStrategy):
         try:
             user_data = json.loads(user_raw or "{}")
         except (json.JSONDecodeError, ValueError):
+            logger.warning("Telegram auth rejected: malformed user JSON field: %r", user_raw[:200] if user_raw else user_raw)
             raise HTTPException(status_code=401, detail="Malformed user field in Telegram init data")
 
         tg_id = user_data.get("id", 0)
@@ -194,5 +197,5 @@ class TelegramStrategy(AuthStrategy):
             return header
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("tma "):
-            return auth[4:]
+            return auth[4:].strip()
         return None
