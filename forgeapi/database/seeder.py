@@ -1,6 +1,3 @@
-import os
-
-
 class Seeder:
     """Base class for database seeders.
 
