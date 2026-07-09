@@ -89,6 +89,9 @@ class RequestEntry:
         return _serializable(dataclasses.asdict(self))
 
 
+_MAX_WS_CONNECTIONS = 100
+
+
 class ConnectionManager:
     """Manages active WebSocket connections and broadcasts events to all of them."""
 
@@ -96,6 +99,9 @@ class ConnectionManager:
         self._connections: list[Any] = []
 
     async def connect(self, ws: Any) -> None:
+        if len(self._connections) >= _MAX_WS_CONNECTIONS:
+            await ws.close(code=1008)
+            return
         await ws.accept()
         self._connections.append(ws)
 
@@ -168,8 +174,10 @@ class DebugStore:
 
     @classmethod
     def clear(cls) -> None:
-        cls._store.clear()
-        cls._index.clear()
+        # Replace both structures atomically so a concurrent push() that already
+        # grabbed a reference to the old deque/dict doesn't pollute the new state.
+        cls._store = deque(maxlen=_MAX_ENTRIES)
+        cls._index = {}
         try:
             asyncio.get_running_loop().create_task(
                 manager.broadcast({"type": "clear"})

@@ -14,10 +14,24 @@ logger = logging.getLogger("forgeapi.telescope")
 
 _SKIP_PREFIXES = ("/_forge/telescope", "/docs", "/redoc", "/openapi.json")
 _SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "x-api-key", "x-telegram-init-data"})
+_SENSITIVE_BODY_KEYS = frozenset({"password", "secret", "token", "key", "auth", "credential", "access_token", "refresh_token"})
+_MAX_RESPONSE_BYTES = 64 * 1024  # 64 KB cap to avoid buffering large response bodies
 
 
 def _filter_headers(headers: dict[str, str]) -> dict[str, str]:
     return {k: ("***" if k.lower() in _SENSITIVE_HEADERS else v) for k, v in headers.items()}
+
+
+def _scrub_payload(data: object) -> object:
+    """Recursively mask dict values whose key contains a sensitive keyword."""
+    if isinstance(data, dict):
+        return {
+            k: "***" if any(kw in k.lower() for kw in _SENSITIVE_BODY_KEYS) else _scrub_payload(v)
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_scrub_payload(item) for item in data]
+    return data
 
 
 def _parse_payload(body: bytes, content_type: str) -> object:
@@ -25,7 +39,7 @@ def _parse_payload(body: bytes, content_type: str) -> object:
         return None
     if "application/json" in content_type:
         try:
-            return json.loads(body)
+            return _scrub_payload(json.loads(body))
         except Exception:
             pass
     return body.decode("utf-8", errors="replace")[:2000]
@@ -75,7 +89,8 @@ class DebugMiddleware:
             path=path,
             query_string=scope.get("query_string", b"").decode("utf-8", errors="replace"),
             headers=_filter_headers(req_headers),
-            payload=_parse_payload(body_bytes, content_type),
+            # Cap request body stored in Telescope — replay always uses the full body_bytes
+            payload=_parse_payload(body_bytes[:_MAX_RESPONSE_BYTES], content_type),
         )
         set_current(entry)
 
@@ -84,14 +99,21 @@ class DebugMiddleware:
         resp_content_type = ""
         resp_chunks: list[bytes] = []
 
+        resp_buffered = 0
+
         async def capture_send(message: Message) -> None:
-            nonlocal resp_status, resp_content_type
+            nonlocal resp_status, resp_content_type, resp_buffered
             if message["type"] == "http.response.start":
                 resp_status = message.get("status")
                 resp_headers = Headers(raw=message.get("headers", []))
                 resp_content_type = resp_headers.get("content-type", "")
             elif message["type"] == "http.response.body":
-                resp_chunks.append(message.get("body", b""))
+                chunk = message.get("body", b"")
+                remaining = _MAX_RESPONSE_BYTES - resp_buffered
+                if remaining > 0:
+                    stored = chunk[:remaining]
+                    resp_chunks.append(stored)
+                    resp_buffered += len(stored)
             await send(message)
 
         start = time.perf_counter()

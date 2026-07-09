@@ -21,12 +21,15 @@ def install_events_hook() -> None:
     async def _patched_dispatch(self: EventBus, event: object) -> None:
         entry = get_current()
         if entry is not None:
-            listeners = self.listeners_for(type(event))
-            entry.events.append(EventRecord(
-                event=type(event).__name__,
-                listeners=[fn.__name__ for fn in listeners],
-                background=bool(getattr(event, "background", False)),
-            ))
+            try:
+                listeners = self.listeners_for(type(event))
+                entry.events.append(EventRecord(
+                    event=type(event).__name__,
+                    listeners=[fn.__name__ for fn in listeners],
+                    background=bool(getattr(event, "background", False)),
+                ))
+            except Exception:
+                logger.debug("Telescope: failed to record event", exc_info=True)
         await _orig_dispatch(self, event)
 
     EventBus.dispatch = _patched_dispatch  # type: ignore[method-assign]

@@ -16,7 +16,7 @@ class Permission(Model):
         print(perm)  # "edit:posts"
     """
 
-    id    = fields.IntField(pk=True)
+    id    = fields.IntField(primary_key=True)
     name  = fields.CharField(max_length=255, unique=True)
     guard = fields.CharField(max_length=100, default="api")
 
@@ -67,7 +67,7 @@ class Role(Model):
         print(role)  # "editor"
     """
 
-    id    = fields.IntField(pk=True)
+    id    = fields.IntField(primary_key=True)
     name  = fields.CharField(max_length=255, unique=True)
     guard = fields.CharField(max_length=100, default="api")
 

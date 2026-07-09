@@ -68,8 +68,12 @@ class TestEvent:
         assert Event._registry["OrderCreated"] is OrderCreated
 
     def test_from_dict_unknown_type_raises(self):
-        with pytest.raises(KeyError):
+        with pytest.raises(ValueError, match="Unknown event type"):
             Event.from_dict({"_event_type": "NoSuchEvent_XYZ_1234"})
+
+    def test_from_dict_missing_type_raises(self):
+        with pytest.raises(ValueError, match="_event_type"):
+            Event.from_dict({"order_id": 1})
 
     def test_class_flags_defaults(self):
         class SimpleEvent(Event):
@@ -227,7 +231,8 @@ class TestDispatch:
         assert received == [99]
 
     @pytest.mark.anyio
-    async def test_listener_exception_does_not_propagate(self):
+    async def test_listener_exception_does_not_propagate(self, caplog):
+        import logging
         bus = EventBus.get_instance()
         calls = []
 
@@ -239,9 +244,13 @@ class TestDispatch:
 
         bus.register(OrderCreated, bad)
         bus.register(OrderCreated, good)
-        # Should not raise despite bad listener
-        await bus.dispatch(OrderCreated(1))
+        with caplog.at_level(logging.ERROR, logger="forgeapi.events"):
+            await bus.dispatch(OrderCreated(1))
+
         assert calls == ["good"]
+        # The error must have been logged
+        assert any("listener failed" in r.message or "listener failed" in str(r.exc_info)
+                   for r in caplog.records)
 
     @pytest.mark.anyio
     async def test_background_dispatch_fires(self):
@@ -253,13 +262,15 @@ class TestDispatch:
 
         bus.register(UserRegistered, handler)
         await UserRegistered(7).dispatch()
-        # Multiple yields needed: create_task → gather → handler
-        for _ in range(5):
-            await asyncio.sleep(0)
+        # Explicitly await all outstanding background tasks so the test is deterministic.
+        tasks = list(bus._bg_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         assert received == [7]
 
     @pytest.mark.anyio
     async def test_redis_dispatch_publishes_not_local(self):
+        import json as _json
         bus = EventBus.get_instance()
         received = []
 
@@ -278,6 +289,135 @@ class TestDispatch:
         await RedisEvent("hello").dispatch()
 
         assert len(published) == 1
-        assert "forgeapi:events:RedisEvent" in published[0][0]
+        channel, payload = published[0]
+        assert "forgeapi:events:RedisEvent" in channel
+        # Validate that the JSON payload contains the correct event data
+        data = _json.loads(payload)
+        assert data["_event_type"] == "RedisEvent"
+        assert data["value"] == "hello"
+        assert "event_id" in data
         # Local listener was NOT called directly
         assert received == []
+
+    @pytest.mark.anyio
+    async def test_background_dispatch_multiple_listeners(self):
+        """Both listeners must run when background=True."""
+        bus = EventBus.get_instance()
+        calls = []
+
+        async def h1(e: UserRegistered):
+            calls.append("h1")
+
+        async def h2(e: UserRegistered):
+            calls.append("h2")
+
+        bus.register(UserRegistered, h1)
+        bus.register(UserRegistered, h2)
+        await UserRegistered(1).dispatch()
+
+        tasks = list(bus._bg_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert sorted(calls) == ["h1", "h2"]
+
+    def test_sync_handler_raises_type_error_at_registration(self):
+        """register() must reject synchronous (non-async) callables immediately."""
+        bus = EventBus.get_instance()
+
+        def sync_handler(e):
+            return "not awaitable"
+
+        with pytest.raises(TypeError, match="async"):
+            bus.register(OrderCreated, sync_handler)
+
+
+# ---------------------------------------------------------------------------
+# EventBus.load_from_dir and _import_file
+# ---------------------------------------------------------------------------
+
+class TestLoadFromDir:
+    def test_nonexistent_directory_logs_warning(self, tmp_path, caplog):
+        import logging
+        bus = EventBus.get_instance()
+        missing = str(tmp_path / "no_such_dir")
+        with caplog.at_level(logging.WARNING, logger="forgeapi.events"):
+            bus.load_from_dir(missing)
+        assert any("not found" in r.message for r in caplog.records)
+
+    def test_underscore_files_skipped(self, tmp_path):
+        bus = EventBus.get_instance()
+        (tmp_path / "_private.py").write_text(
+            "raise RuntimeError('should not import')", encoding="utf-8"
+        )
+        # Should not raise
+        bus.load_from_dir(str(tmp_path))
+
+    def test_valid_listener_file_registers_handler(self, tmp_path):
+        bus = EventBus.get_instance()
+        # Write a listener file that registers a handler for OrderCreated
+        listener_code = (
+            "from forgeapi.events.bus import EventBus\n"
+            "from forgeapi.events.event import Event\n"
+            "\n"
+            "class _TestEvt(Event):\n"
+            "    def __init__(self, x): self.x = x\n"
+            "\n"
+            "bus = EventBus.get_instance()\n"
+            "\n"
+            "@bus.on(_TestEvt)\n"
+            "async def loaded_handler(e): pass\n"
+        )
+        (tmp_path / "my_listener.py").write_text(listener_code, encoding="utf-8")
+        bus.load_from_dir(str(tmp_path))
+        # The handler must have been registered — find the Event subclass
+        found = any(
+            any(fn.__name__ == "loaded_handler" for fn in fns)
+            for fns in bus._listeners.values()
+        )
+        assert found
+
+    def test_syntax_error_file_logs_error_not_raises(self, tmp_path, caplog):
+        import logging
+        bus = EventBus.get_instance()
+        (tmp_path / "bad_syntax.py").write_text("def broken(:\n", encoding="utf-8")
+        with caplog.at_level(logging.ERROR, logger="forgeapi.events"):
+            bus.load_from_dir(str(tmp_path))
+        assert any("bad_syntax" in r.message for r in caplog.records)
+
+    def test_double_load_is_idempotent(self, tmp_path):
+        bus = EventBus.get_instance()
+        calls = []
+        listener_code = (
+            "calls_list = []\n"
+            "calls_list.append(1)\n"
+        )
+        (tmp_path / "idem_listener.py").write_text(listener_code, encoding="utf-8")
+        bus.load_from_dir(str(tmp_path))
+        bus.load_from_dir(str(tmp_path))
+        # No error raised; file is not imported twice
+
+
+# ---------------------------------------------------------------------------
+# EventBus.start_redis_subscriber — edge cases
+# ---------------------------------------------------------------------------
+
+class TestStartRedisSubscriber:
+    @pytest.mark.anyio
+    async def test_raises_without_redis(self):
+        bus = EventBus.get_instance()
+        with pytest.raises(RuntimeError, match="Redis client not configured"):
+            await bus.start_redis_subscriber()
+
+    @pytest.mark.anyio
+    async def test_dedup_check_returns_true_on_redis_failure(self):
+        """When Redis errors during dedup, allow processing (fail-open)."""
+        bus = EventBus.get_instance()
+
+        class BrokenRedis:
+            async def set(self, *args, **kwargs):
+                raise ConnectionError("Redis down")
+
+        bus._redis = BrokenRedis()
+        result = await bus._dedup_check("some-event-id", ttl=60)
+        assert result is True  # fail-open: process the event

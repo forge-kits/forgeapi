@@ -1,5 +1,8 @@
+import logging
 import uuid
 from typing import Any, ClassVar
+
+logger = logging.getLogger("forgeapi.events")
 
 
 class Event:
@@ -54,7 +57,16 @@ class Event:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        Event._registry[cls.__name__] = cls
+        name = cls.__name__
+        if name in Event._registry and Event._registry[name] is not cls:
+            logger.warning(
+                "Event class name %r is already registered by %r; overwriting with %r. "
+                "Use unique class names to avoid serialisation collisions.",
+                name,
+                Event._registry[name],
+                cls,
+            )
+        Event._registry[name] = cls
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "Event":
         instance = super().__new__(cls)
@@ -90,11 +102,19 @@ class Event:
             The concrete :class:`Event` subclass instance.
 
         Raises:
-            KeyError: If ``_event_type`` is missing or unknown.
+            ValueError: If ``_event_type`` is missing or the type is not registered.
         """
         data = dict(data)
-        event_type = data.pop("_event_type")
-        klass = cls._registry[event_type]
+        event_type = data.get("_event_type")
+        if not event_type:
+            raise ValueError(f"Event dict missing '_event_type' key: {data!r}")
+        klass = cls._registry.get(event_type)
+        if klass is None:
+            raise ValueError(
+                f"Unknown event type {event_type!r}. "
+                "Ensure the module defining it is imported before deserialising."
+            )
+        data.pop("_event_type")
         instance = klass.__new__(klass)
         instance.__dict__.update(data)
         return instance

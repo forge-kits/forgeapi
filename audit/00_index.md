@@ -21,11 +21,11 @@
 |------|--------|-------------|------|--------|
 | [01_auth.md](01_auth_done.md) | Auth (JWT, Cookie, Telegram) | 2 | 5 | 9 |
 | [02_permissions.md](02_permissions_done.md) | Permissions (RBAC) | 2 | 5 | 5 |
-| [03_events.md](03_events.md) | Events (Bus, RedisBus) | 2 | 5 | 6 |
-| [04_middleware.md](04_middleware.md) | Middleware | 2 | 6 | 6 |
-| [05_core.md](05_core.md) | Core (exceptions, pagination, controllers) | 2 | 6 | 7 |
+| [03_events.md](03_events_done.md) | Events (Bus, RedisBus) | 2 | 5 | 6 |
+| [04_middleware.md](04_middleware_done.md) | Middleware | 2 | 6 | 6 |
+| [05_core.md](05_core_done.md) | Core (exceptions, pagination, controllers) | 2 | 6 | 7 |
 | [06_telescope_cli.md](06_telescope_cli.md) | Telescope & CLI | 0 | 2 | 7 |
-| [07_tests.md](07_tests.md) | Test Suite | 0 | 7 | 15 |
+| [07_tests.md](07_tests_done.md) | Test Suite | 0 | 7 | 15 |
 
 ## Топ-10 приоритетных задач
 

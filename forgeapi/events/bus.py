@@ -1,11 +1,13 @@
 import asyncio
+import contextlib
 import hashlib
 import importlib.util
 import json
 import logging
 import sys
+import threading
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Type, TypeVar
+from typing import Any, Awaitable, Callable, ClassVar, Type, TypeVar
 
 from .event import Event
 
@@ -63,6 +65,7 @@ class EventBus:
     """
 
     _instance: "EventBus | None" = None
+    _lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self) -> None:
         self._listeners: dict[type, list[Callable]] = {}
@@ -78,7 +81,9 @@ class EventBus:
     def get_instance(cls) -> "EventBus":
         """Return the process-wide singleton instance."""
         if cls._instance is None:
-            cls._instance = cls()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
         return cls._instance
 
     @classmethod
@@ -88,10 +93,15 @@ class EventBus:
         Intended for use in tests so each test case starts with a clean slate::
 
             @pytest.fixture(autouse=True)
-            def reset_bus():
+            def reset_event_bus():
                 EventBus.reset()
                 yield
                 EventBus.reset()
+
+        Note: ``reset()`` schedules task cancellation but cannot await it.  In
+        production code (e.g. application shutdown) prefer
+        :meth:`drain` before calling ``reset()``, or cancel the subscriber task
+        explicitly and await it before calling ``reset()``.
         """
         if cls._instance is not None:
             task = getattr(cls._instance, "_subscriber_task", None)
@@ -149,18 +159,38 @@ class EventBus:
                 "Redis client not configured. Call EventBus.set_redis() first."
             )
 
-        pubsub = self._redis.pubsub()
-        await pubsub.psubscribe(f"{_CHANNEL_PREFIX}*")
-        logger.debug("Redis subscriber started, listening on '%s*'", _CHANNEL_PREFIX)
-
+        retry_delay = 1.0
         try:
-            async for message in pubsub.listen():
-                if message["type"] != "pmessage":
-                    continue
-                await self._handle_redis_message(message["data"])
+            while True:
+                pubsub = None
+                try:
+                    pubsub = self._redis.pubsub()
+                    await pubsub.psubscribe(f"{_CHANNEL_PREFIX}*")
+                    logger.debug(
+                        "Redis subscriber started, listening on '%s*'", _CHANNEL_PREFIX
+                    )
+                    retry_delay = 1.0
+                    async for message in pubsub.listen():
+                        if message["type"] != "pmessage":
+                            continue
+                        await self._handle_redis_message(message["data"])
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.error(
+                        "Redis subscriber error, reconnecting in %.1fs: %s",
+                        retry_delay,
+                        exc,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60.0)
+                finally:
+                    if pubsub is not None:
+                        with contextlib.suppress(Exception):
+                            await pubsub.punsubscribe(f"{_CHANNEL_PREFIX}*")
+                        with contextlib.suppress(Exception):
+                            await pubsub.aclose()
         finally:
-            await pubsub.punsubscribe(f"{_CHANNEL_PREFIX}*")
-            await pubsub.aclose()
             logger.debug("Redis subscriber stopped")
 
     async def _handle_redis_message(self, raw: bytes | str) -> None:
@@ -210,8 +240,14 @@ class EventBus:
             ``True`` if this worker should process the event.
         """
         key = f"{_DEDUP_PREFIX}{event_id}"
-        result = await self._redis.set(key, "1", nx=True, ex=ttl)
-        return result is not None
+        try:
+            result = await self._redis.set(key, "1", nx=True, ex=ttl)
+            return result is not None
+        except Exception as exc:
+            logger.error(
+                "Redis dedup check failed for event_id=%s: %s", event_id, exc, exc_info=exc
+            )
+            return True  # allow processing when dedup is unavailable
 
     # ------------------------------------------------------------------
     # Registration
@@ -225,8 +261,24 @@ class EventBus:
                 to listen for.
             listener: An ``async def`` function that accepts a single argument
                 of type *event_class*.
+
+        Raises:
+            TypeError: If *listener* is not a coroutine function (``async def``).
         """
-        self._listeners.setdefault(event_class, []).append(listener)
+        if not asyncio.iscoroutinefunction(listener):
+            raise TypeError(
+                f"Listener {listener!r} must be an async function (async def). "
+                "Synchronous callables are not supported."
+            )
+        bucket = self._listeners.setdefault(event_class, [])
+        if listener not in bucket:
+            bucket.append(listener)
+        else:
+            logger.warning(
+                "Listener %r already registered for %s, skipping duplicate",
+                listener,
+                event_class.__name__,
+            )
 
     def on(
         self,
@@ -290,8 +342,17 @@ class EventBus:
         if self._redis is not None and event.redis:
             channel = f"{_CHANNEL_PREFIX}{type(event).__name__}"
             payload = json.dumps(event.to_dict())
-            await self._redis.publish(channel, payload)
-            return
+            try:
+                await self._redis.publish(channel, payload)
+                return
+            except Exception as exc:
+                logger.error(
+                    "Failed to publish event %s to Redis: %s",
+                    type(event).__name__,
+                    exc,
+                    exc_info=exc,
+                )
+                # fallback: deliver locally
 
         listeners = self.listeners_for(type(event))
         if not listeners:
@@ -313,7 +374,9 @@ class EventBus:
             return_exceptions=True,
         )
         for listener, result in zip(listeners, results):
-            if isinstance(result, Exception):
+            if isinstance(result, asyncio.CancelledError):
+                raise result  # propagate cancellation instead of swallowing it
+            if isinstance(result, BaseException):
                 logger.error(
                     "Listener '%s' failed for event '%s': %s",
                     listener.__name__,
@@ -321,6 +384,18 @@ class EventBus:
                     result,
                     exc_info=result,
                 )
+
+    async def drain(self, timeout: float = 30.0) -> None:
+        """Await all pending background tasks up to *timeout* seconds.
+
+        Call this during application shutdown before :meth:`reset` to ensure
+        in-flight fire-and-forget tasks complete cleanly.
+
+        Args:
+            timeout: Maximum seconds to wait for tasks to complete.
+        """
+        if self._bg_tasks:
+            await asyncio.wait(self._bg_tasks, timeout=timeout)
 
     # ------------------------------------------------------------------
     # Auto-loading
@@ -350,7 +425,7 @@ class EventBus:
             self._import_file(py_file)
 
     def _import_file(self, path: Path) -> None:
-        module_name = f"_fk_listener_{hashlib.md5(str(path.resolve()).encode()).hexdigest()}"
+        module_name = f"_fk_listener_{hashlib.md5(str(path.resolve()).encode(), usedforsecurity=False).hexdigest()}"
         if module_name in sys.modules:
             return
 

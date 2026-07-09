@@ -23,7 +23,7 @@ class PermissionsMixin(Model):
         from forgeapi.permissions import PermissionsMixin
 
         class User(PermissionsMixin):
-            id    = fields.IntField(pk=True)
+            id    = fields.IntField(primary_key=True)
             email = fields.CharField(max_length=255, unique=True)
 
             class Meta:

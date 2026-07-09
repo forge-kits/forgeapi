@@ -33,7 +33,7 @@ class Core:
                      default_limit override; ``False`` → skip (default).
         request_id:  Inject ``X-Request-ID`` header. Default ``False``.
         events:      Auto-load listeners from ``listeners_dir``. Default ``False``.
-        logging:     Log each request (method, path, status, duration). Default ``True``.
+        access_log:  Log each request (method, path, status, duration). Default ``True``.
         controllers: Auto-import ``*_controller.py`` and register routers. Default ``True``.
         config_path: Path to ``forgeapi.toml``. Default ``"forgeapi.toml"``.
 
@@ -65,7 +65,7 @@ class Core:
         pagination: bool | int = False,
         request_id: bool = False,
         events: bool = False,
-        logging: bool = True,
+        access_log: bool = True,
         controllers: bool = True,
         permissions: "bool | type | None" = None,
         middleware: list | None = None,
@@ -99,7 +99,7 @@ class Core:
                 else:
                     self._app.add_middleware(item)
 
-        if logging:
+        if access_log:
             self._app.add_middleware(LoggingMiddleware)
             logger.debug("Middleware: access logging enabled")
         if request_id:
@@ -169,8 +169,17 @@ class Core:
 
     def _build_jwt(self, cls, **kwargs):
         cfg = self._cfg.auth
+        secret = kwargs.pop("secret_key", os.getenv(cfg.jwt_secret_env, ""))
+        if not secret:
+            raise ForgeAPIConfigError(
+                f"Environment variable '{cfg.jwt_secret_env}' is not set or empty.",
+                hint=(
+                    f"Set {cfg.jwt_secret_env}=<your-secret> before starting the server. "
+                    "Check [auth] jwt_secret_env in forgeapi.toml if the variable name is wrong."
+                ),
+            )
         return cls(
-            secret_key=kwargs.pop("secret_key", os.getenv(cfg.jwt_secret_env, "")),
+            secret_key=secret,
             access_token_expire_minutes=kwargs.pop("access_token_expire_minutes", cfg.access_ttl_minutes),
             refresh_token_expire_days=kwargs.pop("refresh_token_expire_days", cfg.refresh_ttl_days),
             **kwargs,
@@ -189,7 +198,12 @@ class Core:
         if "bot_token" not in kwargs:
             raw = os.getenv("BOT_TOKEN", "")
             tokens = [t.strip() for t in raw.split(",") if t.strip()]
-            kwargs["bot_token"] = tokens or [""]
+            if not tokens:
+                raise ForgeAPIConfigError(
+                    "BOT_TOKEN environment variable is not set.",
+                    hint="Set BOT_TOKEN=<your-bot-token> before starting the server.",
+                )
+            kwargs["bot_token"] = tokens
         kwargs.setdefault("debug", self._debug)
         return cls(**kwargs)
 

@@ -6,19 +6,23 @@ from forgeapi.pagination.paginator import Paginator, Pagination
 
 
 # ---------------------------------------------------------------------------
-# TestClient app
+# Per-test FastAPI app factory
+# Each integration test gets a fresh app so Paginator class-var changes made
+# by TestPaginatorConfigure cannot bleed into the integration assertions.
 # ---------------------------------------------------------------------------
 
-app = FastAPI()
+def make_pagination_app() -> FastAPI:
+    app = FastAPI()
 
+    @app.get("/items")
+    async def list_items(pagination: Pagination):
+        return {
+            "page": pagination.page,
+            "limit": pagination.limit,
+            "offset": pagination.offset,
+        }
 
-@app.get("/items")
-async def list_items(pagination: Pagination):
-    return {
-        "page": pagination.page,
-        "limit": pagination.limit,
-        "offset": pagination.offset,
-    }
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +93,10 @@ class TestPaginatorConfigure:
         with pytest.raises(ValueError):
             Paginator.configure(default_limit=-1, max_limit=100)
 
+    def test_configure_default_exceeds_max_raises(self):
+        with pytest.raises(ValueError, match="must not exceed"):
+            Paginator.configure(default_limit=200, max_limit=100)
+
 
 # ---------------------------------------------------------------------------
 # Integration via async httpx
@@ -97,7 +105,7 @@ class TestPaginatorConfigure:
 @pytest.mark.anyio
 async def test_pagination_defaults():
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=make_pagination_app()), base_url="http://test"
     ) as client:
         resp = await client.get("/items")
     assert resp.status_code == 200
@@ -110,7 +118,7 @@ async def test_pagination_defaults():
 @pytest.mark.anyio
 async def test_pagination_custom_page_and_limit():
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=make_pagination_app()), base_url="http://test"
     ) as client:
         resp = await client.get("/items?page=3&limit=10")
     assert resp.status_code == 200
@@ -123,7 +131,7 @@ async def test_pagination_custom_page_and_limit():
 @pytest.mark.anyio
 async def test_pagination_limit_clamped():
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=make_pagination_app()), base_url="http://test"
     ) as client:
         resp = await client.get("/items?limit=9999")
     assert resp.status_code == 200
@@ -133,7 +141,7 @@ async def test_pagination_limit_clamped():
 @pytest.mark.anyio
 async def test_pagination_page_zero_rejected():
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=make_pagination_app()), base_url="http://test"
     ) as client:
         resp = await client.get("/items?page=0")
     assert resp.status_code == 422
@@ -142,7 +150,16 @@ async def test_pagination_page_zero_rejected():
 @pytest.mark.anyio
 async def test_pagination_negative_limit_rejected():
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=make_pagination_app()), base_url="http://test"
     ) as client:
         resp = await client.get("/items?limit=-1")
+    assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_pagination_page_too_large_rejected():
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=make_pagination_app()), base_url="http://test"
+    ) as client:
+        resp = await client.get("/items?page=10001")
     assert resp.status_code == 422

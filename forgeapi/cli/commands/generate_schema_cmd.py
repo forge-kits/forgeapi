@@ -302,8 +302,11 @@ def run(model_name: str, extra_args: list[str] | None = None, config_path: str =
     extra_imports: set[str] = set()
     try:
         fields, extra_imports = _load_model_fields(class_name, module_dotted)
-    except Exception:
+    except ModuleNotFoundError:
         typer.echo(f"  note: model '{class_name}' not found — generating stubs")
+    except Exception as exc:
+        typer.echo(f"Warning: could not load model '{class_name}': {exc}", err=True)
+        typer.echo("  Generating stubs.")
 
     # Per-mode defaults when no CRUD flags were given
     payload_ops = explicit_crud if explicit_crud is not None else {"c", "r", "u"}

@@ -4,6 +4,9 @@ from pathlib import Path
 
 _LETTER_TO_FLAG: dict[str, str] = {"m": "model", "c": "controller", "s": "schema"}
 
+# Only allow valid Python class-name characters to prevent path traversal
+_VALID_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
 # Which cross-flags are valid per command type
 _ALLOWED_EXTRA: dict[str, set[str]] = {
     "controller": {"model", "schema"},
@@ -213,6 +216,14 @@ def _gen_listener(class_name: str, module_name: str, st) -> None:
 
 def run_make(kind: str, name: str, flags: dict[str, bool], alias: str | None = None) -> None:
     from forgeapi.config import load_config
+
+    if not _VALID_NAME_RE.match(name):
+        typer.echo(
+            "Error: name must start with a letter and contain only letters, digits, "
+            "and underscores (no slashes, dots, or other special characters).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     cfg = load_config()
     st  = cfg.structure

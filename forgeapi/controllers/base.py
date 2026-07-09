@@ -1,14 +1,16 @@
+import functools
+import inspect
 import re
 
 from fastapi import APIRouter
 
 
 def _pluralize(name: str) -> str:
-    if name.endswith("y"):
+    if name.endswith("y") and len(name) >= 2 and name[-2] not in "aeiou":
         return name[:-1] + "ies"
-    if not name.endswith("s"):
-        return name + "s"
-    return name
+    if name.endswith("s"):
+        return name
+    return name + "s"
 
 
 class _Route:
@@ -40,6 +42,21 @@ class _Route:
 route = _Route()
 
 
+def _make_endpoint(ctrl_cls, method_name: str):
+    """Return a per-request factory so each request gets a fresh controller instance."""
+    original_fn = getattr(ctrl_cls, method_name)
+    sig = inspect.signature(original_fn)
+    # Drop 'self' from the signature so FastAPI doesn't try to inject it
+    params = list(sig.parameters.values())[1:]
+
+    @functools.wraps(original_fn)
+    async def _endpoint(**kwargs):
+        return await getattr(ctrl_cls(), method_name)(**kwargs)
+
+    _endpoint.__signature__ = sig.replace(parameters=params)
+    return _endpoint
+
+
 class Controller:
     """Base controller class — auto-registers @route-decorated methods.
 
@@ -52,8 +69,8 @@ class Controller:
     """
 
     prefix: str = ""
-    tags: list[str] = []
-    guards: list = []
+    tags: list[str] | None = None
+    guards: list | None = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -69,13 +86,17 @@ class Controller:
                 name = parts[0].lower() if parts else raw.lower()
                 cls.prefix = f"/{_pluralize(name)}"
 
-        if "tags" not in cls.__dict__ or not cls.tags:
+        # Always create fresh lists so subclasses never share the base-class defaults
+        if "tags" not in cls.__dict__ or not cls.__dict__.get("tags"):
             cls.tags = [cls.prefix.lstrip("/")]
+        else:
+            cls.tags = list(cls.__dict__["tags"])
+
+        cls.guards = list(cls.__dict__.get("guards") or [])
 
         # Wrap guards in Depends if not already wrapped
         from fastapi import Depends
-        raw_guards = list(cls.__dict__.get("guards") or [])
-        deps = [g if hasattr(g, "dependency") else Depends(g) for g in raw_guards]
+        deps = [g if hasattr(g, "dependency") else Depends(g) for g in cls.guards]
 
         cls.router = APIRouter(prefix=cls.prefix, tags=cls.tags, dependencies=deps or None)
         cls._registered = False
@@ -93,7 +114,7 @@ class Controller:
                 meta = fn._route
                 cls.router.add_api_route(
                     meta["path"],
-                    getattr(self, name),
+                    _make_endpoint(cls, name),
                     methods=meta["methods"],
                     **meta["kwargs"],
                 )

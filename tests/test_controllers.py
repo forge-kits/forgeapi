@@ -25,6 +25,20 @@ class TestPluralize:
     def test_short_word(self):
         assert _pluralize("tag") == "tags"
 
+    def test_y_preceded_by_vowel_adds_s(self):
+        # "day" → 'a' is a vowel, so just add 's' (not 'ies')
+        assert _pluralize("day") == "days"
+
+    def test_y_preceded_by_consonant_adds_ies(self):
+        assert _pluralize("city") == "cities"
+
+    def test_single_char(self):
+        assert _pluralize("a") == "as"
+
+    def test_empty_string(self):
+        # Empty string ends in nothing, falls through to + "s"
+        assert _pluralize("") == "s"
+
 
 # ---------------------------------------------------------------------------
 # Auto-prefix generation
@@ -175,6 +189,75 @@ class TestControllerRouteRegistration:
             async def index(self):
                 return []
 
-        PinController()
-        PinController()
+        c1 = PinController()
+        c2 = PinController()
         assert len(PinController.router.routes) == 1
+        # Both instances share the same class-level router
+        assert c1.router is c2.router
+        assert c1.router is PinController.router
+
+    def test_empty_controller_has_zero_routes(self):
+        class EmptyController(Controller):
+            pass
+
+        ctrl = EmptyController()
+        assert len(ctrl.router.routes) == 0
+
+    @pytest.mark.anyio
+    async def test_empty_controller_prefix_returns_404(self):
+        class VoidController(Controller):
+            pass
+
+        app = FastAPI()
+        VoidController()
+        app.include_router(VoidController.router)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/voids/")
+        assert resp.status_code == 404
+
+    def test_subclasses_do_not_share_tags(self):
+        class AlphaController(Controller):
+            pass
+
+        class BetaController(Controller):
+            pass
+
+        assert AlphaController.tags is not BetaController.tags
+        assert AlphaController.tags != BetaController.tags
+
+    def test_subclasses_do_not_share_guards(self):
+        class GammaController(Controller):
+            pass
+
+        class DeltaController(Controller):
+            pass
+
+        GammaController.guards.append("something")
+        assert "something" not in DeltaController.guards
+
+    @pytest.mark.anyio
+    async def test_each_request_gets_fresh_instance(self):
+        """Route handlers must not share state between requests."""
+        calls = []
+
+        class CountController(Controller):
+            @route.get("/")
+            async def index(self):
+                calls.append(id(self))
+                return {"id": id(self)}
+
+        app = FastAPI()
+        CountController()
+        app.include_router(CountController.router)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            r1 = await client.get("/counts/")
+            r2 = await client.get("/counts/")
+
+        # The instance id must differ across requests
+        assert r1.json()["id"] != r2.json()["id"]

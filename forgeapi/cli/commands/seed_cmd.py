@@ -23,7 +23,7 @@ async def _connect(cfg) -> None:
 async def _run_seeder(cls, name: str) -> None:
     import typer
     typer.echo(f"  running  {name}...")
-    await cls().run()
+    await cls().execute()
     typer.echo(f"  done     {name}")
 
 

@@ -1,6 +1,6 @@
 import tomllib
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 class ProjectConfig(BaseModel):
@@ -30,8 +30,17 @@ class AuthTomlConfig(BaseModel):
 
 
 class PaginationConfig(BaseModel):
-    default_limit: int = 20
-    max_limit: int = 100
+    default_limit: int = Field(20, ge=1, description="Default page size (must be >= 1)")
+    max_limit: int = Field(100, ge=1, description="Maximum allowed page size (must be >= 1)")
+
+    @model_validator(mode="after")
+    def check_limits_order(self) -> "PaginationConfig":
+        if self.default_limit > self.max_limit:
+            raise ValueError(
+                f"default_limit ({self.default_limit}) must not exceed "
+                f"max_limit ({self.max_limit}). Check [pagination] in forgeapi.toml."
+            )
+        return self
 
 
 class DatabaseConfig(BaseModel):
@@ -47,6 +56,8 @@ class KitConfig(BaseModel):
 
 
 def load_config(path: str = "forgeapi.toml") -> KitConfig:
+    from .exceptions import ForgeAPIConfigError
+
     config_path = Path(path)
     if not config_path.exists():
         return KitConfig()
@@ -54,10 +65,16 @@ def load_config(path: str = "forgeapi.toml") -> KitConfig:
     with open(config_path, "rb") as f:
         raw = tomllib.load(f)
 
-    return KitConfig(
-        project=raw.get("project", {}),
-        structure=raw.get("structure", {}),
-        auth=raw.get("auth", {}),
-        pagination=raw.get("pagination", {}),
-        database=raw.get("database", {}),
-    )
+    try:
+        return KitConfig(
+            project=raw.get("project", {}),
+            structure=raw.get("structure", {}),
+            auth=raw.get("auth", {}),
+            pagination=raw.get("pagination", {}),
+            database=raw.get("database", {}),
+        )
+    except ValidationError as exc:
+        raise ForgeAPIConfigError(
+            f"Invalid configuration in '{path}': {exc}",
+            hint="Check your forgeapi.toml for incorrect types or missing required fields.",
+        ) from exc

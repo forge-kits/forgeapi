@@ -14,12 +14,17 @@
    - [Telegram strategy](#telegram-strategy)
 6. [Pagination](#6-pagination)
 7. [Events](#7-events)
+   - [Lifecycle overview](#lifecycle-overview)
    - [Defining events](#defining-events)
+   - [event_id and serialisation](#event_id-and-serialisation)
    - [@listen decorator](#listen-decorator)
    - [Dispatching](#dispatching)
+   - [Background vs synchronous dispatch](#background-vs-synchronous-dispatch)
+   - [Exception isolation](#exception-isolation)
    - [EventBus](#eventbus)
    - [Redis pub/sub — EventBus](#redis-pubsub--eventbus)
    - [RedisBus — cross-project bridge](#redisbus--cross-project-bridge)
+   - [Testing events](#testing-events)
 8. [Controllers](#8-controllers)
    - [Base pattern](#base-pattern)
    - [Route decorator](#route-decorator)
@@ -42,6 +47,11 @@
 13. [Seeders](#13-seeders)
 14. [CLI reference](#14-cli-reference)
 15. [forgeapi.toml reference](#15-forgeapitoml-reference)
+16. [Telescope](#16-telescope)
+    - [What Telescope captures](#what-telescope-captures)
+    - [WebSocket live stream](#websocket-live-stream)
+    - [Sensitive data masking](#sensitive-data-masking)
+    - [Recording jobs](#recording-jobs)
 
 ---
 
@@ -142,7 +152,8 @@ core = Core(
 | `permissions` | `bool \| Type \| None` | `None` | `True` = auto-detect; pass model class = explicit; `None` = disabled |
 | `logging` | `bool` | `True` | Logs method + path + status + duration for every request |
 | `controllers` | `bool` | `True` | Auto-imports `*_controller.py` (recursive) and registers routers |
-| `debug` | `bool` | `False` | Debug mode — relaxes security checks (see below). **Never use in production.** |
+| `middleware` | `list \| None` | `None` | List of middleware classes or `(cls, kwargs)` tuples to register |
+| `debug` | `bool` | `False` | Debug mode — enables Telescope + relaxes security checks. **Never use in production.** |
 | `config_path` | `str` | `"forgeapi.toml"` | Path to the TOML config file |
 
 ### permissions=True — auto-detection
@@ -424,24 +435,67 @@ async def list_posts(self, pagination: Pagination) -> dict:
 | `pagination.limit` | Items per page (capped at `max_limit`) |
 | `pagination.offset` | SQL offset = `(page - 1) * limit` |
 
+### Query parameter validation
+
+FastAPI enforces these constraints automatically and returns `422` on violation:
+
+| Parameter | Constraint | Default |
+|---|---|---|
+| `?page` | Integer, 1 ≤ page ≤ 10 000 | `1` |
+| `?limit` | Integer ≥ 1 | `default_limit` from config |
+
+`?limit` values above `max_limit` are silently clamped — no error is raised.
+
+### Configuration
+
 ```toml
 [pagination]
 default_limit = 20
 max_limit     = 100
 ```
 
-Or configure via `Core`:
+Via `Core`:
 
 ```python
 Core(app, pagination=20)    # default_limit=20, max_limit from toml
 Core(app, pagination=True)  # both from toml
 ```
 
+Via `Paginator.configure()` directly (useful outside `Core`):
+
+```python
+from forgeapi.pagination import Paginator
+
+Paginator.configure(default_limit=10, max_limit=50)
+```
+
+`configure()` raises `ValueError` if `default_limit < 1`, `max_limit < 1`, or `default_limit > max_limit`.
+
 ---
 
 ## 7. Events
 
-Events decouple side effects (emails, notifications, cache) from business logic.
+Events decouple side effects (emails, notifications, cache invalidation, analytics) from business logic. Instead of calling three different services inside a route handler, dispatch one event and let registered listeners handle everything independently.
+
+### Lifecycle overview
+
+```
+route handler
+    │
+    └─ await event.dispatch()
+              │
+              ├─ background=False → asyncio.gather(all listeners) → await → continue
+              │
+              ├─ background=True  → asyncio.create_task(gather) → continue immediately
+              │
+              └─ redis=True       → publish to Redis channel
+                                         │
+                                   each worker's subscriber
+                                         │
+                                   (ttl set?) → SET NX EX {ttl} → only first worker continues
+                                         │
+                                   asyncio.gather(all local listeners)
+```
 
 ### Defining events
 
@@ -450,15 +504,61 @@ Events decouple side effects (emails, notifications, cache) from business logic.
 from forgeapi import Event
 
 class OrderCreated(Event):
-    background = True   # True = fire-and-forget; False = await before response
+    background = True    # True = fire-and-forget; False = await before response
+    redis = False        # True = publish to Redis pub/sub (multi-worker distribution)
+    ttl: int | None = None  # Redis dedup window in seconds; None = no dedup
 
     def __init__(self, order_id: int, total: float) -> None:
         self.order_id = order_id
         self.total    = total
 ```
 
-`background = True` — listeners run in `asyncio.create_task`, response is returned immediately.  
-`background = False` (default) — all listeners are awaited before the response.
+#### Class-level flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `background` | `False` | `False` — `dispatch()` awaits all listeners before returning. `True` — listeners are `create_task`-ed, the caller continues immediately |
+| `redis` | `False` | `True` — event is serialised and published to the Redis channel `forgeapi:events:<ClassName>` |
+| `ttl` | `None` | Dedup window in seconds. Only the first worker that wins `SET NX EX {ttl}` on `event_id` processes the event |
+
+Combinations:
+
+| `background` | `redis` | Behaviour |
+|---|---|---|
+| `False` | `False` | Default: await listeners, then return the response |
+| `True` | `False` | Fire-and-forget: schedule listeners in background, return response now |
+| `True` | `True` | Publish to Redis (fast), each worker picks up and runs listeners in background |
+| `False` | `True` | Rarely useful — publishes to Redis but still blocks on local listener completion |
+
+### event_id and serialisation
+
+Every `Event` instance automatically receives a `self.event_id = str(uuid.uuid4())`. This ID is preserved across Redis serialisation so all workers see the same ID — which is what `ttl`-based deduplication locks on.
+
+`to_dict()` is called when publishing to Redis. The default implementation serialises all public instance attributes. Override it for non-JSON-serialisable fields:
+
+```python
+class OrderCreated(Event):
+    redis = True
+
+    def __init__(self, order_id: int, items: list) -> None:
+        self.order_id = order_id
+        self.items = items          # list of ORM objects — not directly JSON-serialisable
+
+    def to_dict(self) -> dict:
+        base = super().to_dict()    # includes event_id + order_id automatically
+        base["items"] = [{"id": i.id, "name": i.name} for i in self.items]
+        return base
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "OrderCreated":
+        obj = cls.__new__(cls)
+        obj.event_id  = data["event_id"]
+        obj.order_id  = data["order_id"]
+        obj.items     = data["items"]   # already plain dicts on the receiving side
+        return obj
+```
+
+The default `from_dict` sets all keys from the dict as instance attributes, so override is only needed for custom reconstruction.
 
 ### @listen decorator
 
@@ -476,8 +576,21 @@ async def update_inventory(event: OrderCreated) -> None:
     await Inventory.decrease(order_id=event.order_id)
 ```
 
-Multiple listeners for the same event run **in parallel** via `asyncio.gather`.  
-Individual listener exceptions are logged but do **not** propagate to the route.
+Both listeners are registered at import time. `Core(app, events=True)` imports all files in `listeners_dir` automatically.
+
+Multiple listeners for the same event run **in parallel** via `asyncio.gather`.
+
+An alternative is `@bus.on` — identical registration, different import path:
+
+```python
+from forgeapi import EventBus
+
+bus = EventBus.get_instance()
+
+@bus.on(OrderCreated)
+async def log_order(event: OrderCreated) -> None:
+    logger.info("order %d created, total=%.2f", event.order_id, event.total)
+```
 
 ### Dispatching
 
@@ -489,44 +602,70 @@ async def create(self, payload: OrderCreatePayload, user: CurrentUser) -> OrderR
     return OrderResponse.model_validate(order)
 ```
 
+`dispatch()` is an instance method — always call it on a freshly constructed event object. The same event object should not be dispatched twice.
+
+### Background vs synchronous dispatch
+
+`background = False` (default): the route handler waits for all listeners to finish before sending the response. Use when the response depends on the side effects, or when ordering matters.
+
+`background = True`: listeners are scheduled as an `asyncio.Task` and the response is returned immediately. Use for fire-and-forget work like emails, analytics, cache warming.
+
+```python
+# background=False — response returned AFTER send_welcome_email and create_profile finish
+class UserRegistered(Event):
+    background = False
+
+    def __init__(self, user_id: int, email: str) -> None:
+        self.user_id = user_id
+        self.email   = email
+
+# background=True — response returned immediately, notifications sent after
+class OrderShipped(Event):
+    background = True
+
+    def __init__(self, order_id: int) -> None:
+        self.order_id = order_id
+```
+
+### Exception isolation
+
+Each listener is wrapped in a try/except. If one listener raises, the exception is **logged** but does not propagate — other listeners still run and the route handler is not affected.
+
+```python
+@listen(OrderShipped)
+async def send_sms(event: OrderShipped) -> None:
+    raise RuntimeError("SMS gateway down")   # logged, does NOT kill the request
+
+@listen(OrderShipped)
+async def update_inventory(event: OrderShipped) -> None:
+    await Inventory.ship(event.order_id)    # still runs
+```
+
 ### EventBus
 
-`Core(app, events=True)` calls `EventBus.load_from_dir("app/listeners")` which imports every `*.py` file in the directory. `@listen` registers on import — no manual wiring needed.
+`Core(app, events=True)` calls `EventBus.load_from_dir("app/listeners")` which imports every `*.py` file in the listeners directory. `@listen` registers on import — no manual wiring needed.
 
 ```python
 from forgeapi import EventBus
 
-# manual registration (without decorator)
+# singleton
 bus = EventBus.get_instance()
+
+# manual registration (without decorator)
 bus.register(OrderCreated, my_async_handler)
 
 # inspect registered listeners
-listeners = bus.listeners_for(OrderCreated)
+listeners = bus.listeners_for(OrderCreated)  # → [send_confirmation, update_inventory]
 
-# reset (useful in tests)
+# reset singleton and all registrations — useful in tests
 EventBus.reset()
-```
-
-Test fixture:
-
-```python
-import pytest
-from forgeapi import EventBus
-
-@pytest.fixture(autouse=True)
-def reset_bus():
-    EventBus.reset()
-    yield
-    EventBus.reset()
 ```
 
 ---
 
 ### Redis pub/sub — EventBus
 
-The built-in `EventBus` supports Redis pub/sub for distributing events across multiple workers (replicas) of the **same project**.
-
-Add `redis = True` and optionally `ttl` to any event class:
+The built-in `EventBus` supports Redis pub/sub for distributing events across multiple workers (replicas) of the **same project**. Add `redis = True` to any event class:
 
 ```python
 # app/events/order_shipped_event.py
@@ -566,15 +705,55 @@ Core(app, events=True)
 
 Dispatching is unchanged — `await OrderShipped(order_id=42).dispatch()`.
 
-**How dedup works:** every event instance has a unique `event_id` (UUID4). When `ttl` is set, the subscriber attempts `SET NX EX {ttl}` in Redis before running listeners. Only the first worker that acquires the lock processes the event; others skip it silently.
+**How dedup works:** when `ttl` is set, the subscriber performs `SET NX EX {ttl} forgeapi:dedup:{event_id}` before running listeners. Only the first worker that acquires the key processes the event; all others skip it silently.
 
 | `redis` | `ttl` | Behaviour |
 |---|---|---|
 | `False` (default) | — | Local dispatch only, no Redis |
-| `True` | `None` | Published to Redis, all subscribers run listeners |
-| `True` | `60` | Published to Redis, exactly one subscriber processes per 60 s |
+| `True` | `None` | Published to Redis, **all** subscribers run listeners |
+| `True` | `60` | Published to Redis, exactly one subscriber processes per 60-second window |
 
-Listeners are still registered with `@listen` or `@bus.on` — no change needed there.
+### Testing events
+
+Always reset the bus before and after each test — listeners registered in one test bleed into the next otherwise.
+
+```python
+import pytest
+from forgeapi import EventBus
+
+@pytest.fixture(autouse=True)
+def reset_bus():
+    EventBus.reset()
+    yield
+    EventBus.reset()
+```
+
+For background events (`background=True`) use `asyncio.gather` to wait for all scheduled tasks before asserting:
+
+```python
+import asyncio
+import pytest
+from forgeapi import EventBus, listen
+from app.events.order_shipped_event import OrderShipped
+
+@pytest.mark.anyio
+async def test_order_shipped_notifies_warehouse():
+    results = []
+
+    @listen(OrderShipped)
+    async def capture(event: OrderShipped) -> None:
+        results.append(event.order_id)
+
+    bus = EventBus.get_instance()
+    await OrderShipped(order_id=42).dispatch()
+
+    # flush all background tasks
+    await asyncio.gather(*bus._bg_tasks, return_exceptions=True)
+
+    assert results == [42]
+```
+
+For synchronous events (`background=False`) the `await event.dispatch()` line already waits — no extra flush needed.
 
 ---
 
@@ -831,7 +1010,7 @@ controllers/
 from forgeapi import BaseSchema, BaseCreateSchema, BaseUpdateSchema
 ```
 
-**`BaseSchema`** — response schemas. Adds `id: int`, `created_at: datetime`, `updated_at: datetime`. Has `from_attributes=True` so it reads directly from Tortoise model instances.
+**`BaseSchema`** — response schemas. Adds `id: int | str` (supports both integer and UUID primary keys), `created_at: datetime`, `updated_at: datetime`. Has `from_attributes=True` so it reads directly from Tortoise model instances.
 
 ```python
 class PostResponse(BaseSchema):
@@ -850,12 +1029,13 @@ class PostCreatePayload(BaseCreateSchema):
     is_published: bool = True
 ```
 
-**`BaseUpdateSchema`** — PATCH payloads. Plain `BaseModel` subclass. Convention: all fields `Optional`.
+**`BaseUpdateSchema`** — PATCH payloads. Plain `BaseModel` subclass. **Enforces that every field is `Optional`** — declaring a field without a default value (i.e. required) raises `TypeError` at class definition time, not at runtime:
 
 ```python
 class PostUpdatePayload(BaseUpdateSchema):
-    title: str | None = None
-    body:  str | None = None
+    title: str | None = None   # OK
+    body:  str | None = None   # OK
+    # title: str               # TypeError at class definition time
 
 # applying a partial update:
 for field, value in payload.model_dump(exclude_none=True).items():
@@ -1357,6 +1537,17 @@ DEBUG=true
 `BaseAppSettings` already has `debug: bool = False` and `app_name: str = "FastAPI App"`.  
 All env vars are case-insensitive. Unknown vars are ignored (`extra="ignore"`).
 
+### Sensitive field masking
+
+`BaseAppSettings.__repr__` automatically masks fields whose names contain any of: `password`, `secret`, `token`, `key`, `auth`, `credential`. Masked values are shown as `***` when the settings object is printed or logged:
+
+```python
+>>> print(settings)
+Settings(database_url='postgresql://...', jwt_secret='***', debug=True)
+```
+
+This prevents accidental credential exposure in logs and error messages. The actual field value is unaffected — masking only applies to `__repr__`.
+
 ---
 
 ## 13. Seeders
@@ -1408,6 +1599,24 @@ forgeapi db:seed User Post    # run specific seeders in order
 ```
 
 Seeders are discovered by filename: `forgeapi db:seed User` looks for `database/seeds/user_seeder.py`.
+
+### Transaction behaviour
+
+The CLI (`db:seed`) calls `Seeder.execute()`, which wraps `run()` in an explicit database transaction:
+
+```python
+async with in_transaction():
+    await seeder.run()
+```
+
+If `run()` raises any exception the transaction is rolled back and no partial data is committed. When you call `run()` directly (e.g. from a test or another seeder), **no transaction wrapper is added** — you are responsible for wrapping it yourself if atomicity matters:
+
+```python
+from tortoise.transactions import in_transaction
+
+async with in_transaction():
+    await UserSeeder().run()
+```
 
 ### Seeder base class
 
@@ -1637,3 +1846,157 @@ max_limit     = 100
 ```
 
 All fields are optional — `Core` works without a config file using the defaults above.
+
+---
+
+## 16. Telescope
+
+Telescope is a built-in, in-process request debugger. It captures every HTTP request — including its SQL queries, log output, dispatched events, and custom job records — and streams the data to any connected WebSocket client in real time.
+
+Telescope activates automatically when `debug=True` is passed to `Core`. It adds zero overhead to production builds.
+
+```python
+core = Core(app, debug=True)
+```
+
+> **Never use `debug=True` in production.** It exposes internal request data over an unauthenticated WebSocket endpoint.
+
+### What Telescope captures
+
+Each request is stored as a `RequestEntry` with the following fields:
+
+| Field | Description |
+|---|---|
+| `method`, `path`, `query_string` | HTTP basics |
+| `headers` | All request headers — sensitive headers replaced with `"***"` |
+| `payload` | Parsed request body — sensitive fields recursively masked |
+| `status` | Response HTTP status code |
+| `response_body` | Parsed response body — same masking, capped at 64 KB |
+| `duration_ms` | Total handler time in milliseconds |
+| `timestamp` | ISO 8601 UTC timestamp |
+| `queries` | List of SQL queries (text, params, duration, source location) |
+| `logs` | All `logging` calls made during the request (level, logger, message, time) |
+| `events` | Events dispatched during the request (class name, listener names, background flag) |
+| `jobs` | Custom job executions recorded via `record_job()` |
+
+Up to **200** entries are kept in a circular in-memory buffer. Oldest entries are evicted automatically when the buffer is full.
+
+### WebSocket live stream
+
+Connect to `ws://<host>/_forge/telescope/ws`. The protocol is:
+
+| Direction | Message | Description |
+|---|---|---|
+| Server → Client | `{"type": "init", "data": [...]}` | Sent immediately on connect — all current entries |
+| Server → Client | `{"type": "entry", "data": {...}}` | Sent after every completed HTTP request |
+| Server → Client | `{"type": "clear"}` | Sent after the store is cleared |
+| Client → Server | `{"type": "clear"}` | Clears all stored entries and broadcasts `{"type": "clear"}` to all clients |
+
+Maximum 100 simultaneous WebSocket connections are accepted. The 101st connection is closed with code `1008`.
+
+### Sensitive data masking
+
+Telescope never stores plaintext credentials. Masking is applied in two layers:
+
+**Headers** — the following header names are always replaced with `"***"`:
+- `Authorization`
+- `Cookie`
+- `X-API-Key`
+- `X-Telegram-Init-Data`
+
+**Body fields** — any JSON key whose name contains one of these words is replaced with `"***"` (case-insensitive, recursive through nested objects and arrays):
+
+```
+password  secret  token  key  auth  credential  access_token  refresh_token
+```
+
+Example — a login request body `{"email": "user@example.com", "password": "s3cr3t"}` is stored as:
+
+```json
+{"email": "user@example.com", "password": "***"}
+```
+
+### SQL query tracking
+
+When Tortoise ORM is installed, Telescope patches every `execute_*` method on every backend client at startup. Each query is recorded with:
+
+| Field | Description |
+|---|---|
+| `sql` | The raw SQL string |
+| `params` | Bound parameters |
+| `duration_ms` | Query execution time |
+| `location` | `file.py:line in function_name` — first non-framework frame in the call stack |
+
+Failed queries (those that raise an exception) are also recorded — the `try/finally` wrapper ensures the record is appended even if the query errors.
+
+### Log capture
+
+A custom `logging.Handler` is added to the root logger. Every log record emitted during a request is appended to that request's `logs` list. Telescope's own logger (`forgeapi.telescope`) and the access logger (`forgeapi.access`) are excluded to prevent recursion — and so are all their sub-loggers.
+
+### Event tracking
+
+The `EventBus.dispatch` method is patched at startup. Whenever an event is dispatched during a request, Telescope records the event class name, the names of all registered listeners, and whether the event is background or not.
+
+```json
+{
+  "event": "OrderCreated",
+  "listeners": ["send_confirmation", "update_inventory"],
+  "background": true
+}
+```
+
+### Recording jobs
+
+If you have a custom background job system, attach execution records to the current Telescope entry with `record_job()`:
+
+```python
+from forgeapi.telescope import record_job
+import time
+
+async def process_payment(order_id: int) -> None:
+    t = time.perf_counter()
+    try:
+        await stripe.charge(order_id)
+        record_job(
+            "ProcessPayment",
+            status="done",
+            attempts=1,
+            duration_ms=round((time.perf_counter() - t) * 1000, 3),
+        )
+    except Exception as exc:
+        record_job(
+            "ProcessPayment",
+            status="failed",
+            attempts=1,
+            error=str(exc),
+        )
+        raise
+```
+
+`record_job()` is a no-op when called outside an active Telescope request context (e.g., from a background task or CLI command) — no error is raised.
+
+```python
+record_job(
+    job: str,           # job class name or identifier
+    status: str,        # "queued" | "running" | "done" | "failed"
+    attempts: int = 1,
+    duration_ms: float | None = None,
+    error: str | None = None,
+)
+```
+
+### Skipped paths
+
+The following paths are never captured to prevent recording Telescope's own traffic or OpenAPI docs:
+
+- `/_forge/telescope/...`
+- `/docs`
+- `/redoc`
+- `/openapi.json`
+
+### Performance notes
+
+- `_caller_location()` in the SQL hook uses `sys._getframe()` instead of `traceback.extract_stack()` — no `FrameSummary` objects are allocated per query.
+- Response body buffering is capped at **64 KB**. Larger responses are captured partially.
+- Request body passed to `json.loads` is also capped at 64 KB.
+- The WebSocket broadcast is scheduled as an `asyncio.Task` and never blocks the request path.

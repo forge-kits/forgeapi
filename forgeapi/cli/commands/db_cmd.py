@@ -42,5 +42,9 @@ def run(subcmd: str, extra_args: list[str], config_path: str = "forgeapi.toml") 
 
     cmd = [tortoise_bin, "-c", orm_path, subcmd] + extra_args
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    result = subprocess.run(cmd, env=env)
+    try:
+        result = subprocess.run(cmd, env=env)
+    except OSError as exc:
+        typer.echo(f"Error: failed to run tortoise binary: {exc}", err=True)
+        raise typer.Exit(code=1)
     sys.exit(result.returncode)

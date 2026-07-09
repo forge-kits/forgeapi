@@ -8,6 +8,11 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger("forgeapi.events.redis_bus")
 
+try:
+    from tortoise.models import Model as _TortoiseModel
+except ImportError:
+    _TortoiseModel = None  # type: ignore[assignment,misc]
+
 
 def _json_default(obj: Any) -> Any:
     if isinstance(obj, (datetime, date)):
@@ -25,15 +30,11 @@ def _serialize(data: Any) -> dict:
     if isinstance(data, dict):
         return data
     if hasattr(data, "_meta"):
-        try:
-            from tortoise.models import Model as TortoiseModel
-        except ImportError:
-            TortoiseModel = None
         result = {}
         for k, v in data.__dict__.items():
             if k.startswith("_"):
                 continue
-            if TortoiseModel and isinstance(v, TortoiseModel):
+            if _TortoiseModel is not None and isinstance(v, _TortoiseModel):
                 continue
             result[k] = v
         return result
@@ -225,8 +226,8 @@ class RedisBus:
             try:
                 await pubsub.punsubscribe(pattern)
                 await pubsub.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("RedisBus: error during pubsub cleanup: %s", exc)
             logger.debug("RedisBus: listener stopped")
 
     async def _dispatch(self, message: dict) -> None:
@@ -278,6 +279,8 @@ class RedisBus:
         Raises:
             ImportError: If ``redis`` is not installed.
         """
+        if self._redis is not None:
+            return  # already connected
         try:
             import redis.asyncio as aioredis
         except ImportError:

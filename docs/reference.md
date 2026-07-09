@@ -31,6 +31,14 @@
 - [Settings](#settings)
 - [Pagination](#pagination)
 - [Seeder](#seeder)
+- [Telescope](#telescope)
+  - [setup_telescope](#setup_telescope)
+  - [record_job](#record_job)
+  - [DebugStore](#debugstore)
+  - [RequestEntry](#requestentry)
+  - [ConnectionManager](#connectionmanager)
+  - [DebugMiddleware](#debugmiddleware)
+  - [Hooks](#hooks)
 
 ---
 
@@ -426,7 +434,7 @@ print(tg_user.id, tg_user.username, tg_user.first_name)
 from forgeapi import Event
 ```
 
-Base class for all application events. Subclass to define your own.
+Base class for all application events. Subclass to define your own event types.
 
 ```python
 class Event:
@@ -435,56 +443,84 @@ class Event:
     ttl: ClassVar[int | None] = None     # dedup window in seconds (Redis only)
 ```
 
-Every instance automatically receives a unique `event_id` (UUID4).
+Every instance automatically receives a unique `event_id` (UUID4) assigned in `__init__`.
 
 #### Class variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `background` | `False` | `True` — listeners run as `asyncio.create_task`, response is not blocked |
-| `redis` | `False` | `True` — event is published to Redis; all workers receive it |
-| `ttl` | `None` | Deduplication window in seconds. Only the first worker that acquires the lock processes the event |
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `background` | `bool` | `False` | `True` — `dispatch()` schedules listeners via `create_task` and returns immediately; response is not blocked |
+| `redis` | `bool` | `False` | `True` — event is serialised and published to `forgeapi:events:<ClassName>` Redis channel; every subscribed worker runs its local listeners |
+| `ttl` | `int \| None` | `None` | Deduplication window in seconds. Subscriber attempts `SET NX EX {ttl}` on `forgeapi:dedup:{event_id}`. Only the first worker to acquire the key processes the event |
 
 #### Instance attributes
 
-| Attribute | Description |
-|---|---|
-| `event_id` | Auto-generated UUID4 string. Preserved through Redis serialisation |
+| Attribute | Type | Description |
+|---|---|---|
+| `event_id` | `str` | UUID4 string auto-assigned at construction. Preserved through Redis serialisation so all workers share the same ID |
 
 #### Methods
 
-##### `await event.dispatch()`
+##### `await event.dispatch() -> None`
 
-Fires the event. Dispatches to local listeners, or publishes to Redis if `redis=True` and Redis is configured.
+Fires the event through the singleton `EventBus`.
+
+- `redis=False`: runs all registered listeners locally, in parallel via `asyncio.gather`.
+- `redis=True`: publishes the serialised event to Redis. The subscriber on each worker deserialises it and runs local listeners.
+- `background=True`: wraps the gather in `asyncio.create_task` so the caller is not blocked.
+- `background=False`: awaits the gather — all listeners finish before `dispatch()` returns.
+
+Listener exceptions are **caught and logged individually** — one failing listener does not stop others or bubble up to the route.
 
 ##### `event.to_dict() -> dict`
 
-Serialises the event to a plain dict. Override for non-JSON-serialisable fields.
+Serialises the event to a plain `dict` for Redis transport. Default implementation converts all public instance attributes (including `event_id`). Override for non-JSON-serialisable fields:
+
+```python
+class OrderCreated(Event):
+    redis = True
+
+    def __init__(self, order_id: int, items: list) -> None:
+        self.order_id = order_id
+        self.items = items   # list of ORM objects
+
+    def to_dict(self) -> dict:
+        base = super().to_dict()
+        base["items"] = [{"id": i.id, "name": i.name} for i in self.items]
+        return base
+```
 
 ##### `Event.from_dict(data: dict) -> Event`
 
-Reconstructs an event from a serialised dict. Used internally by the Redis subscriber.
-
-#### Examples
+Class method. Reconstructs an event from its serialised dict. Called by the Redis subscriber on each receiving worker. Default implementation creates a new instance and sets all dict keys as attributes. Override when you need typed reconstruction:
 
 ```python
-# Local background event
-class UserLoggedIn(Event):
-    background = True
+    @classmethod
+    def from_dict(cls, data: dict) -> "OrderCreated":
+        obj = cls.__new__(cls)
+        obj.event_id  = data["event_id"]
+        obj.order_id  = data["order_id"]
+        obj.items     = data["items"]   # plain dicts on the receiving side
+        return obj
+```
 
-    def __init__(self, user_id: int) -> None:
-        self.user_id = user_id
+#### Full example
 
-# Redis event with deduplication
+```python
+# app/events/order_shipped_event.py
+from forgeapi import Event
+
 class OrderShipped(Event):
-    redis = True
-    ttl = 300  # processed at most once per 5 minutes per order
+    background = True   # don't block the response
+    redis = True        # fan out to all workers
+    ttl = 300           # one worker handles per 5 min (dedup by order_id not needed — event_id is unique per dispatch)
 
-    def __init__(self, order_id: int) -> None:
+    def __init__(self, order_id: int, carrier: str) -> None:
         self.order_id = order_id
+        self.carrier  = carrier
 
-# Dispatch — same call for all event types
-await OrderShipped(order_id=42).dispatch()
+# --- dispatching ---
+await OrderShipped(order_id=42, carrier="DHL").dispatch()
 ```
 
 ---
@@ -495,17 +531,17 @@ await OrderShipped(order_id=42).dispatch()
 from forgeapi import EventBus
 ```
 
-Singleton event dispatcher. You rarely need to interact with it directly — use `@listen` or `@bus.on` for registration and `event.dispatch()` for firing.
+Singleton event dispatcher. Interact directly only for manual registration, Redis wiring, or testing.
 
 #### Class methods
 
 ##### `EventBus.get_instance() -> EventBus`
 
-Returns the process-wide singleton instance.
+Returns the process-wide singleton. Creates it on first call.
 
 ##### `EventBus.reset() -> None`
 
-Destroys the singleton. Use in tests:
+Destroys the singleton and clears all registrations. Required in tests to prevent listener bleed-through.
 
 ```python
 @pytest.fixture(autouse=True)
@@ -517,23 +553,46 @@ def reset_bus():
 
 #### Instance methods
 
+##### `bus.register(event_class: type, listener: Callable) -> None`
+
+Register a listener without a decorator.
+
+```python
+bus = EventBus.get_instance()
+bus.register(OrderShipped, my_handler)
+```
+
+`listener` must be an `async def` function. Registering a sync function raises `TypeError` immediately.
+
+##### `bus.listeners_for(event_class: type) -> list[Callable]`
+
+Return all listeners registered for a given event class (does not include subclasses).
+
+```python
+listeners = bus.listeners_for(OrderShipped)
+# → [notify_warehouse, update_analytics]
+```
+
+##### `bus.on(event_class: type)`
+
+Decorator. Identical to `@listen` but called on the instance. See [@bus.on](#buson).
+
 ##### `bus.set_redis(client) -> None`
 
-Attach a `redis.asyncio` client to enable the Redis pub/sub transport.
+Attach a `redis.asyncio` client. Required before dispatching any `redis=True` event.
 
 ```python
 import redis.asyncio as aioredis
-bus = EventBus.get_instance()
 bus.set_redis(aioredis.from_url("redis://localhost:6379"))
 ```
 
-##### `await bus.start_redis_subscriber()`
+##### `await bus.start_redis_subscriber() -> None`
 
-Subscribe to all `forgeapi:events:*` channels and dispatch incoming events to local listeners. Run as a background task in the application lifespan.
+Long-running coroutine. Subscribes to `forgeapi:events:*` and dispatches received events to local listeners. Run as a background task in the app lifespan:
 
 ```python
 @asynccontextmanager
-async def lifespan(app):
+async def lifespan(app: FastAPI):
     redis_client = aioredis.from_url("redis://localhost:6379")
     bus = EventBus.get_instance()
     bus.set_redis(redis_client)
@@ -543,21 +602,17 @@ async def lifespan(app):
     await redis_client.aclose()
 ```
 
-##### `bus.register(event_class, listener) -> None`
-
-Register a listener manually (without a decorator).
-
-```python
-bus.register(OrderShipped, my_handler)
-```
-
-##### `bus.listeners_for(event_class) -> list`
-
-Return all registered listeners for an event class.
-
 ##### `bus.load_from_dir(directory: str) -> None`
 
-Import all `*.py` files in `directory` to auto-register listeners via decorators. Called automatically by `Core(app, events=True)`.
+Import all `*.py` files in `directory`. Listeners registered via `@listen` or `@bus.on` inside those files are activated on import. Called automatically by `Core(app, events=True)`.
+
+##### `bus._bg_tasks: list[asyncio.Task]`
+
+Internal list of background tasks created by `background=True` dispatches. Useful in tests to await all scheduled work:
+
+```python
+await asyncio.gather(*bus._bg_tasks, return_exceptions=True)
+```
 
 ---
 
@@ -567,7 +622,7 @@ Import all `*.py` files in `directory` to auto-register listeners via decorators
 from forgeapi import listen
 ```
 
-Decorator. Registers an async function as a listener for a specific event class at import time. All listeners for the same event run in parallel via `asyncio.gather`.
+Decorator. Registers an `async def` function as a listener for a specific event class **at import time**. Registering a sync function raises `TypeError`.
 
 ```python
 @listen(UserRegistered)
@@ -579,25 +634,26 @@ async def create_default_settings(event: UserRegistered) -> None:
     await Settings.create(user_id=event.user_id)
 ```
 
+Multiple `@listen` decorators for the same event class all run in **parallel** via `asyncio.gather` when the event is dispatched. Exception from one listener is logged but does not cancel the others.
+
+> **Do not use `@listen` at module level inside test files.** Listeners registered at import time are attached to the singleton that existed at import time. When `EventBus.reset()` creates a new singleton in a fixture, those top-level listeners become invisible. Always register listeners inside the test body or a fixture.
+
 ---
 
 ### @bus.on
 
-Instance-based alternative to `@listen`. Functionally identical — registers on the same singleton.
-
 ```python
 from forgeapi import EventBus
-
 bus = EventBus.get_instance()
 
 @bus.on(OrderShipped)
 async def notify_warehouse(event: OrderShipped) -> None:
     await warehouse_api.notify(event.order_id)
-
-@bus.on(OrderShipped)
-async def update_analytics(event: OrderShipped) -> None:
-    await analytics.track("order_shipped", order_id=event.order_id)
 ```
+
+Instance-based alternative to `@listen`. Functionally identical — registers on the same process-wide singleton. Prefer `@listen` in listener files that are auto-loaded by `Core`; prefer `@bus.on` when you hold an explicit `bus` reference.
+
+Both decorators accept the same event class and the same restriction: only `async def` functions.
 
 ---
 
@@ -1341,3 +1397,264 @@ forge seed
 forge seed UserSeeder      # run a specific seeder
 forge seed --fresh         # truncate tables first
 ```
+
+---
+
+## Telescope
+
+```python
+from forgeapi.telescope import setup_telescope, record_job, DebugStore
+```
+
+In-process request debugger. Captures every HTTP request — headers, body, SQL queries, log records, dispatched events, and custom job runs — and streams them to connected WebSocket clients in real time. Activated automatically by `Core(app, debug=True)`.
+
+---
+
+### setup_telescope
+
+```python
+setup_telescope(app: FastAPI) -> None
+```
+
+Installs all Telescope hooks and mounts the WebSocket router on `app`. Called automatically by `Core(app, debug=True)`. Safe to call multiple times — all hooks are idempotent.
+
+What it installs:
+
+| Component | Description |
+|---|---|
+| `DebugMiddleware` | Pure-ASGI middleware that buffers request/response bodies and creates a `RequestEntry` per HTTP request |
+| `DebugLogHandler` | `logging.Handler` added to the root logger; captures all log records during a request |
+| `EventBus.dispatch` patch | Wraps `dispatch()` to record dispatched events in the active entry |
+| Tortoise SQL hooks | Wraps `execute_*` methods on all `BaseDBAsyncClient` subclasses to record SQL queries |
+| `/_forge/telescope/ws` | WebSocket endpoint for live streaming |
+
+---
+
+### record_job
+
+```python
+from forgeapi.telescope import record_job
+
+record_job(
+    job: str,
+    status: str,
+    attempts: int = 1,
+    duration_ms: float | None = None,
+    error: str | None = None,
+) -> None
+```
+
+Attach a custom job execution record to the active Telescope entry. Call from your job dispatcher or runner so Telescope shows which background jobs were triggered during a request.
+
+Is a no-op (silent) when called outside an active Telescope request context.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `job` | `str` | Job class name or any identifier |
+| `status` | `str` | `"queued"` \| `"running"` \| `"done"` \| `"failed"` |
+| `attempts` | `int` | Number of attempts made (default `1`) |
+| `duration_ms` | `float \| None` | Execution time in milliseconds; `None` if not yet finished |
+| `error` | `str \| None` | Exception message when `status == "failed"` |
+
+```python
+import time
+from forgeapi.telescope import record_job
+
+async def send_invoice(order_id: int) -> None:
+    t = time.perf_counter()
+    try:
+        await pdf.generate(order_id)
+        record_job("SendInvoice", status="done", attempts=1,
+                   duration_ms=round((time.perf_counter() - t) * 1000, 3))
+    except Exception as exc:
+        record_job("SendInvoice", status="failed", attempts=1, error=str(exc))
+        raise
+```
+
+---
+
+### DebugStore
+
+```python
+from forgeapi.telescope.store import DebugStore
+```
+
+In-memory circular store. Holds at most `_MAX_ENTRIES` (200) `RequestEntry` objects. Class-level — there is one store per process.
+
+#### Class methods
+
+##### `DebugStore.new_entry(...) -> RequestEntry`
+
+Factory. Creates a new `RequestEntry` with the given fields and a fresh UUID `id`. Does not add it to the store.
+
+```python
+DebugStore.new_entry(
+    method: str,
+    path: str,
+    query_string: str = "",
+    headers: dict | None = None,
+    payload: Any = None,
+) -> RequestEntry
+```
+
+##### `DebugStore.push(entry: RequestEntry) -> None`
+
+Adds an entry to the store. Evicts the oldest entry when the buffer is full (also removes it from the index). Broadcasts `{"type": "entry", ...}` to all connected WebSocket clients as an `asyncio.Task`.
+
+##### `DebugStore.all() -> list[RequestEntry]`
+
+Returns all stored entries, newest first.
+
+##### `DebugStore.get(entry_id: str) -> RequestEntry | None`
+
+O(1) lookup by entry UUID. Returns `None` if not found.
+
+##### `DebugStore.clear() -> None`
+
+Replaces `_store` and `_index` with fresh empty objects (atomic — no partial state visible to concurrent `push()`). Broadcasts `{"type": "clear"}` to all connected clients.
+
+---
+
+### RequestEntry
+
+```python
+from forgeapi.telescope.store import RequestEntry
+```
+
+Dataclass representing one captured HTTP request.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `str` | UUID4 |
+| `method` | `str` | HTTP method |
+| `path` | `str` | Request path |
+| `query_string` | `str` | Raw query string |
+| `headers` | `dict[str, str]` | Request headers (sensitive values masked) |
+| `payload` | `Any` | Parsed request body (sensitive fields masked; capped at 64 KB) |
+| `timestamp` | `str` | ISO 8601 UTC |
+| `status` | `int \| None` | Response status code |
+| `duration_ms` | `float \| None` | Total handler duration |
+| `response_body` | `Any` | Parsed response body (masked; capped at 64 KB) |
+| `queries` | `list[SqlRecord]` | SQL queries fired during the request |
+| `logs` | `list[LogRecord]` | Log records emitted during the request |
+| `events` | `list[EventRecord]` | Events dispatched during the request |
+| `jobs` | `list[JobRecord]` | Job executions recorded via `record_job()` |
+
+#### `entry.summary() -> dict`
+
+Returns a lightweight dict with `id`, `method`, `path`, `status`, `duration_ms`, `timestamp`, and a `counts` dict with the lengths of `queries`, `logs`, `events`, `jobs`.
+
+#### `entry.to_dict() -> dict`
+
+Full serialisation of all fields, with `datetime` / `date` values converted to ISO 8601 strings. Sent in the WebSocket `entry` message.
+
+---
+
+### Record types
+
+#### `SqlRecord`
+
+| Field | Type | Description |
+|---|---|---|
+| `sql` | `str` | Raw SQL string |
+| `params` | `Any` | Bound parameters (may be `None`) |
+| `duration_ms` | `float` | Query execution time |
+| `location` | `str` | `file.py:line in function_name` — first non-framework frame |
+
+Failed queries (those that raised an exception) are recorded via `try/finally` — the record is always appended.
+
+#### `LogRecord`
+
+| Field | Type | Description |
+|---|---|---|
+| `level` | `str` | e.g. `"INFO"`, `"WARNING"` |
+| `logger` | `str` | Logger name |
+| `message` | `str` | Formatted message |
+| `time` | `str` | Formatted time string |
+
+Loggers whose name equals or starts with `"forgeapi.telescope"` or `"forgeapi.access"` are excluded to prevent recursion.
+
+#### `EventRecord`
+
+| Field | Type | Description |
+|---|---|---|
+| `event` | `str` | Event class name |
+| `listeners` | `list[str]` | Names of all registered listeners |
+| `background` | `bool` | Whether the event has `background=True` |
+
+#### `JobRecord`
+
+| Field | Type | Description |
+|---|---|---|
+| `job` | `str` | Job identifier |
+| `status` | `str` | `"queued"` \| `"running"` \| `"done"` \| `"failed"` |
+| `attempts` | `int` | Attempt count |
+| `duration_ms` | `float \| None` | Execution time |
+| `error` | `str \| None` | Error message on failure |
+
+---
+
+### ConnectionManager
+
+```python
+from forgeapi.telescope.store import manager
+```
+
+Manages live WebSocket connections. The module-level `manager` singleton is shared by the router and the store.
+
+| Method | Description |
+|---|---|
+| `await manager.connect(ws)` | Accepts the WebSocket and registers it. Rejects with code `1008` when the cap of 100 connections is reached |
+| `manager.disconnect(ws)` | Removes the WebSocket from the active list |
+| `await manager.broadcast(payload)` | Sends JSON to all active connections. Dead sockets are removed automatically |
+
+---
+
+### DebugMiddleware
+
+```python
+from forgeapi.telescope.middleware import DebugMiddleware
+```
+
+Pure-ASGI middleware (not Starlette `BaseHTTPMiddleware`). Runs in the same asyncio task as the request so `ContextVar` is visible to all hooks without `copy_context()`.
+
+Behaviour per request:
+
+1. Skip Telescope and docs paths entirely.
+2. Buffer the **full** request body (needed for replay), but pass only the first 64 KB to `_parse_payload` for storage.
+3. Create a `RequestEntry` via `DebugStore.new_entry()` and set it as the `ContextVar` current entry.
+4. Wrap `send` to capture response status and body chunks (capped at 64 KB total).
+5. Call the inner app.
+6. In `finally`: write `duration_ms`, `status`, `response_body` into the entry and call `DebugStore.push()`.
+
+---
+
+### Hooks
+
+#### `install_tortoise_hook() -> None`
+
+```python
+from forgeapi.telescope.hooks.tortoise_hook import install_tortoise_hook
+```
+
+Patches `execute_query`, `execute_insert`, `execute_many`, `execute_script` on all `BaseDBAsyncClient` subclasses already imported, and installs an `__init_subclass__` hook to patch classes imported later.
+
+- Uses `sys._getframe()` (not `traceback.extract_stack()`) for O(1) frame walking without `FrameSummary` allocation.
+- Wraps each query in `try/finally` so failed queries are still recorded.
+- Safe to call multiple times — guarded by `_INSTALLED` flag.
+
+#### `install_events_hook() -> None`
+
+```python
+from forgeapi.telescope.hooks.events_hook import install_events_hook
+```
+
+Monkeypatches `EventBus.dispatch`. The recording block is wrapped in `try/except` so a hook failure never prevents the actual dispatch from running.
+
+#### `install_logging_hook() -> None`
+
+```python
+from forgeapi.telescope.hooks.logging_hook import install_logging_hook
+```
+
+Adds a `DebugLogHandler` to the root logger. Skip check uses prefix matching (`name == prefix or name.startswith(prefix + ".")`) so sub-loggers like `forgeapi.telescope.sql` are also excluded.

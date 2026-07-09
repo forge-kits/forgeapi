@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
-import traceback
 from typing import Any
 
 from ..context import get_current
@@ -21,10 +21,13 @@ _SKIP_IN_PATH = (
 
 
 def _caller_location() -> str:
-    for frame in reversed(traceback.extract_stack()):
-        path = frame.filename.replace("\\", "/")
+    """Walk the call stack without building FrameSummary objects (faster than traceback.extract_stack)."""
+    frame = sys._getframe(0)
+    while frame is not None:
+        path = frame.f_code.co_filename.replace("\\", "/")
         if not any(skip in path for skip in _SKIP_IN_PATH):
-            return f"{frame.filename}:{frame.lineno} in {frame.name}"
+            return f"{frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}"
+        frame = frame.f_back
     return "unknown"
 
 
@@ -45,8 +48,10 @@ def _make_query_wrapper(orig: Any) -> Any:
             return await orig(self, query, values)
         loc = _caller_location()
         t = time.perf_counter()
-        result = await orig(self, query, values)
-        _record(query, values, round((time.perf_counter() - t) * 1000, 3), loc)
+        try:
+            result = await orig(self, query, values)
+        finally:
+            _record(query, values, round((time.perf_counter() - t) * 1000, 3), loc)
         return result
     return wrapper
 
@@ -57,8 +62,10 @@ def _make_insert_wrapper(orig: Any) -> Any:
             return await orig(self, query, values)
         loc = _caller_location()
         t = time.perf_counter()
-        result = await orig(self, query, values)
-        _record(query, values, round((time.perf_counter() - t) * 1000, 3), loc)
+        try:
+            result = await orig(self, query, values)
+        finally:
+            _record(query, values, round((time.perf_counter() - t) * 1000, 3), loc)
         return result
     return wrapper
 
@@ -69,8 +76,10 @@ def _make_many_wrapper(orig: Any) -> Any:
             return await orig(self, query, values)
         loc = _caller_location()
         t = time.perf_counter()
-        result = await orig(self, query, values)
-        _record(query, values, round((time.perf_counter() - t) * 1000, 3), loc)
+        try:
+            result = await orig(self, query, values)
+        finally:
+            _record(query, values, round((time.perf_counter() - t) * 1000, 3), loc)
         return result
     return wrapper
 
@@ -81,8 +90,10 @@ def _make_script_wrapper(orig: Any) -> Any:
             return await orig(self, query)
         loc = _caller_location()
         t = time.perf_counter()
-        result = await orig(self, query)
-        _record(query, None, round((time.perf_counter() - t) * 1000, 3), loc)
+        try:
+            result = await orig(self, query)
+        finally:
+            _record(query, None, round((time.perf_counter() - t) * 1000, 3), loc)
         return result
     return wrapper
 

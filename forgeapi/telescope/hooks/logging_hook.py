@@ -11,11 +11,13 @@ _INSTALLED = False
 class DebugLogHandler(logging.Handler):
     """Captures every log record and appends it to the active request entry."""
 
-    # Loggers that would create infinite recursion or noise
-    _SKIP_LOGGERS = frozenset({"forgeapi.telescope", "forgeapi.access"})
+    # Logger name prefixes that would create infinite recursion or noise.
+    # Prefix matching covers sub-loggers (e.g. forgeapi.telescope.sql).
+    _SKIP_PREFIXES = ("forgeapi.telescope", "forgeapi.access")
 
     def emit(self, record: logging.LogRecord) -> None:
-        if record.name in self._SKIP_LOGGERS:
+        name = record.name
+        if any(name == p or name.startswith(p + ".") for p in self._SKIP_PREFIXES):
             return
         entry = get_current()
         if entry is None:

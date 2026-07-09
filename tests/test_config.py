@@ -69,3 +69,37 @@ class TestLoadConfig:
         cfg = load_config(str(toml))
         assert cfg.project.name == "Partial"
         assert cfg.pagination.default_limit == 20
+
+
+class TestPaginationConfigValidation:
+    def test_default_limit_must_be_positive(self):
+        from pydantic import ValidationError as PydanticValidationError
+        with pytest.raises(PydanticValidationError):
+            from forgeapi.config import PaginationConfig
+            PaginationConfig(default_limit=0, max_limit=100)
+
+    def test_max_limit_must_be_positive(self):
+        from pydantic import ValidationError as PydanticValidationError
+        with pytest.raises(PydanticValidationError):
+            from forgeapi.config import PaginationConfig
+            PaginationConfig(default_limit=10, max_limit=0)
+
+    def test_default_limit_exceeds_max_raises(self):
+        from pydantic import ValidationError as PydanticValidationError
+        with pytest.raises(PydanticValidationError, match="must not exceed"):
+            from forgeapi.config import PaginationConfig
+            PaginationConfig(default_limit=200, max_limit=100)
+
+    def test_invalid_toml_raises_forge_config_error(self, tmp_path):
+        from forgeapi.exceptions import ForgeAPIConfigError
+        toml = tmp_path / "forgeapi.toml"
+        toml.write_text("[pagination]\ndefault_limit = -5\n", encoding="utf-8")
+        with pytest.raises(ForgeAPIConfigError):
+            load_config(str(toml))
+
+    def test_toml_syntax_error_raises(self, tmp_path):
+        import tomllib
+        toml = tmp_path / "forgeapi.toml"
+        toml.write_text("name = [unclosed\n", encoding="utf-8")
+        with pytest.raises(tomllib.TOMLDecodeError):
+            load_config(str(toml))

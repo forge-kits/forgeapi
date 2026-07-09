@@ -8,8 +8,8 @@ class Guard:
     in ``handle`` automatically — the same way as a regular route handler.
 
     ``__call__`` is kept as the FastAPI-facing entry point; its signature is
-    patched at class creation time to mirror ``handle``, so the dependency
-    injection system sees the correct parameters.
+    patched at class creation time to mirror ``handle`` (minus ``self``), so
+    the dependency injection system sees the correct parameters.
 
     Example — block by header::
 
@@ -48,14 +48,29 @@ class Guard:
         super().__init_subclass__(**kwargs)
         if "handle" in cls.__dict__:
             handle_fn = cls.__dict__["handle"]
+            sig = inspect.signature(handle_fn)
+            params = list(sig.parameters.values())[1:]  # skip 'self'
 
-            async def __call__(self, **kw: object) -> None:
-                return await self.handle(**kw)
+            if params:
+                # Handle has injectable parameters — use **kw forwarding and
+                # patch the signature so FastAPI sees the correct parameters.
+                async def __call__(self, **kw: object) -> None:
+                    return await self.handle(**kw)
 
-            # Mirror handle's signature onto __call__ so FastAPI can inspect
-            # it and inject the correct dependencies (e.g. CurrentUser, Request).
-            __call__.__signature__ = inspect.signature(handle_fn)
+                __call__.__signature__ = sig.replace(parameters=params)
+            else:
+                # No injectable parameters — define a clean no-args __call__
+                # so FastAPI does not try to validate unexpected kwargs.
+                async def __call__(self) -> None:  # type: ignore[misc]
+                    return await self.handle()
+
             cls.__call__ = __call__
+
+    async def __call__(self, **kw: object) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} must define 'async def handle(self, ...)' "
+            "to be used as a Guard dependency."
+        )
 
     async def handle(self) -> None:
         pass
