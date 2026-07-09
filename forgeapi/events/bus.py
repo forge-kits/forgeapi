@@ -134,6 +134,43 @@ class EventBus:
         """
         self._redis = client
 
+    async def redis_connect(self, url: str) -> None:
+        """Create a Redis client from *url* and attach it to this bus.
+
+        Prefer this over :meth:`set_redis` when you don't need a manually
+        created client — no ``redis.asyncio`` import required in your code::
+
+            bus = EventBus.get_instance()
+            await bus.redis_connect("redis://localhost:6379")
+            # ...
+            await bus.redis_disconnect()
+
+        Args:
+            url: Redis connection URL, e.g. ``"redis://localhost:6379"``.
+
+        Raises:
+            ImportError: If the ``redis`` package is not installed.
+        """
+        try:
+            import redis.asyncio as aioredis
+        except ImportError:
+            raise ImportError(
+                "EventBus.redis_connect() requires the redis package. "
+                "Install it: pip install redis"
+            )
+        self._redis = aioredis.from_url(url, decode_responses=False)
+
+    async def redis_disconnect(self) -> None:
+        """Close the Redis connection created by :meth:`redis_connect`.
+
+        Safe to call even if Redis was attached via :meth:`set_redis` or
+        if the bus has no Redis client at all.
+        """
+        if self._redis is not None:
+            with contextlib.suppress(Exception):
+                await self._redis.aclose()
+            self._redis = None
+
     async def start_redis_subscriber(self) -> None:
         """Subscribe to all event channels and dispatch incoming events locally.
 
@@ -321,14 +358,140 @@ class EventBus:
     # Dispatch
     # ------------------------------------------------------------------
 
+    async def _publish_stream(self, event: Event) -> None:
+        """Publish *event* to a Redis Stream via XADD."""
+        namespace = getattr(type(event), "namespace", "forgeapi:events")
+        stream_key = f"{namespace}:{type(event).__name__}"
+        fields = {k: json.dumps(v) for k, v in event.to_dict().items()}
+        try:
+            await self._redis.xadd(stream_key, fields, maxlen=10_000)
+            logger.debug("Stream XADD '%s' id=%s", stream_key, event.event_id)
+        except Exception as exc:
+            logger.error("Failed to XADD event '%s': %s", type(event).__name__, exc, exc_info=exc)
+            listeners = self.listeners_for(type(event))
+            if listeners:
+                await self._run_all(event, listeners)
+
+    async def start_stream_subscriber(
+        self,
+        group: str,
+        consumer: str,
+        event_classes: list[type],
+    ) -> None:
+        """Consume events from Redis Streams using consumer groups.
+
+        Each consumer group receives every message independently — two groups
+        on the same stream both get all events (unlike pub/sub, messages are
+        persisted until all groups ACK them).
+
+        Args:
+            group:         Consumer group name, e.g. ``"bot1"``.
+            consumer:      Consumer instance name, e.g. ``"bot1-worker-1"``.
+            event_classes: Event subclasses to subscribe to.  Their
+                           ``namespace`` and class name determine the stream key.
+
+        Example::
+
+            task = asyncio.create_task(
+                bus.start_stream_subscriber(
+                    group="bot1",
+                    consumer="bot1-1",
+                    event_classes=[OrderEvent],
+                )
+            )
+        """
+        if self._redis is None:
+            raise RuntimeError("Redis client not configured. Call EventBus.set_redis() first.")
+
+        stream_keys: list[str] = []
+        for cls in event_classes:
+            namespace = getattr(cls, "namespace", "forgeapi:events")
+            key = f"{namespace}:{cls.__name__}"
+            stream_keys.append(key)
+            try:
+                await self._redis.xgroup_create(key, group, id="$", mkstream=True)
+                logger.debug("Stream group '%s' created on '%s'", group, key)
+            except Exception as exc:
+                if "BUSYGROUP" in str(exc):
+                    logger.debug("Stream group '%s' already exists on '%s'", group, key)
+                else:
+                    logger.error("xgroup_create failed for '%s': %s", key, exc)
+
+        streams = {key: ">" for key in stream_keys}
+        logger.debug("Stream subscriber started (group=%s consumer=%s keys=%s)", group, consumer, stream_keys)
+
+        try:
+            while True:
+                try:
+                    results = await self._redis.xreadgroup(
+                        groupname=group,
+                        consumername=consumer,
+                        streams=streams,
+                        count=10,
+                        block=2000,
+                    )
+                    if not results:
+                        continue
+                    for stream_name, messages in results:
+                        key = stream_name.decode() if isinstance(stream_name, bytes) else stream_name
+                        for msg_id, raw_fields in messages:
+                            await self._handle_stream_message(key, msg_id, raw_fields, group)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("Stream subscriber error, retrying in 1s: %s", exc)
+                    await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.debug("Stream subscriber stopped (group=%s consumer=%s)", group, consumer)
+
+    async def _handle_stream_message(
+        self,
+        stream_key: str,
+        msg_id: Any,
+        raw_fields: dict,
+        group: str,
+    ) -> None:
+        try:
+            data: dict[str, Any] = {}
+            for k, v in raw_fields.items():
+                key = k.decode() if isinstance(k, bytes) else k
+                val = v.decode() if isinstance(v, bytes) else v
+                try:
+                    data[key] = json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    data[key] = val
+            event = Event.from_dict(data)
+        except Exception as exc:
+            logger.error("Failed to deserialise stream message on '%s': %s", stream_key, exc, exc_info=exc)
+            await self._redis.xack(stream_key, group, msg_id)
+            return
+
+        listeners = self.listeners_for(type(event))
+        if listeners:
+            if event.background:
+                t = asyncio.create_task(
+                    self._run_all(event, listeners),
+                    name=f"event:{type(event).__name__}",
+                )
+                self._bg_tasks.add(t)
+                t.add_done_callback(self._bg_tasks.discard)
+            else:
+                await self._run_all(event, listeners)
+
+        await self._redis.xack(stream_key, group, msg_id)
+        logger.debug("Stream XACK '%s' group=%s id=%s", stream_key, group, msg_id)
+
     async def dispatch(self, event: Event) -> None:
         """Fire *event* and invoke all registered listeners.
 
-        If ``event.redis = True`` and a Redis client is configured the event
-        is serialised and published to the Redis channel
-        ``forgeapi:events:{EventClassName}``.  Local listeners are then
-        invoked by the subscriber worker running
-        :meth:`start_redis_subscriber`.
+        If ``event.redis = True`` and a Redis client is configured:
+
+        * ``event.redis_type = "stream"`` — publishes via ``XADD`` to
+          ``{event.namespace}:{EventClassName}``.  Consumed by
+          :meth:`start_stream_subscriber` worker(s).
+        * ``event.redis_type = "pubsub"`` (default) — publishes via
+          ``PUBLISH`` to ``forgeapi:events:{EventClassName}``.  Consumed by
+          :meth:`start_redis_subscriber` worker.
 
         Otherwise (no Redis or ``event.redis = False``) the existing local
         dispatch path is used:
@@ -340,6 +503,10 @@ class EventBus:
             event: An :class:`~forgeapi.events.event.Event` instance.
         """
         if self._redis is not None and event.redis:
+            if getattr(type(event), "redis_type", "pubsub") == "stream":
+                await self._publish_stream(event)
+                return
+
             channel = f"{_CHANNEL_PREFIX}{type(event).__name__}"
             payload = json.dumps(event.to_dict())
             try:

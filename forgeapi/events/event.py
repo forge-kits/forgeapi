@@ -53,6 +53,8 @@ class Event:
 
     background: ClassVar[bool] = False
     redis: ClassVar[bool] = False
+    redis_type: ClassVar[str] = "pubsub"   # "pubsub" | "stream"
+    namespace: ClassVar[str] = "forgeapi:events"
     ttl: ClassVar[int | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

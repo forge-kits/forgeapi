@@ -69,6 +69,11 @@ from forgeapi import Event
 
 class PostCreatedEvent(Event):
     background = True
+    # redis      = True          # uncomment to publish to Redis
+    # redis_type = "pubsub"      # "pubsub" = fan-out to all workers (default)
+    # redis_type = "stream"      # "stream" = persistent, consumer groups (XADD/XREADGROUP)
+    # namespace  = "forgeapi:events"  # Redis key prefix: {namespace}:{ClassName}
+    # ttl        = 60            # pubsub dedup: only first worker processes per 60s window
 
     def __init__(self, post_id: int, title: str, author_id: int) -> None:
         self.post_id   = post_id

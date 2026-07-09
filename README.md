@@ -504,9 +504,11 @@ route handler
 from forgeapi import Event
 
 class OrderCreated(Event):
-    background = True    # True = fire-and-forget; False = await before response
-    redis = False        # True = publish to Redis pub/sub (multi-worker distribution)
-    ttl: int | None = None  # Redis dedup window in seconds; None = no dedup
+    background = True        # True = fire-and-forget; False = await before response
+    redis      = False       # True = publish to Redis (multi-worker distribution)
+    redis_type = "pubsub"    # "pubsub" = fan-out to all workers | "stream" = persistent, consumer groups
+    namespace  = "forgeapi:events"  # Redis key prefix: {namespace}:{ClassName}
+    ttl: int | None = None   # Redis dedup window in seconds; None = no dedup
 
     def __init__(self, order_id: int, total: float) -> None:
         self.order_id = order_id
@@ -518,8 +520,10 @@ class OrderCreated(Event):
 | Flag | Default | Effect |
 |---|---|---|
 | `background` | `False` | `False` — `dispatch()` awaits all listeners before returning. `True` — listeners are `create_task`-ed, the caller continues immediately |
-| `redis` | `False` | `True` — event is serialised and published to the Redis channel `forgeapi:events:<ClassName>` |
-| `ttl` | `None` | Dedup window in seconds. Only the first worker that wins `SET NX EX {ttl}` on `event_id` processes the event |
+| `redis` | `False` | `True` — event is serialised and published to Redis |
+| `redis_type` | `"pubsub"` | `"pubsub"` — fan-out via Redis Pub/Sub (`PUBLISH`); `"stream"` — persistent delivery via Redis Streams (`XADD`) with consumer groups |
+| `namespace` | `"forgeapi:events"` | Redis key prefix. Pub/sub channel: `{namespace}:{ClassName}`. Stream key: `{namespace}:{ClassName}` |
+| `ttl` | `None` | Dedup window in seconds (pub/sub only). Only the first worker that wins `SET NX EX {ttl}` on `event_id` processes the event |
 
 Combinations:
 
@@ -691,13 +695,12 @@ from forgeapi import Core, EventBus
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    redis_client = aioredis.from_url("redis://localhost:6379")
     bus = EventBus.get_instance()
-    bus.set_redis(redis_client)
+    await bus.redis_connect("redis://localhost:6379")   # no redis.asyncio import needed
     task = asyncio.create_task(bus.start_redis_subscriber())
     yield
     task.cancel()
-    await redis_client.aclose()
+    await bus.redis_disconnect()
 
 app = FastAPI(lifespan=lifespan)
 Core(app, events=True)
@@ -712,6 +715,82 @@ Dispatching is unchanged — `await OrderShipped(order_id=42).dispatch()`.
 | `False` (default) | — | Local dispatch only, no Redis |
 | `True` | `None` | Published to Redis, **all** subscribers run listeners |
 | `True` | `60` | Published to Redis, exactly one subscriber processes per 60-second window |
+
+---
+
+### Redis Streams — EventBus
+
+Use `redis_type = "stream"` when you need **persistent delivery with consumer groups** — messages survive worker restarts and each independent group receives every message exactly once.
+
+```python
+# app/events/order_event.py
+from forgeapi import Event
+
+class OrderEvent(Event):
+    background = True
+    redis      = True
+    redis_type = "stream"    # XADD instead of PUBLISH
+    namespace  = "shop"      # stream key → shop:OrderEvent
+
+    def __init__(self, order_id: int, total: float, customer: str) -> None:
+        self.order_id = order_id
+        self.total    = total
+        self.customer = customer
+```
+
+Wire up the publisher (FastAPI):
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    bus = EventBus.get_instance()
+    await bus.redis_connect("redis://localhost:6379")
+    yield
+    await bus.redis_disconnect()
+```
+
+Wire up each consumer (standalone bot / worker):
+
+```python
+import asyncio
+from forgeapi import EventBus
+from app.events.order_event import OrderEvent
+
+async def main():
+    bus = EventBus.get_instance()
+    await bus.redis_connect("redis://localhost:6379")
+
+    @bus.on(OrderEvent)
+    async def on_order(event: OrderEvent):
+        print(f"order_id={event.order_id}  customer={event.customer}")
+
+    await bus.start_stream_subscriber(
+        group="bot1",           # consumer group name — each group gets every message
+        consumer="bot1-worker", # worker id within the group
+        event_classes=[OrderEvent],
+    )
+
+asyncio.run(main())
+```
+
+Run two independent bots — both receive every order:
+
+```
+# Windows PowerShell
+$env:BOT_NAME="bot1"; python bot.py
+$env:BOT_NAME="bot2"; python bot.py
+```
+
+**Pub/Sub vs Streams**
+
+| | `redis_type="pubsub"` | `redis_type="stream"` |
+|---|---|---|
+| Transport | `PUBLISH` / `SUBSCRIBE` | `XADD` / `XREADGROUP` |
+| Persistence | None — lost if no subscriber | Stored until all groups ACK |
+| Delivery | All subscribers simultaneously | Each group independently |
+| Offline workers | Miss messages | Catch up on reconnect |
+| Dedup | `ttl` class var + SET NX | Not built-in |
+| Use case | Same-project multi-worker fan-out | Cross-service / bots that must not miss messages |
 
 ### Testing events
 

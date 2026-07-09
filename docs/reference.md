@@ -438,20 +438,24 @@ Base class for all application events. Subclass to define your own event types.
 
 ```python
 class Event:
-    background: ClassVar[bool] = False   # True = fire-and-forget
-    redis: ClassVar[bool] = False        # True = publish to Redis pub/sub
-    ttl: ClassVar[int | None] = None     # dedup window in seconds (Redis only)
+    background: ClassVar[bool] = False          # True = fire-and-forget
+    redis: ClassVar[bool] = False               # True = publish to Redis
+    redis_type: ClassVar[str] = "pubsub"        # "pubsub" | "stream"
+    namespace: ClassVar[str] = "forgeapi:events"  # Redis key prefix
+    ttl: ClassVar[int | None] = None            # dedup window in seconds (pubsub only)
 ```
 
-Every instance automatically receives a unique `event_id` (UUID4) assigned in `__init__`.
+Every instance automatically receives a unique `event_id` (UUID4) assigned in `__new__`.
 
 #### Class variables
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `background` | `bool` | `False` | `True` — `dispatch()` schedules listeners via `create_task` and returns immediately; response is not blocked |
-| `redis` | `bool` | `False` | `True` — event is serialised and published to `forgeapi:events:<ClassName>` Redis channel; every subscribed worker runs its local listeners |
-| `ttl` | `int \| None` | `None` | Deduplication window in seconds. Subscriber attempts `SET NX EX {ttl}` on `forgeapi:dedup:{event_id}`. Only the first worker to acquire the key processes the event |
+| `redis` | `bool` | `False` | `True` — event is serialised and published to Redis |
+| `redis_type` | `str` | `"pubsub"` | `"pubsub"` — `PUBLISH` to `{namespace}:{ClassName}`, all workers receive simultaneously. `"stream"` — `XADD` to `{namespace}:{ClassName}`, consumed by independent consumer groups via `XREADGROUP` |
+| `namespace` | `str` | `"forgeapi:events"` | Redis key prefix. Determines pub/sub channel or stream key: `{namespace}:{ClassName}` |
+| `ttl` | `int \| None` | `None` | Deduplication window in seconds (pub/sub only). Subscriber attempts `SET NX EX {ttl}` on `forgeapi:dedup:{event_id}`. Only the first worker to acquire the key processes the event |
 
 #### Instance attributes
 
@@ -579,28 +583,74 @@ Decorator. Identical to `@listen` but called on the instance. See [@bus.on](#bus
 
 ##### `bus.set_redis(client) -> None`
 
-Attach a `redis.asyncio` client. Required before dispatching any `redis=True` event.
+Attach an already-created `redis.asyncio` client. Use `redis_connect` when you don't need a manually created client.
 
 ```python
 import redis.asyncio as aioredis
 bus.set_redis(aioredis.from_url("redis://localhost:6379"))
 ```
 
+##### `await bus.redis_connect(url: str) -> None`
+
+Create a Redis client from `url` and attach it. No `redis.asyncio` import needed in your code.
+
+```python
+bus = EventBus.get_instance()
+await bus.redis_connect("redis://localhost:6379")
+```
+
+Raises `ImportError` if the `redis` package is not installed.
+
+##### `await bus.redis_disconnect() -> None`
+
+Close the Redis connection. Safe to call even when no client is attached.
+
+```python
+await bus.redis_disconnect()
+```
+
 ##### `await bus.start_redis_subscriber() -> None`
 
-Long-running coroutine. Subscribes to `forgeapi:events:*` and dispatches received events to local listeners. Run as a background task in the app lifespan:
+Long-running coroutine. Subscribes to `forgeapi:events:*` (pub/sub) and dispatches received events to local listeners. Run as a background task in the app lifespan:
 
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    redis_client = aioredis.from_url("redis://localhost:6379")
     bus = EventBus.get_instance()
-    bus.set_redis(redis_client)
+    await bus.redis_connect("redis://localhost:6379")
     task = asyncio.create_task(bus.start_redis_subscriber())
     yield
     task.cancel()
-    await redis_client.aclose()
+    await bus.redis_disconnect()
 ```
+
+##### `await bus.start_stream_subscriber(group, consumer, event_classes) -> None`
+
+Long-running coroutine. Consumes events from Redis Streams using consumer groups (`XREADGROUP`). Each group receives every message independently — multiple bots/workers can all process the same stream without interfering.
+
+| Param | Type | Description |
+|---|---|---|
+| `group` | `str` | Consumer group name, e.g. `"bot1"`. Each unique group receives all messages |
+| `consumer` | `str` | Worker id within the group, e.g. `"bot1-worker"` |
+| `event_classes` | `list[type]` | Event subclasses to subscribe to. Stream key is `{event.namespace}:{ClassName}` |
+
+```python
+bus = EventBus.get_instance()
+await bus.redis_connect("redis://localhost:6379")
+
+@bus.on(OrderEvent)
+async def on_order(event: OrderEvent):
+    print(event.order_id)
+
+# runs forever — start as asyncio.create_task or run directly
+await bus.start_stream_subscriber(
+    group="bot1",
+    consumer="bot1-worker",
+    event_classes=[OrderEvent],
+)
+```
+
+Messages are ACK-ed (`XACK`) after successful listener execution. If a listener raises, the message is still ACK-ed to prevent redelivery loops — the error is logged.
 
 ##### `bus.load_from_dir(directory: str) -> None`
 
