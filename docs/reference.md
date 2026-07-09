@@ -851,11 +851,21 @@ class Controller:
 
 #### Auto-derived prefix
 
-| Class name | Prefix |
+Applied only when `prefix` is **not** set on the class. Rule:
+
+- **First CamelCase word** → namespace (one URL segment)
+- **All remaining words** → resource name, joined with hyphens, then pluralised
+
+| Class name | Auto prefix |
 |---|---|
 | `UserController` | `/users` |
 | `AdminUserController` | `/admin/users` |
 | `PostCommentController` | `/post/comments` |
+| `SuperAdminOrderItemController` | `/super/admin-order-items` |
+
+Three or more words never produce extra slash segments. Extra words become part of the hyphenated resource: `SuperAdminOrderItem` → namespace `super`, resource `admin-order-item` → `/super/admin-order-items`.
+
+`Core` prepends `base_prefix` (default `/api/v1`) to every controller's prefix at startup. Final URL = `base_prefix` + `controller.prefix` + route path. Do not encode the API version in the controller name — put it in `base_prefix` instead.
 
 #### Example
 

@@ -969,33 +969,61 @@ async def create(self, payload: PostCreatePayload) -> PostResponse: ...
 
 ### Auto-prefix and namespace
 
-If `prefix` is not set, it is derived from the class name. Every CamelCase word before the last becomes a URL segment; the last word is pluralised:
+If `prefix` is not set on the class, it is derived from the class name at definition time:
+
+- **First CamelCase word** → namespace (one URL segment)
+- **All remaining words** → resource name, joined with hyphens, then pluralised
 
 | Class | Auto prefix |
 |---|---|
 | `UserController` | `/users` |
 | `AdminUserController` | `/admin/users` |
-| `ApiV1PostController` | `/api/v1/posts` |
-| `SuperAdminOrderItemController` | `/super/admin/order/items` |
+| `PostCommentController` | `/post/comments` |
+| `SuperAdminOrderItemController` | `/super/admin-order-items` |
 
-Namespace controllers are generated into subdirectories:
+Three or more words never produce extra slash segments — extra words become part of the hyphenated resource name. `SuperAdminOrderItem` → namespace `super`, resource `admin-order-item` → `/super/admin-order-items`.
+
+### API versioning — use base_prefix, not the controller name
+
+`Core` prepends `base_prefix` (default `/api/v1`) to every controller's prefix automatically. **Do not encode the API version in the controller name.** A `PostController` with auto-prefix `/posts` is registered as `/api/v1/posts` — no naming change needed.
+
+```toml
+# forgeapi.toml
+[structure]
+base_prefix = "/api/v1"
+```
+
+```python
+Core(app)                          # uses base_prefix from toml → /api/v1/posts
+Core(app, base_prefix="/api/v2")   # override inline
+```
+
+Final URL = `base_prefix` + `controller.prefix` + `route path`
+
+### make:controller file placement
+
+The CLI uses its own rule for where to write the file: **all CamelCase words except the last** form the subdirectory path; the **last word** is the resource. It writes `prefix` explicitly into the generated file, so auto-derivation is irrelevant for generated controllers.
 
 ```bash
-forgeapi make:controller AdminUser    # controllers/admin/user_controller.py
-forgeapi make:controller ApiV1Post    # controllers/api/v1/post_controller.py
+forgeapi make:controller Post          # controllers/post_controller.py
+                                        # prefix = "/posts"
+forgeapi make:controller AdminUser     # controllers/admin/user_controller.py
+                                        # prefix = "/admin/users"
+forgeapi make:controller SuperAdminOrder  # controllers/super/admin/order_controller.py
+                                           # prefix = "/super/admin/orders"
 ```
 
 ```
 controllers/
-  user_controller.py
+  post_controller.py          # PostController        → /api/v1/posts
   admin/
     __init__.py
-    user_controller.py      # AdminUserController → /admin/users
-  api/
+    user_controller.py        # AdminUserController   → /api/v1/admin/users
+  super/
     __init__.py
-    v1/
+    admin/
       __init__.py
-      post_controller.py    # ApiV1PostController → /api/v1/posts
+      order_controller.py     # SuperAdminOrderController → /api/v1/super/admin/orders
 ```
 
 `Core` discovers all of these automatically via recursive glob.
@@ -1661,14 +1689,16 @@ Creates the full project skeleton including `database/seeds/` for seeders.
 
 ### `forgeapi make:controller <Name> [flags]`
 
-Generate a controller. CamelCase namespace supported.
+Generate a controller. CamelCase namespace supported — all words except the last become the subdirectory path; the last word is the resource.
 
 ```bash
-forgeapi make:controller User
+forgeapi make:controller User                 # controllers/user_controller.py
 forgeapi make:controller User --ms            # + model + stub schemas
 forgeapi make:controller AdminUser            # controllers/admin/user_controller.py
-forgeapi make:controller ApiV1Post --ms
+forgeapi make:controller SuperAdminOrder      # controllers/super/admin/order_controller.py
 ```
+
+API versioning comes from `base_prefix` in config, not the controller name — use `make:controller Post`, not `make:controller ApiV1Post`.
 
 | Flag | Short | Generates |
 |---|---|---|
