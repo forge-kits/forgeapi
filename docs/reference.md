@@ -851,21 +851,26 @@ class Controller:
 
 #### Auto-derived prefix
 
-Applied only when `prefix` is **not** set on the class. Rule:
+Applied only when `prefix` is **not** set on the class.
 
-- **First CamelCase word** → namespace (one URL segment)
-- **All remaining words** → resource name, joined with hyphens, then pluralised
+Strip `Controller`, split on CamelCase, then:
 
-| Class name | Auto prefix |
-|---|---|
-| `UserController` | `/users` |
-| `AdminUserController` | `/admin/users` |
-| `PostCommentController` | `/post/comments` |
-| `SuperAdminOrderItemController` | `/super/admin-order-items` |
+```
+/{first-word}/{remaining-words-joined-with-hyphens-pluralised}
+```
 
-Three or more words never produce extra slash segments. Extra words become part of the hyphenated resource: `SuperAdminOrderItem` → namespace `super`, resource `admin-order-item` → `/super/admin-order-items`.
+Always **exactly two path segments** — one slash, never more. Hyphens only appear inside the resource when there are two or more remaining words.
 
-`Core` prepends `base_prefix` (default `/api/v1`) to every controller's prefix at startup. Final URL = `base_prefix` + `controller.prefix` + route path. Do not encode the API version in the controller name — put it in `base_prefix` instead.
+| Class → split | Namespace | Resource | Prefix |
+|---|---|---|---|
+| `UserController` → `[User]` | — | `users` | `/users` |
+| `AdminUserController` → `[Admin, User]` | `admin` | `users` | `/admin/users` |
+| `SuperAdminReportController` → `[Super, Admin, Report]` | `super` | `admin-reports` | `/super/admin-reports` |
+| `SuperAdminOrderItemController` → `[Super, Admin, Order, Item]` | `super` | `admin-order-items` | `/super/admin-order-items` |
+
+The slash in `/admin/users` is the namespace/resource separator — not a word separator. The same slash appears in `/super/admin-reports`. There is always exactly one.
+
+`Core` prepends `base_prefix` (default `/api/v1`) to every controller at startup. Final URL = `base_prefix` + `controller.prefix` + route path. Do not encode the API version in the controller name — put it in `base_prefix` instead.
 
 #### Example
 

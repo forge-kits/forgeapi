@@ -969,19 +969,24 @@ async def create(self, payload: PostCreatePayload) -> PostResponse: ...
 
 ### Auto-prefix and namespace
 
-If `prefix` is not set on the class, it is derived from the class name at definition time:
+If `prefix` is not set on the class, it is derived from the class name at definition time.
 
-- **First CamelCase word** → namespace (one URL segment)
-- **All remaining words** → resource name, joined with hyphens, then pluralised
+**Formula** (strip `Controller`, split on CamelCase):
 
-| Class | Auto prefix |
-|---|---|
-| `UserController` | `/users` |
-| `AdminUserController` | `/admin/users` |
-| `PostCommentController` | `/post/comments` |
-| `SuperAdminOrderItemController` | `/super/admin-order-items` |
+```
+/{first-word}/{remaining-words-joined-with-hyphens-then-pluralised}
+```
 
-Three or more words never produce extra slash segments — extra words become part of the hyphenated resource name. `SuperAdminOrderItem` → namespace `super`, resource `admin-order-item` → `/super/admin-order-items`.
+The result is **always exactly two path segments** — one slash, never more. Hyphens appear only inside the resource part when there are two or more remaining words.
+
+| Class → split | Namespace | Resource | Auto prefix |
+|---|---|---|---|
+| `UserController` → `[User]` | — | `users` | `/users` |
+| `AdminUserController` → `[Admin, User]` | `admin` | `users` | `/admin/users` |
+| `SuperAdminReportController` → `[Super, Admin, Report]` | `super` | `admin-reports` | `/super/admin-reports` |
+| `SuperAdminOrderItemController` → `[Super, Admin, Order, Item]` | `super` | `admin-order-items` | `/super/admin-order-items` |
+
+The slash in `/admin/users` is the **namespace/resource separator** — not a word separator. The same slash appears in `/super/admin-reports`. There is always exactly one.
 
 ### API versioning — use base_prefix, not the controller name
 
