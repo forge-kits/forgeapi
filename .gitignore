@@ -5,5 +5,7 @@ backend
 .idea
 .claude
 .DS_Store
+docker-compose.yml
+db_data
 nuxt-forgeapi/
 tests/

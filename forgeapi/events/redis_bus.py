@@ -211,24 +211,48 @@ class RedisBus:
             )
 
         pattern = f"{self._namespace}:*"
-        pubsub = self._redis.pubsub()
-        await pubsub.psubscribe(pattern)
-        logger.debug("RedisBus: listening on pattern '%s'", pattern)
+        reconnect_delay = 1.0
 
-        try:
-            async for message in pubsub.listen():
-                if message["type"] != "pmessage":
-                    continue
-                await self._dispatch(message)
-        except asyncio.CancelledError:
-            pass
-        finally:
+        while True:
+            pubsub = self._redis.pubsub()
             try:
-                await pubsub.punsubscribe(pattern)
-                await pubsub.aclose()
+                await pubsub.psubscribe(pattern)
+                logger.debug("RedisBus: listening on pattern '%s'", pattern)
+                reconnect_delay = 1.0
+
+                while True:
+                    # get_message(timeout=N) returns None on silence instead of raising TimeoutError.
+                    # This avoids the crash when no events arrive for a long time.
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True,
+                        timeout=1.0,
+                    )
+                    if message is not None and message.get("type") == "pmessage":
+                        await self._dispatch(message)
+
+            except asyncio.CancelledError:
+                break
             except Exception as exc:
-                logger.debug("RedisBus: error during pubsub cleanup: %s", exc)
-            logger.debug("RedisBus: listener stopped")
+                logger.warning(
+                    "RedisBus: connection error (%s), reconnecting in %.0fs…",
+                    exc,
+                    reconnect_delay,
+                )
+            finally:
+                try:
+                    await pubsub.punsubscribe(pattern)
+                    await pubsub.aclose()
+                except Exception as exc:
+                    logger.debug("RedisBus: error during pubsub cleanup: %s", exc)
+
+            try:
+                await asyncio.sleep(reconnect_delay)
+            except asyncio.CancelledError:
+                break
+
+            reconnect_delay = min(reconnect_delay * 2, 60.0)
+
+        logger.debug("RedisBus: listener stopped")
 
     async def _dispatch(self, message: dict) -> None:
         raw_channel = message["channel"]
@@ -288,7 +312,18 @@ class RedisBus:
                 "RedisBus requires the redis package. "
                 "Install it: pip install redis"
             )
-        self._redis = aioredis.from_url(self._url, decode_responses=True)
+        self._redis = aioredis.from_url(
+            self._url,
+            decode_responses=True,
+            # Send Redis-level PING every 15 s through the pubsub connection itself.
+            # Without this, Redis closes idle subscriber connections when the server
+            # has a non-zero `timeout` setting, causing the silent drops seen in prod.
+            # socket_keepalive only works at the TCP/OS layer and does not prevent this.
+            health_check_interval=15,
+            socket_keepalive=True,
+            retry_on_timeout=True,
+            socket_connect_timeout=10,
+        )
         logger.debug(
             "RedisBus: connected to '%s' (namespace='%s')",
             self._url,
@@ -324,4 +359,8 @@ class RedisBus:
             except asyncio.CancelledError:
                 pass
         self._listener_task = None
+        # Wait for in-flight handler tasks before closing the connection so that
+        # handlers that call emit() don't fail with a disconnected client.
+        if self._bg_tasks:
+            await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
         await self.disconnect()
