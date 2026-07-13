@@ -207,10 +207,13 @@ class EventBus:
                         "Redis subscriber started, listening on '%s*'", _CHANNEL_PREFIX
                     )
                     retry_delay = 1.0
-                    async for message in pubsub.listen():
-                        if message["type"] != "pmessage":
-                            continue
-                        await self._handle_redis_message(message["data"])
+                    while True:
+                        message = await pubsub.get_message(
+                            ignore_subscribe_messages=True,
+                            timeout=1.0,
+                        )
+                        if message is not None and message.get("type") == "pmessage":
+                            await self._handle_redis_message(message["data"])
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
