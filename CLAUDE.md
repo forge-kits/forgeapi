@@ -8,6 +8,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Published to PyPI as `forge-kits`. Requires Python 3.11+.
 
+## MCP Server
+
+forge-kits ships an MCP server so Claude can look up API docs and generate boilerplate without reading source files.
+
+**Install:**
+```bash
+pip install forge-kits[mcp]
+```
+
+**Add to `.claude/settings.json` in the user's project:**
+```json
+{
+  "mcpServers": {
+    "forge-kits": {
+      "command": "forgeapi-mcp"
+    }
+  }
+}
+```
+
+**Available tools:**
+- `get_docs(topic)` — API reference for: `core`, `controllers`, `events`, `auth`, `permissions`, `pagination`, `schemas`, `middleware`, `cli`, `config`
+- `get_example(pattern)` — Complete working code for: `crud_controller`, `redis_event`, `stream_event`, `jwt_auth`, `rbac`, `pagination`, `guard`
+- `generate_controller(name, routes)` — Generate a Controller class
+- `generate_event(name, fields)` — Generate an Event class + listener
+- `generate_schema(name, fields, mode)` — Generate Pydantic schemas
+- `project_info(path)` — Read `forgeapi.toml` and list project files
+
 ## Commands
 
 ```bash

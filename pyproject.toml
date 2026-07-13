@@ -27,9 +27,11 @@ full-asyncpg  = ["forge-kits[auth,asyncpg]"]
 full-aiosqlite = ["forge-kits[auth,aiosqlite]"]
 full-aiomysql = ["forge-kits[auth,aiomysql]"]
 full          = ["forge-kits[auth,asyncpg,aiosqlite,aiomysql]"]
+mcp           = ["mcp>=1.0"]
 
 [project.scripts]
-forgeapi = "forgeapi.cli.main:app"
+forgeapi     = "forgeapi.cli.main:app"
+forgeapi-mcp = "forgeapi.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["forgeapi"]
