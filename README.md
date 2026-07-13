@@ -52,6 +52,7 @@
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
     - [Recording jobs](#recording-jobs)
+17. [MCP Server](#17-mcp-server)
 
 ---
 
@@ -59,6 +60,29 @@
 
 ```bash
 pip install forge-kits
+```
+
+### Optional dependencies
+
+| Extra | Installs | Use when |
+|---|---|---|
+| `auth` | `pyjwt` | JWT or Cookie auth strategy |
+| `asyncpg` | `tortoise-orm`, `asyncpg` | PostgreSQL |
+| `aiosqlite` | `tortoise-orm`, `aiosqlite` | SQLite |
+| `aiomysql` | `tortoise-orm`, `aiomysql` | MySQL / MariaDB |
+| `db` | `tortoise-orm` | ORM only, bring your own driver |
+| `full-asyncpg` | auth + asyncpg | PostgreSQL + JWT |
+| `full-aiosqlite` | auth + aiosqlite | SQLite + JWT |
+| `full-aiomysql` | auth + aiomysql | MySQL + JWT |
+| `full` | auth + all three drivers | everything |
+| `mcp` | `mcp` | forge-kits MCP server for AI-assisted development |
+
+```bash
+pip install forge-kits[full-asyncpg]   # PostgreSQL + JWT
+pip install forge-kits[mcp]            # MCP server
+```
+
+```bash
 forgeapi init my-project
 cd my-project
 
@@ -2114,3 +2138,40 @@ The following paths are never captured to prevent recording Telescope's own traf
 - Response body buffering is capped at **64 KB**. Larger responses are captured partially.
 - Request body passed to `json.loads` is also capped at 64 KB.
 - The WebSocket broadcast is scheduled as an `asyncio.Task` and never blocks the request path.
+
+---
+
+## 17. MCP Server
+
+forge-kits ships an MCP server that exposes API docs and code generation tools directly to AI assistants (Claude Code, Cursor, etc.).
+
+### Install
+
+```bash
+pip install forge-kits[mcp]
+```
+
+### Wire up in your project
+
+Add to `.claude/settings.json` (or your editor's MCP config):
+
+```json
+{
+  "mcpServers": {
+    "forge-kits": {
+      "command": "forgeapi-mcp"
+    }
+  }
+}
+```
+
+### Available tools
+
+| Tool | Description |
+|---|---|
+| `get_docs(topic)` | API reference for: `core`, `controllers`, `events`, `auth`, `permissions`, `pagination`, `schemas`, `middleware`, `cli`, `config` |
+| `get_example(pattern)` | Complete working code for: `crud_controller`, `redis_event`, `stream_event`, `jwt_auth`, `rbac`, `pagination`, `guard` |
+| `generate_controller(name, routes)` | Generate a `Controller` class |
+| `generate_event(name, fields)` | Generate an `Event` class + listener |
+| `generate_schema(name, fields, mode)` | Generate Pydantic schemas |
+| `project_info(path)` | Read `forgeapi.toml` and scan project structure |
