@@ -21,13 +21,160 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("forge-kits")
+mcp = FastMCP(
+    "forge-kits",
+    instructions="""\
+forge-kits CLI and API toolkit for FastAPI.
+
+RULES — must follow for every forge-kits project:
+- Dev server: `forgeapi runserver --reload` — NEVER uvicorn directly
+- Migrations: `forgeapi db:*` — NEVER aerich, NEVER pip install aerich
+- Code generation: `forgeapi make:*` — prefer CLI over writing files manually
+
+Start every session: call scan_project('.') then get_docs('cheatsheet').
+For advanced topics call get_docs with: workflow, core, controllers, events,
+auth, permissions, schemas, middleware, cli, config, models,
+tortoise (basic), tortoise_advanced (Q/prefetch/transactions).
+""",
+)
 
 # ---------------------------------------------------------------------------
 # Topic docs database
 # ---------------------------------------------------------------------------
 
 _DOCS: dict[str, str] = {
+
+"cheatsheet": """\
+# forge-kits cheatsheet
+
+## Controller skeleton
+```python
+class PostController(Controller):
+    prefix = "/posts"; tags = ["posts"]
+
+    @route.get("/")
+    async def index(self, pagination: Pagination) -> dict:
+        total, items = await asyncio.gather(Post.all().count(),
+            Post.all().order_by("-created_at").offset(pagination.offset).limit(pagination.limit))
+        return {"items": items, "total": total, "page": pagination.page}
+
+    @route.post("/", status_code=201)
+    async def create(self, payload: PostCreate, user: CurrentUser) -> dict:
+        post = await Post.create(**payload.model_dump(), author_id=int(user.id))
+        return PostResponse.model_validate(post).model_dump()
+
+    @route.get("/{id}")
+    async def show(self, id: int) -> dict:
+        post = await Post.get_or_none(id=id)
+        if not post: raise HTTPException(404)
+        return PostResponse.model_validate(post).model_dump()
+
+    @route.patch("/{id}")
+    async def update(self, id: int, payload: PostUpdate, user: CurrentUser) -> dict:
+        post = await Post.get_or_none(id=id, author_id=int(user.id))
+        if not post: raise HTTPException(404)
+        await post.update_from_dict(payload.model_dump(exclude_none=True)).save()
+        return PostResponse.model_validate(post).model_dump()
+
+    @route.delete("/{id}", status_code=204)
+    async def destroy(self, id: int, user: CurrentUser):
+        if not await Post.filter(id=id, author_id=int(user.id)).delete(): raise HTTPException(404)
+```
+
+## Schemas | Auth | Event
+```python
+class PostResponse(BaseSchema): title: str          # + id/created_at/updated_at inherited
+class PostCreate(BaseCreateSchema): title: str
+class PostUpdate(BaseUpdateSchema): title: str | None = None  # auto-optional
+
+user: CurrentUser   # 401 if missing  |  user: OptionalUser  # None if missing
+access = auth.create_access_token({"sub": str(user.id), "username": user.username})
+
+class OrderShipped(Event):
+    background = True
+    def __init__(self, order_id: int) -> None: self.order_id = order_id
+
+@listen(OrderShipped)
+async def handle(event: OrderShipped) -> None: ...
+await OrderShipped(order_id=1).dispatch()
+```
+
+## Common queries
+```python
+post  = await Post.get_or_none(id=id)
+posts = await Post.filter(is_active=True).order_by("-created_at").offset(0).limit(20)
+total = await Post.filter(is_active=True).count()
+post  = await Post.create(**payload.model_dump(), author_id=int(user.id))
+await post.update_from_dict(payload.model_dump(exclude_none=True)).save()
+await Post.filter(author_id=1).update(is_active=False); await post.delete()
+```
+
+## CLI
+```bash
+forgeapi make:controller Post && forgeapi make:model Post
+forgeapi make:event OrderShipped   # → event + listener files
+forgeapi generate:schema Post --payload --response
+forgeapi db:makemigrations && forgeapi db:migrate
+forgeapi runserver --reload        # NOT uvicorn directly
+```
+""",
+
+"workflow": """\
+# forge-kits: Workflow rules for Claude
+
+## ALWAYS use forgeapi CLI — never the underlying tool directly
+
+| Task | Command to use | NEVER do this |
+|------|---------------|---------------|
+| Start dev server | `forgeapi runserver --reload` | `uvicorn main:app --reload` |
+| DB: init migrations | `forgeapi db:init` | `aerich init` |
+| DB: create migration | `forgeapi db:makemigrations` | `aerich migrate --name ...` |
+| DB: apply migrations | `forgeapi db:migrate` | `aerich upgrade` |
+| Generate controller | `forgeapi make:controller Post` | writing files manually |
+| Generate model | `forgeapi make:model Post` | writing files manually |
+| Generate event | `forgeapi make:event OrderShipped` | writing files manually |
+
+## DO NOT install or reference aerich
+
+forge-kits wraps migrations through `forgeapi db:*`. Do NOT:
+- `pip install aerich`
+- Add `aerich` to `pyproject.toml` or `requirements.txt`
+- Run `aerich` commands directly
+
+## DO NOT run uvicorn directly
+
+Always use the `forgeapi runserver` abstraction:
+```bash
+forgeapi runserver                       # localhost:8000
+forgeapi runserver --reload              # with auto-reload (development)
+forgeapi runserver --port 9000           # custom port
+forgeapi runserver --host 0.0.0.0 --port 8080
+```
+
+## Canonical new-project setup sequence
+
+```bash
+forgeapi init my-project        # scaffold project (interactive prompts)
+cd my-project
+pip install -e .                # or: uv sync
+forgeapi db:init                # init migration config
+forgeapi db:makemigrations      # generate first migration
+forgeapi db:migrate             # apply migrations
+forgeapi runserver --reload     # start dev server
+```
+
+## Code-generation reference (prefer CLI over manual files)
+
+```bash
+forgeapi make:controller Post         # app/controllers/post_controller.py
+forgeapi make:controller AdminUser    # app/controllers/admin/user_controller.py
+forgeapi make:model Post              # database/models/post.py
+forgeapi make:event OrderShipped      # app/events/order_shipped_event.py
+forgeapi make:listener OrderShipped   # app/listeners/order_shipped_listener.py
+forgeapi make:seed User               # database/seeds/user_seeder.py
+forgeapi generate:schema Post --payload --response
+```
+""",
 
 "core": """\
 # forge-kits: Core (entry-point wiring)
@@ -97,6 +244,22 @@ register_tortoise(
 - `Core.include_router(router, prefix="")` prepends `base_prefix`.
 - `core.auth` — the `AuthBackend` instance, or `None`.
 - `core.config` — the loaded `KitConfig`.
+
+## Running the dev server
+
+```bash
+forgeapi runserver --reload    # always use this — NOT uvicorn main:app directly
+forgeapi runserver --port 9000 --host 0.0.0.0
+```
+
+## DB migrations (after defining models)
+
+```bash
+forgeapi db:init
+forgeapi db:makemigrations
+forgeapi db:migrate
+```
+Do NOT install or run aerich directly — forgeapi db:* handles everything.
 """,
 
 "controllers": """\
@@ -786,16 +949,19 @@ forgeapi generate:schema Post --payload --response
 ```
 
 ## DB commands (requires tortoise-orm extra)
+
+Use these — NEVER run aerich commands or install aerich directly.
+
 ```
-forgeapi db:init                 # initialise aerich migration config
-forgeapi db:makemigrations [-n <name>]  # generate migration
-forgeapi db:migrate              # apply pending migrations
-forgeapi db:downgrade            # revert last migration
-forgeapi db:history              # show migration log
-forgeapi db:seed                 # run all seeders
-forgeapi db:seed User Post       # run specific seeders by class name
-forgeapi db:fresh                # TRUNCATE all tables (asks confirmation)
-forgeapi db:fresh --force        # DROP all tables (irreversible)
+forgeapi db:init                        # initialise migration config
+forgeapi db:makemigrations [-n <name>]  # generate a new migration
+forgeapi db:migrate                     # apply pending migrations
+forgeapi db:downgrade                   # revert last migration
+forgeapi db:history                     # show migration log
+forgeapi db:seed                        # run all seeders
+forgeapi db:seed User Post              # run specific seeders by class name
+forgeapi db:fresh                       # TRUNCATE all tables (asks confirmation)
+forgeapi db:fresh --force               # DROP all tables (irreversible)
 ```
 
 ## Inspection commands
@@ -884,6 +1050,236 @@ settings = Settings()
 - `base_prefix = "/api/v1"`
 - `auth.strategy = "jwt"`
 - `pagination.default_limit = 20, max_limit = 100`
+""",
+
+"models": """\
+# forge-kits: Tortoise ORM Models
+
+## Basic model structure
+```python
+from tortoise import fields
+from tortoise.models import Model
+
+class Post(Model):
+    id         = fields.IntField(primary_key=True)   # auto-added if omitted
+    title      = fields.CharField(max_length=255)
+    body       = fields.TextField()
+    is_active  = fields.BooleanField(default=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "posts"            # defaults to lowercase class name
+        ordering = ["-created_at"] # default QuerySet ordering
+```
+
+## All field types
+```python
+# Numeric
+fields.IntField(primary_key=True)    # int, auto-increment PK
+fields.BigIntField()                  # 64-bit int
+fields.SmallIntField()                # 16-bit int
+fields.FloatField()                   # double precision
+fields.DecimalField(max_digits=10, decimal_places=2)
+
+# String
+fields.CharField(max_length=255)
+fields.TextField()                    # unlimited
+fields.UUIDField()                    # uuid.UUID, auto if pk=True
+
+# Date/time
+fields.DatetimeField(auto_now_add=True)  # set on create
+fields.DatetimeField(auto_now=True)      # update on every save
+fields.DateField()
+fields.TimeField()
+
+# Other
+fields.BooleanField(default=False)
+fields.JSONField(default=dict)        # stored as JSON string
+fields.BinaryField()                  # bytes
+
+# Nullable / optional
+fields.CharField(max_length=100, null=True)
+fields.IntField(null=True)
+```
+
+## Relationships
+```python
+class Post(Model):
+    # Many-to-one (FK)
+    author = fields.ForeignKeyField(
+        "models.User",              # "app_label.ModelName"
+        related_name="posts",       # reverse accessor: user.posts.all()
+        on_delete=fields.CASCADE,   # CASCADE | SET_NULL | SET_DEFAULT | RESTRICT | NO_ACTION
+        null=True,                  # optional FK
+    )
+    author_id: int                  # raw FK column (auto-available as {field}_id)
+
+    # Many-to-many
+    tags = fields.ManyToManyField(
+        "models.Tag",
+        related_name="posts",
+        through="post_tags",        # optional explicit through table name
+    )
+
+    # One-to-one
+    profile = fields.OneToOneField("models.Profile", related_name="user")
+```
+
+Access reverse relations:
+```python
+# FK reverse (BackwardFKRelation) — always needs await or prefetch
+posts = await user.posts.all()
+posts = await user.posts.filter(is_active=True).order_by("-created_at")
+
+# M2M — same syntax
+tags = await post.tags.all()
+await post.tags.add(tag)       # add to M2M
+await post.tags.remove(tag)    # remove from M2M
+await post.tags.clear()        # remove all
+```
+
+## Meta class options
+```python
+class Meta:
+    table = "my_posts"                    # explicit table name
+    ordering = ["-created_at", "title"]   # default sort
+    unique_together = [("author_id", "slug")]
+    indexes = [("title",), ("author_id", "created_at")]
+    abstract = True                       # base class, no table
+```
+
+## database/models/__init__.py
+```python
+from .user import User
+from .post import Post
+# add every new model here — Tortoise discovers via this package
+```
+
+## TORTOISE_ORM config → see get_docs('config')
+## Migrations → see get_docs('workflow') or get_docs('cli')
+""",
+
+"tortoise": """\
+# forge-kits: Tortoise ORM — Basic queries
+
+## CRUD
+```python
+post = await Post.create(**payload.model_dump(), author_id=int(user.id))
+post, created = await Post.get_or_create(slug="x", defaults={"title": "X"})
+post = await Post.get(id=1)           # raises DoesNotExist
+post = await Post.get_or_none(id=1)  # None if missing
+post.title = "New"; await post.save()
+await post.update_from_dict(payload.model_dump(exclude_none=True)).save()
+await post.delete()
+```
+
+## Filter / order / paginate
+```python
+posts  = await Post.filter(is_active=True, author_id=1).order_by("-created_at").offset(0).limit(20)
+total  = await Post.all().count()
+exists = await Post.filter(slug="x").exists()
+first  = await Post.filter(is_active=True).first()
+
+# bulk ops
+await Post.filter(author_id=1).update(is_active=False)
+await Post.filter(author_id=1).delete()
+```
+
+## Lookup suffixes
+```python
+Post.filter(title__icontains="hello")  # ILIKE %hello%
+Post.filter(created_at__gte=dt)        # >=
+Post.filter(id__in=[1, 2, 3])          # IN
+Post.filter(author_id__isnull=False)   # IS NOT NULL
+Post.exclude(is_active=False)
+```
+
+## Async gather (parallel queries — use in every index/list endpoint)
+```python
+import asyncio
+total, items = await asyncio.gather(
+    Post.filter(is_active=True).count(),
+    Post.filter(is_active=True).order_by("-created_at").offset(pagination.offset).limit(pagination.limit),
+)
+```
+
+For advanced queries (Q objects, prefetch_related, annotate, bulk_create, transactions, raw SQL)
+call get_docs('tortoise_advanced').
+""",
+
+"tortoise_advanced": """\
+# forge-kits: Tortoise ORM — Advanced queries
+
+## Q objects (OR / NOT)
+```python
+from tortoise.expressions import Q
+Post.filter(Q(title__icontains="py") | Q(body__icontains="py"))
+Post.filter(~Q(is_active=False))
+Post.filter(Q(author_id=1) & Q(is_active=True))
+```
+
+## Prefetch relations (avoids N+1 queries)
+```python
+posts = await Post.all().prefetch_related("author", "tags")
+for p in posts:
+    print(p.author.username)         # no extra query
+    print([t.name for t in p.tags])  # no extra query
+
+posts = await Post.all().select_related("author")          # JOIN (FK/O2O only)
+posts = await Post.all().prefetch_related("author__profile")  # nested
+```
+
+## values / values_list
+```python
+rows = await Post.filter(is_active=True).values("id", "title", "author_id")
+# → [{"id": 1, "title": "Hello", ...}, ...]
+
+ids = await Post.all().values_list("id", flat=True)
+# → [1, 2, 3, ...]
+```
+
+## Aggregations
+```python
+from tortoise.functions import Count, Sum, Max, Min, Avg
+
+total = await Post.all().count()
+result = await Post.annotate(n=Count("id")).group_by("author_id").values("author_id", "n")
+max_id = await Post.all().annotate(m=Max("id")).values("m")
+```
+
+## Bulk create
+```python
+posts = [Post(title=f"Post {i}", author_id=1) for i in range(100)]
+await Post.bulk_create(posts, batch_size=50)
+await Post.bulk_create(posts, update_fields=["title"], on_conflict=["slug"])
+```
+
+## Transactions
+```python
+from tortoise import transactions
+
+async with transactions.in_transaction():
+    user = await User.create(email="alice@example.com")
+    await Profile.create(user_id=user.id, bio="Hello")
+
+from tortoise.transactions import atomic
+
+@atomic()
+async def register(email: str) -> User:
+    user = await User.create(email=email)
+    await Profile.create(user_id=user.id)
+    return user
+```
+
+## Raw SQL
+```python
+from tortoise import Tortoise
+conn = Tortoise.get_connection("default")
+rows = await conn.execute_query_dict(
+    "SELECT id, title FROM posts WHERE author_id = $1", [user_id]
+)
+```
 """,
 
 }
@@ -1386,8 +1782,29 @@ class AdminController(Controller):
 def get_docs(topic: str) -> str:
     """Return inline API documentation for a forge-kits topic.
 
-    Topics: core, controllers, events, auth, permissions, pagination, schemas,
-            middleware, cli, config
+    IMPORTANT: Call get_docs('workflow') FIRST when starting any forge-kits project
+    or task — it contains critical rules about which CLI commands to use and which
+    to avoid (e.g. never use uvicorn or aerich directly).
+
+    Start with 'cheatsheet' — covers 80% of tasks in ~200 tokens.
+    Only call specific topics when you need more detail.
+
+    Topics (lightest → heaviest):
+      cheatsheet       ~200 tok  controller+queries+auth+events quick ref
+      workflow         ~560 tok  CLI rules, canonical project setup
+      pagination       ~320 tok
+      config           ~450 tok  forgeapi.toml + TORTOISE_ORM config
+      schemas          ~570 tok
+      middleware       ~525 tok
+      core             ~645 tok
+      cli              ~660 tok
+      auth             ~800 tok
+      permissions      ~810 tok
+      controllers      ~935 tok
+      events           ~965 tok
+      tortoise         ~400 tok  basic CRUD + filter (call this first)
+      tortoise_advanced~550 tok  Q objects, prefetch, transactions, raw SQL
+      models           ~900 tok  field types, relationships, Meta
 
     Args:
         topic: One of the topic names listed above (case-insensitive).
@@ -1661,6 +2078,383 @@ def generate_schema(name: str, fields: list[str], mode: str = "all") -> str:
         lines += ([f"    {fn}: {ft} | None = None" for fn, ft, _ in parsed] or ["    pass"])
 
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# AST helpers for scan_project
+# ---------------------------------------------------------------------------
+
+def _ast_parse_safe(path: Path) -> "ast.Module | None":
+    import ast
+    try:
+        return ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        return None
+
+
+def _node_name(node: object) -> str:
+    import ast
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_node_name(node.value)}.{node.attr}"
+    return ""
+
+
+def _call_name(node: object) -> str:
+    import ast
+    if isinstance(node, ast.Call):
+        return _node_name(node.func)
+    return _node_name(node)
+
+
+def _scan_models(files: list[Path], root: Path) -> list[str]:
+    import ast
+    out: list[str] = []
+    model_bases = {"Model", "PermissionsMixin"}
+    for f in files:
+        tree = _ast_parse_safe(f)
+        if not tree:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = [_node_name(b) for b in node.bases]
+            if not any(b in model_bases for b in bases):
+                continue
+            table = node.name.lower()
+            fields: list[str] = []
+            for item in node.body:
+                if isinstance(item, ast.Assign):
+                    for t in item.targets:
+                        if not isinstance(t, ast.Name) or t.id.startswith("_"):
+                            continue
+                        fname = _call_name(item.value)
+                        if fname and "field" in fname.lower():
+                            # extract key kwargs for display
+                            kwargs: list[str] = []
+                            if isinstance(item.value, ast.Call):
+                                for kw in item.value.keywords:
+                                    if kw.arg in ("max_length", "null", "default", "primary_key",
+                                                  "unique", "on_delete", "related_name"):
+                                        if isinstance(kw.value, ast.Constant):
+                                            kwargs.append(f"{kw.arg}={kw.value.value!r}")
+                                        elif isinstance(kw.value, ast.Attribute):
+                                            kwargs.append(f"{kw.arg}={_node_name(kw.value)}")
+                            short = fname.split(".")[-1]
+                            kw_str = f"({', '.join(kwargs)})" if kwargs else ""
+                            fields.append(f"    {t.id}: {short}{kw_str}")
+                if isinstance(item, ast.ClassDef) and item.name == "Meta":
+                    for meta_item in item.body:
+                        if isinstance(meta_item, ast.Assign):
+                            for t in meta_item.targets:
+                                if isinstance(t, ast.Name) and t.id == "table":
+                                    if isinstance(meta_item.value, ast.Constant):
+                                        table = meta_item.value.value
+            try:
+                rel = f.relative_to(root)
+            except ValueError:
+                rel = f
+            out.append(f"  {node.name}  [table={table!r}]  ({rel})")
+            if fields:
+                out.extend(fields[:10])
+                if len(fields) > 10:
+                    out.append(f"    ... +{len(fields) - 10} more")
+    return out
+
+
+def _scan_controllers(files: list[Path], root: Path, base_prefix: str) -> list[str]:
+    import ast
+    out: list[str] = []
+    for f in files:
+        tree = _ast_parse_safe(f)
+        if not tree:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = [_node_name(b) for b in node.bases]
+            if not any("Controller" in b for b in bases):
+                continue
+            prefix = None
+            for item in node.body:
+                if isinstance(item, ast.Assign):
+                    for t in item.targets:
+                        if isinstance(t, ast.Name) and t.id == "prefix":
+                            if isinstance(item.value, ast.Constant):
+                                prefix = item.value.value
+            routes: list[str] = []
+            for item in node.body:
+                if not isinstance(item, ast.AsyncFunctionDef):
+                    continue
+                for dec in item.decorator_list:
+                    method = path = None
+                    if isinstance(dec, ast.Attribute) and _node_name(dec.value) == "route":
+                        method = dec.attr.upper()
+                        path = "/"
+                    elif isinstance(dec, ast.Call):
+                        func = dec.func
+                        if isinstance(func, ast.Attribute) and _node_name(func.value) == "route":
+                            method = func.attr.upper()
+                            path = dec.args[0].value if dec.args and isinstance(dec.args[0], ast.Constant) else "/"
+                    if method and path is not None:
+                        full = f"{base_prefix}{prefix or ''}{path}".replace("//", "/")
+                        routes.append(f"    {method:<6} {full}")
+            try:
+                rel = f.relative_to(root)
+            except ValueError:
+                rel = f
+            out.append(f"  {node.name}  prefix={prefix or 'auto'}  ({rel})")
+            out.extend(routes)
+    return out
+
+
+def _scan_schemas(files: list[Path], root: Path) -> list[str]:
+    import ast
+    schema_bases = {"BaseSchema", "BaseCreateSchema", "BaseUpdateSchema", "BaseModel"}
+    out: list[str] = []
+    for f in files:
+        tree = _ast_parse_safe(f)
+        if not tree:
+            continue
+        classes: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = [_node_name(b) for b in node.bases]
+            if any(b in schema_bases for b in bases):
+                classes.append(f"    {node.name}({', '.join(bases)})")
+        if classes:
+            try:
+                rel = f.relative_to(root)
+            except ValueError:
+                rel = f
+            out.append(f"  {rel}:")
+            out.extend(classes)
+    return out
+
+
+def _scan_events(files: list[Path], root: Path) -> list[str]:
+    import ast
+    out: list[str] = []
+    for f in files:
+        tree = _ast_parse_safe(f)
+        if not tree:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = [_node_name(b) for b in node.bases]
+            if "Event" not in bases:
+                continue
+            flags: list[str] = []
+            for item in node.body:
+                if isinstance(item, ast.Assign):
+                    for t in item.targets:
+                        if isinstance(t, ast.Name) and t.id == "background":
+                            if isinstance(item.value, ast.Constant) and item.value.value:
+                                flags.append("background")
+                        if isinstance(t, ast.Name) and t.id == "redis":
+                            if isinstance(item.value, ast.Constant) and item.value.value:
+                                redis_type = "pubsub"
+                                for item2 in node.body:
+                                    if isinstance(item2, ast.Assign):
+                                        for t2 in item2.targets:
+                                            if isinstance(t2, ast.Name) and t2.id == "redis_type":
+                                                if isinstance(item2.value, ast.Constant):
+                                                    redis_type = item2.value.value
+                                flags.append(f"redis/{redis_type}")
+            init_params: list[str] = []
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+                    for arg in item.args.args[1:]:
+                        init_params.append(arg.arg)
+            flag_str = f" [{', '.join(flags)}]" if flags else ""
+            out.append(f"  {node.name}{flag_str}")
+            if init_params:
+                out.append(f"    fields: {', '.join(init_params)}")
+    return out
+
+
+def _scan_listeners(files: list[Path], root: Path) -> list[str]:
+    import ast
+    out: list[str] = []
+    for f in files:
+        tree = _ast_parse_safe(f)
+        if not tree:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                if (
+                    isinstance(dec, ast.Call)
+                    and isinstance(dec.func, ast.Name)
+                    and dec.func.id == "listen"
+                    and dec.args
+                ):
+                    event = _node_name(dec.args[0])
+                    out.append(f"  {node.name}  →  {event}")
+    return out
+
+
+def _scan_seeders(files: list[Path], root: Path) -> list[str]:
+    import ast
+    out: list[str] = []
+    for f in files:
+        tree = _ast_parse_safe(f)
+        if not tree:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = [_node_name(b) for b in node.bases]
+            if any("Seeder" in b for b in bases):
+                out.append(f"  {node.name}")
+    return out
+
+
+def _read_pyproject_deps(root: Path) -> list[str]:
+    pp = root / "pyproject.toml"
+    if not pp.exists():
+        return []
+    try:
+        with open(pp, "rb") as fh:
+            data = tomllib.load(fh)
+        return data.get("project", {}).get("dependencies", [])
+    except Exception:
+        return []
+
+
+def _read_env_keys(root: Path) -> list[str]:
+    env = root / ".env"
+    if not env.exists():
+        return []
+    keys: list[str] = []
+    for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            keys.append(line.split("=", 1)[0].strip())
+    return keys
+
+
+@mcp.tool()
+def scan_project(path: str = ".") -> str:
+    """Deep-scan a forge-kits project and return its full structure.
+
+    Reads all Python source files via AST (no imports) to extract:
+    - Tortoise ORM models with field names and types
+    - Controllers with every registered route (METHOD + full path)
+    - Pydantic schema classes grouped by file
+    - Events (background/redis flags, field names)
+    - Listeners and which events they handle
+    - Seeders
+    - pyproject.toml dependencies
+    - .env variable names (values hidden)
+
+    Use this at the start of every coding session on a forge-kits project so you
+    have a complete picture of what already exists before making changes.
+
+    Args:
+        path: Path to the project root (directory containing forgeapi.toml).
+              Defaults to current directory.
+
+    Returns:
+        Structured text report of the entire project.
+    """
+    given = Path(path).expanduser().resolve()
+    toml_path = given if (given.is_file() and given.name == "forgeapi.toml") else given / "forgeapi.toml"
+
+    if not toml_path.exists():
+        return (
+            f"No forgeapi.toml found at '{given}'.\n"
+            "Run `forgeapi init <name>` to scaffold a project."
+        )
+
+    try:
+        with open(toml_path, "rb") as fh:
+            raw = tomllib.load(fh)
+    except Exception as exc:
+        return f"Error reading forgeapi.toml: {exc}"
+
+    root = toml_path.parent
+    defaults = {
+        "models_dir": "database/models", "controllers_dir": "app/controllers",
+        "schemas_dir": "app/schemas", "events_dir": "app/events",
+        "listeners_dir": "app/listeners", "seeds_dir": "database/seeds",
+        "base_prefix": "/api/v1",
+    }
+    struct = {**defaults, **raw.get("structure", {})}
+    proj = raw.get("project", {})
+    auth = {**{"strategy": "jwt"}, **raw.get("auth", {})}
+    base_prefix = struct["base_prefix"]
+
+    sections: list[str] = [
+        f"# Project: {proj.get('name', root.name)}  v{proj.get('version', '?')}",
+        f"  auth={auth['strategy']}  prefix={base_prefix}",
+        "",
+    ]
+
+    def _glob_py(dir_key: str, pattern: str) -> list[Path]:
+        d = root / struct[dir_key]
+        return sorted(d.rglob(pattern)) if d.exists() else []
+
+    # Models
+    model_files = _glob_py("models_dir", "*.py")
+    model_files = [f for f in model_files if f.name != "__init__.py"]
+    model_lines = _scan_models(model_files, root)
+    sections.append("## Models")
+    sections.extend(model_lines if model_lines else ["  (none found)"])
+    sections.append("")
+
+    # Controllers + routes
+    ctrl_files = _glob_py("controllers_dir", "*_controller.py")
+    ctrl_lines = _scan_controllers(ctrl_files, root, base_prefix)
+    sections.append("## Controllers & Routes")
+    sections.extend(ctrl_lines if ctrl_lines else ["  (none found)"])
+    sections.append("")
+
+    # Schemas
+    schema_files = _glob_py("schemas_dir", "*.py")
+    schema_files = [f for f in schema_files if f.name != "__init__.py"]
+    schema_lines = _scan_schemas(schema_files, root)
+    sections.append("## Schemas")
+    sections.extend(schema_lines if schema_lines else ["  (none found)"])
+    sections.append("")
+
+    # Events
+    event_files = _glob_py("events_dir", "*_event.py")
+    event_lines = _scan_events(event_files, root)
+    sections.append("## Events")
+    sections.extend(event_lines if event_lines else ["  (none found)"])
+    sections.append("")
+
+    # Listeners
+    listener_files = _glob_py("listeners_dir", "*_listener.py")
+    listener_lines = _scan_listeners(listener_files, root)
+    sections.append("## Listeners")
+    sections.extend(listener_lines if listener_lines else ["  (none found)"])
+    sections.append("")
+
+    # Seeders
+    seed_files = _glob_py("seeds_dir", "*_seeder.py")
+    seed_lines = _scan_seeders(seed_files, root)
+    sections.append("## Seeders")
+    sections.extend(seed_lines if seed_lines else ["  (none found)"])
+    sections.append("")
+
+    # Dependencies
+    deps = _read_pyproject_deps(root)
+    sections.append("## Dependencies (pyproject.toml)")
+    sections.extend(f"  {d}" for d in deps) if deps else sections.append("  (pyproject.toml not found)")
+    sections.append("")
+
+    # Env keys
+    env_keys = _read_env_keys(root)
+    sections.append("## .env variables (keys only)")
+    sections.extend(f"  {k}" for k in env_keys) if env_keys else sections.append("  (.env not found)")
+
+    return "\n".join(sections)
 
 
 @mcp.tool()

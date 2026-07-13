@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-kits"
-version = "1.0.0"
+version = "1.1.0"
 description = "FastAPI toolkit — auth, pagination, CLI generator"
 readme = "README.md"
 requires-python = ">=3.11"
