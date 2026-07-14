@@ -1,4 +1,3 @@
-import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -18,8 +17,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from .base import AuthStrategy
 from ..models import AuthUser
 from forgeapi.exceptions import ForgeAPIConfigError, TokenExpiredError, TokenInvalidError
+from forgeapi.logging import log
 
-logger = logging.getLogger("forgeapi.auth.jwt")
+_log = log.channel("auth.jwt")
 
 ALLOWED_ALGORITHMS: frozenset = frozenset({"HS256", "HS384", "HS512"})
 
@@ -79,7 +79,7 @@ class JWTStrategy(AuthStrategy):
         self._algorithm = algorithm
         self._access_ttl = access_token_expire_minutes
         self._refresh_ttl = refresh_token_expire_days
-        logger.debug("JWTStrategy ready: algorithm=%s access_ttl=%dm refresh_ttl=%dd", algorithm, access_token_expire_minutes, refresh_token_expire_days)
+        _log.debug("JWTStrategy ready: algorithm=%s access_ttl=%dm refresh_ttl=%dd", algorithm, access_token_expire_minutes, refresh_token_expire_days)
 
     def create_access_token(self, payload: dict) -> str:
         """Create a signed access token.
@@ -140,14 +140,14 @@ class JWTStrategy(AuthStrategy):
         try:
             payload = jwt.decode(token, self._secret, algorithms=[self._algorithm])
         except jwt.ExpiredSignatureError:
-            logger.debug("JWT decode failed: token expired")
+            _log.debug("JWT decode failed: token expired")
             raise TokenExpiredError("Token has expired")
         except jwt.InvalidTokenError:
-            logger.warning("JWT decode failed: invalid token signature or structure")
+            _log.warning("JWT decode failed: invalid token signature or structure")
             raise TokenInvalidError("Invalid token")
 
         if expected_type is not None and payload.get("type") != expected_type:
-            logger.warning(
+            _log.warning(
                 "JWT decode failed: token type='%s', expected '%s'",
                 payload.get("type"),
                 expected_type,
@@ -165,7 +165,7 @@ class JWTStrategy(AuthStrategy):
         Args:
             token: Raw JWT string to revoke.
         """
-        logger.warning(
+        _log.warning(
             "JWTStrategy.blacklist() called but token blacklisting is not implemented — "
             "the token will remain valid until expiry. "
             "Override this method or use a Redis-backed implementation."
@@ -183,7 +183,7 @@ class JWTStrategy(AuthStrategy):
         """
         credentials: Optional[HTTPAuthorizationCredentials] = await self._bearer(request)
         if not credentials:
-            logger.debug("JWT auth: no Bearer token in request")
+            _log.debug("JWT auth: no Bearer token in request")
             return None
 
         try:
@@ -193,7 +193,7 @@ class JWTStrategy(AuthStrategy):
         except TokenInvalidError as exc:
             raise HTTPException(status_code=401, detail=str(exc))
 
-        logger.debug("JWT auth OK: user_id=%s", payload.get("sub"))
+        _log.debug("JWT auth OK: user_id=%s", payload.get("sub"))
         return AuthUser(
             id=payload.get("sub"),
             username=payload.get("username"),

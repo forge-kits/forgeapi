@@ -3,9 +3,11 @@ from .config import KitConfig, load_config
 from .exceptions import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 from .settings import BaseAppSettings
 from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
+from .database import ModelMixin
 from .events import Event, EventBus, listen, RedisBus
 from .controllers import Controller, route
 from .middleware import Middleware, Guard
+from .logging import Log
 
 __all__ = [
     # Facade
@@ -22,6 +24,8 @@ __all__ = [
     "BaseSchema",
     "BaseCreateSchema",
     "BaseUpdateSchema",
+    # Database
+    "ModelMixin",
     # Events
     "Event",
     "EventBus",
@@ -33,15 +37,24 @@ __all__ = [
     # Middleware
     "Middleware",
     "Guard",
+    # Logging
+    "Log",
 ]
 
 
 def __getattr__(name: str):
     _auth_exports = {
-        "AuthBackend", "CurrentUser", "OptionalUser",
+        "auth", "Auth", "guard", "Guard",
+        "CurrentUser", "OptionalUser",
+        "AuthUser", "TelegramUser",
         "JWTStrategy", "CookieStrategy", "TelegramStrategy",
     }
-    _db_exports = {"Paginator", "Pagination"}
+    _db_exports = {
+        "Paginator", "Pagination",
+        "CursorPaginator", "CursorPagination",
+        "PaginatedResponse", "CursorResponse",
+        "PaginationMeta", "PaginationLinks", "CursorMeta",
+    }
 
     if name in _auth_exports:
         try:
@@ -57,7 +70,12 @@ def __getattr__(name: str):
 
     if name in _db_exports:
         try:
-            from .pagination import Paginator, Pagination  # noqa: F401
+            from .pagination import (  # noqa: F401
+                Paginator, Pagination,
+                CursorPaginator, CursorPagination,
+                PaginatedResponse, CursorResponse,
+                PaginationMeta, PaginationLinks, CursorMeta,
+            )
         except ImportError:
             raise ImportError(
                 f"'{name}' requires tortoise-orm. Install it: pip install forge-kits[db]"

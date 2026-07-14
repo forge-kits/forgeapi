@@ -1,4 +1,3 @@
-import logging
 import os
 
 from fastapi import FastAPI
@@ -10,8 +9,9 @@ from .middleware.rate_limit import RateLimitMiddleware
 from .middleware.request_id import RequestIDMiddleware
 from .middleware.logging import LoggingMiddleware
 from .pagination.paginator import Paginator
+from .logging import log
 
-logger = logging.getLogger("forgeapi.core")
+_log = log.channel("core")
 
 
 class Core:
@@ -78,7 +78,7 @@ class Core:
         self._debug = debug
 
         if debug:
-            logger.warning(
+            _log.warning(
                 "ForgeAPI running in DEBUG mode — "
                 "Telescope active at /_forge/telescope/requests. "
                 "Do not use in production."
@@ -101,50 +101,47 @@ class Core:
 
         if access_log:
             self._app.add_middleware(LoggingMiddleware)
-            logger.debug("Middleware: access logging enabled")
+            _log.debug("Middleware: access logging enabled")
         if request_id:
             self._app.add_middleware(RequestIDMiddleware)
-            logger.debug("Middleware: request ID injection enabled")
+            _log.debug("Middleware: request ID injection enabled")
         if cors is not False:
             origins = cors if isinstance(cors, list) else ["*"]
             add_cors(self._app, origins=origins)
-            logger.debug("Middleware: CORS enabled, origins=%s", origins)
+            _log.debug("Middleware: CORS enabled, origins=%s", origins)
         if rate_limit is not False:
             rpm = rate_limit if not isinstance(rate_limit, bool) else 60
             self._app.add_middleware(RateLimitMiddleware, requests_per_minute=rpm)
-            logger.debug("Middleware: rate limit %d req/min", rpm)
+            _log.debug("Middleware: rate limit %d req/min", rpm)
         if pagination is not False:
             default_limit = pagination if not isinstance(pagination, bool) else 0
             Paginator.configure(
                 default_limit=default_limit or self._cfg.pagination.default_limit,
                 max_limit=self._cfg.pagination.max_limit,
             )
-            logger.debug("Pagination configured: default=%d max=%d", Paginator.DEFAULT_LIMIT, Paginator.MAX_LIMIT)
+            _log.debug("Pagination configured: default=%d max=%d", Paginator.DEFAULT_LIMIT, Paginator.MAX_LIMIT)
         if auth is not False:
-            try:
-                from .auth.backend import AuthBackend, set_global_backend
-            except ImportError:
-                raise ForgeAPIImportError(
-                    "Auth backend could not be loaded.",
-                    hint="Install the auth extra: pip install forge-kits[auth]",
-                )
+            from .auth.guard import Guard
+            from .auth.facade import auth as _auth_facade
             strategy_name = auth if isinstance(auth, str) else ""
-            self._auth = AuthBackend(strategy=self._build_strategy(strategy_name))
-            set_global_backend(self._auth)
-            logger.debug("Auth: strategy='%s' configured", strategy_name or self._cfg.auth.strategy)
+            strategy = self._build_strategy(strategy_name)
+            _guard = Guard(name="api", strategy=strategy)
+            _auth_facade.register("api", _guard)
+            _auth_facade.set_default("api")
+            _log.debug("Auth configured", strategy=strategy_name or self._cfg.auth.strategy)
         if events:
             from .events.bus import EventBus
             EventBus.get_instance().load_from_dir(self._cfg.structure.listeners_dir)
-            logger.debug("Events: listeners loaded from '%s'", self._cfg.structure.listeners_dir)
+            _log.debug("Events: listeners loaded from '%s'", self._cfg.structure.listeners_dir)
         if permissions is True:
             permissions = self._find_permissions_model()
         if permissions not in (None, False):
             from .permissions.registry import setup_permissions
             setup_permissions(user_model=permissions)
-            logger.debug("Permissions: enabled for model '%s'", getattr(permissions, "__name__", permissions))
+            _log.debug("Permissions: enabled for model '%s'", getattr(permissions, "__name__", permissions))
         if controllers:
             self._load_controllers()
-            logger.debug("Controllers: auto-discovered from '%s'", self._cfg.structure.controllers_dir)
+            _log.debug("Controllers: auto-discovered from '%s'", self._cfg.structure.controllers_dir)
 
     # ── Strategy builders ─────────────────────────────────────────────────────
 
@@ -267,7 +264,7 @@ class Core:
                 hint="Pass the model explicitly: Core(app, permissions=User).",
             )
 
-        logger.debug("Permissions: auto-detected model '%s'", found[0].__name__)
+        _log.debug("Permissions: auto-detected model '%s'", found[0].__name__)
         return found[0]
 
     # ── Controllers ───────────────────────────────────────────────────────────
@@ -297,7 +294,7 @@ class Core:
             try:
                 mod = importlib.import_module(module_path)
             except Exception as exc:
-                logger.error("Failed to load controller '%s': %s", f, exc, exc_info=exc)
+                _log.error("Failed to load controller '%s': %s", f, exc, exc_info=exc)
                 continue
 
             # New style: Controller subclasses with @route decorators
@@ -362,8 +359,9 @@ class Core:
 
     @property
     def auth(self):
-        """The configured AuthBackend, or ``None`` if auth was not enabled."""
-        return self._auth
+        """The global :class:`~forgeapi.auth.facade.Auth` facade, or ``None`` if auth was not enabled."""
+        from .auth.facade import auth as _auth_facade
+        return _auth_facade if _auth_facade._guards else None
 
     @property
     def config(self) -> KitConfig:

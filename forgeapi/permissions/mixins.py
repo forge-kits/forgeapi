@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 from tortoise.models import Model
 from tortoise.queryset import QuerySet
 
+from forgeapi.logging import log
 from .models import Permission, Role, ModelHasRole, ModelHasPermission
 
-logger = logging.getLogger("forgeapi.permissions")
+_log = log.channel("permissions")
 
 
 class PermissionsMixin(Model):

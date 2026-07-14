@@ -1,17 +1,17 @@
 import hashlib
 import hmac
 import json
-import logging
 import time
 from typing import List, Optional, Union
 from urllib.parse import parse_qsl, unquote
 
 from fastapi import Request
 
+from forgeapi.logging import log
 from .base import AuthStrategy
 from ..models import AuthUser, TelegramUser
 
-logger = logging.getLogger("forgeapi.auth.telegram")
+_log = log.channel("auth.telegram")
 
 
 class TelegramStrategy(AuthStrategy):
@@ -55,7 +55,7 @@ class TelegramStrategy(AuthStrategy):
         tokens = [bot_token] if isinstance(bot_token, str) else list(bot_token)
         tokens = [t for t in tokens if t]
         if not tokens:
-            logger.warning(
+            _log.warning(
                 "TelegramStrategy initialized with no bot tokens — "
                 "all requests will be rejected. Set BOT_TOKEN in env."
             )
@@ -67,8 +67,8 @@ class TelegramStrategy(AuthStrategy):
         self._max_age = max_age_seconds
         self._debug = debug
         if debug:
-            logger.warning("TelegramStrategy in DEBUG mode — auth_date expiry check disabled")
-        logger.debug("TelegramStrategy ready with %d token(s), max_age=%s s, debug=%s", self._token_count, max_age_seconds, debug)
+            _log.warning("TelegramStrategy in DEBUG mode — auth_date expiry check disabled")
+        _log.debug("TelegramStrategy ready with %d token(s), max_age=%s s, debug=%s", self._token_count, max_age_seconds, debug)
 
     def validate_init_data(self, init_data: str) -> TelegramUser:
         """Parse and validate raw Telegram ``initData``.
@@ -99,19 +99,19 @@ class TelegramStrategy(AuthStrategy):
 
         received_hash = params.pop("hash", None)
         if not received_hash:
-            logger.warning("Telegram auth rejected: missing 'hash' field in init data")
+            _log.warning("Telegram auth rejected: missing 'hash' field in init data")
             raise HTTPException(status_code=401, detail="Missing hash in Telegram init data")
 
         try:
             auth_date = int(params.get("auth_date", 0))
         except ValueError:
-            logger.warning("Telegram auth rejected: invalid auth_date value: %r", params.get("auth_date"))
+            _log.warning("Telegram auth rejected: invalid auth_date value: %r", params.get("auth_date"))
             raise HTTPException(status_code=401, detail="Invalid auth_date in Telegram init data")
         age = time.time() - auth_date
         if self._debug:
-            logger.debug("Telegram DEBUG: skipping auth_date expiry check (age=%.0f s)", age)
+            _log.debug("Telegram DEBUG: skipping auth_date expiry check (age=%.0f s)", age)
         elif self._max_age is not None and (age < 0 or age > self._max_age):
-            logger.warning(
+            _log.warning(
                 "Telegram auth rejected: init data expired (age=%.0f s, max=%s s)",
                 age, self._max_age,
             )
@@ -127,7 +127,7 @@ class TelegramStrategy(AuthStrategy):
         ]
         valid = any(results)
         if not valid:
-            logger.warning(
+            _log.warning(
                 "Telegram auth rejected: HMAC signature mismatch (tried %d token(s))",
                 self._token_count,
             )
@@ -141,14 +141,14 @@ class TelegramStrategy(AuthStrategy):
         try:
             user_data = json.loads(user_raw or "{}")
         except (json.JSONDecodeError, ValueError):
-            logger.warning("Telegram auth rejected: malformed user JSON field: %r", user_raw[:200] if user_raw else user_raw)
+            _log.warning("Telegram auth rejected: malformed user JSON field: %r", user_raw[:200] if user_raw else user_raw)
             raise HTTPException(status_code=401, detail="Malformed user field in Telegram init data")
 
         tg_id = user_data.get("id", 0)
         if not tg_id:
-            logger.warning("Telegram auth rejected: no user id in init data (bot update or missing user field)")
+            _log.warning("Telegram auth rejected: no user id in init data (bot update or missing user field)")
             raise HTTPException(status_code=401, detail="No user in Telegram init data")
-        logger.debug("Telegram auth OK: user_id=%s username=%s", tg_id, user_data.get("username"))
+        _log.debug("Telegram auth OK: user_id=%s username=%s", tg_id, user_data.get("username"))
 
         return TelegramUser(
             id=tg_id,
@@ -171,7 +171,7 @@ class TelegramStrategy(AuthStrategy):
         """
         init_data = self._extract(request)
         if not init_data:
-            logger.debug(
+            _log.debug(
                 "Telegram auth: no init data found in headers "
                 "(expected X-Telegram-Init-Data or Authorization: tma ...)"
             )

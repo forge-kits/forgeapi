@@ -1,13 +1,11 @@
-import logging
-
 from fastapi import Depends, HTTPException, Request
 from tortoise.models import Model
+from forgeapi.logging import log
+
+_log = log.channel("permissions")
 
 from forgeapi.auth import CurrentUser
 from .registry import get_user_model
-
-logger = logging.getLogger("forgeapi.permissions")
-
 
 def require_permission(*permissions: str):
     """FastAPI dependency — 403 if the authenticated user lacks any of the given permissions.
@@ -46,7 +44,7 @@ def require_permission(*permissions: str):
         try:
             user_id = int(auth_user.id)
         except (TypeError, ValueError) as exc:
-            logger.warning("Invalid user identity in token: %s", exc)
+            _log.warning("Invalid user identity in token: %s", exc)
             raise HTTPException(status_code=401, detail="Invalid user identity")
         if user_id <= 0:
             raise HTTPException(status_code=401, detail="Invalid user identity")
@@ -98,7 +96,7 @@ def require_role(*roles: str):
         try:
             user_id = int(auth_user.id)
         except (TypeError, ValueError) as exc:
-            logger.warning("Invalid user identity in token: %s", exc)
+            _log.warning("Invalid user identity in token: %s", exc)
             raise HTTPException(status_code=401, detail="Invalid user identity")
         if user_id <= 0:
             raise HTTPException(status_code=401, detail="Invalid user identity")

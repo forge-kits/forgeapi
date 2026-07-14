@@ -1,44 +1,30 @@
-from .backend import AuthBackend, CurrentUser, OptionalUser, set_global_backend
+from .facade import auth, Auth
+from .guard import Guard
+from .dependencies import CurrentUser, OptionalUser
 from .models import AuthUser, TelegramUser
 from .strategies import AuthStrategy, JWTStrategy, CookieStrategy, TelegramStrategy
 
 
-class _AuthProxy:
-    """Shortcut to the active auth strategy.
+def guard(name: str) -> Guard:
+    """Return a configured guard by name. Shorthand for ``auth.guard(name)``.
 
-    Instead of ``_global_backend.strategy.create_access_token(...)`` use::
+    Use to build per-guard dependencies in multi-guard apps::
 
-        from forgeapi.auth import auth
+        from forgeapi.auth import guard
 
-        token = auth.create_access_token({"sub": str(user.id)})
-        auth.set_cookie(response, {"sub": str(user.id)})
-        auth.delete_cookie(response)
+        CurrentUser  = guard("api").current_user()    # → User from DB
+        CurrentAdmin = guard("admin").current_user()  # → Admin from DB
+
+    Args:
+        name: Guard name from ``forgeapi.toml`` or :meth:`~Auth.register`.
     """
-
-    def __getattr__(self, name: str):
-        from .backend import _global_backend
-        if _global_backend is None:
-            from forgeapi.exceptions import ForgeAPIConfigError
-            raise ForgeAPIConfigError(
-                "Auth backend is not configured.",
-                hint="Enable auth in Core: Core(app, auth=True).",
-            )
-        return getattr(_global_backend.strategy, name)
-
-
-auth = _AuthProxy()
+    return auth.guard(name)
 
 
 __all__ = [
-    "AuthBackend",
-    "CurrentUser",
-    "OptionalUser",
-    "set_global_backend",
-    "AuthUser",
-    "TelegramUser",
-    "AuthStrategy",
-    "JWTStrategy",
-    "CookieStrategy",
-    "TelegramStrategy",
-    "auth",
+    "auth", "Auth",
+    "guard", "Guard",
+    "CurrentUser", "OptionalUser",
+    "AuthUser", "TelegramUser",
+    "AuthStrategy", "JWTStrategy", "CookieStrategy", "TelegramStrategy",
 ]

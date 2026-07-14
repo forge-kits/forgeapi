@@ -3,15 +3,15 @@ import contextlib
 import hashlib
 import importlib.util
 import json
-import logging
 import sys
 import threading
 from pathlib import Path
 from typing import Any, Awaitable, Callable, ClassVar, Type, TypeVar
 
+from forgeapi.logging import log
 from .event import Event
 
-logger = logging.getLogger("forgeapi.events")
+_log = log.channel("events")
 
 E = TypeVar("E", bound=Event)
 
@@ -203,7 +203,7 @@ class EventBus:
                 try:
                     pubsub = self._redis.pubsub()
                     await pubsub.psubscribe(f"{_CHANNEL_PREFIX}*")
-                    logger.debug(
+                    _log.debug(
                         "Redis subscriber started, listening on '%s*'", _CHANNEL_PREFIX
                     )
                     retry_delay = 1.0
@@ -217,7 +217,7 @@ class EventBus:
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
-                    logger.error(
+                    _log.error(
                         "Redis subscriber error, reconnecting in %.1fs: %s",
                         retry_delay,
                         exc,
@@ -231,20 +231,20 @@ class EventBus:
                         with contextlib.suppress(Exception):
                             await pubsub.aclose()
         finally:
-            logger.debug("Redis subscriber stopped")
+            _log.debug("Redis subscriber stopped")
 
     async def _handle_redis_message(self, raw: bytes | str) -> None:
         try:
             data = json.loads(raw)
             event = Event.from_dict(data)
         except Exception as exc:
-            logger.error("Failed to deserialise Redis event: %s", exc, exc_info=exc)
+            _log.error("Failed to deserialise Redis event: %s", exc, exc_info=exc)
             return
 
         if event.ttl is not None:
             acquired = await self._dedup_check(event.event_id, event.ttl)
             if not acquired:
-                logger.debug(
+                _log.debug(
                     "Event '%s' (id=%s) already processed, skipping",
                     type(event).__name__,
                     event.event_id,
@@ -284,7 +284,7 @@ class EventBus:
             result = await self._redis.set(key, "1", nx=True, ex=ttl)
             return result is not None
         except Exception as exc:
-            logger.error(
+            _log.error(
                 "Redis dedup check failed for event_id=%s: %s", event_id, exc, exc_info=exc
             )
             return True  # allow processing when dedup is unavailable
@@ -314,7 +314,7 @@ class EventBus:
         if listener not in bucket:
             bucket.append(listener)
         else:
-            logger.warning(
+            _log.warning(
                 "Listener %r already registered for %s, skipping duplicate",
                 listener,
                 event_class.__name__,
@@ -368,9 +368,9 @@ class EventBus:
         fields = {k: json.dumps(v) for k, v in event.to_dict().items()}
         try:
             await self._redis.xadd(stream_key, fields, maxlen=10_000)
-            logger.debug("Stream XADD '%s' id=%s", stream_key, event.event_id)
+            _log.debug("Stream XADD '%s' id=%s", stream_key, event.event_id)
         except Exception as exc:
-            logger.error("Failed to XADD event '%s': %s", type(event).__name__, exc, exc_info=exc)
+            _log.error("Failed to XADD event '%s': %s", type(event).__name__, exc, exc_info=exc)
             listeners = self.listeners_for(type(event))
             if listeners:
                 await self._run_all(event, listeners)
@@ -413,15 +413,15 @@ class EventBus:
             stream_keys.append(key)
             try:
                 await self._redis.xgroup_create(key, group, id="$", mkstream=True)
-                logger.debug("Stream group '%s' created on '%s'", group, key)
+                _log.debug("Stream group '%s' created on '%s'", group, key)
             except Exception as exc:
                 if "BUSYGROUP" in str(exc):
-                    logger.debug("Stream group '%s' already exists on '%s'", group, key)
+                    _log.debug("Stream group '%s' already exists on '%s'", group, key)
                 else:
-                    logger.error("xgroup_create failed for '%s': %s", key, exc)
+                    _log.error("xgroup_create failed for '%s': %s", key, exc)
 
         streams = {key: ">" for key in stream_keys}
-        logger.debug("Stream subscriber started (group=%s consumer=%s keys=%s)", group, consumer, stream_keys)
+        _log.debug("Stream subscriber started (group=%s consumer=%s keys=%s)", group, consumer, stream_keys)
 
         try:
             while True:
@@ -442,10 +442,10 @@ class EventBus:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.error("Stream subscriber error, retrying in 1s: %s", exc)
+                    _log.error("Stream subscriber error, retrying in 1s: %s", exc)
                     await asyncio.sleep(1)
         except asyncio.CancelledError:
-            logger.debug("Stream subscriber stopped (group=%s consumer=%s)", group, consumer)
+            _log.debug("Stream subscriber stopped (group=%s consumer=%s)", group, consumer)
 
     async def _handle_stream_message(
         self,
@@ -465,7 +465,7 @@ class EventBus:
                     data[key] = val
             event = Event.from_dict(data)
         except Exception as exc:
-            logger.error("Failed to deserialise stream message on '%s': %s", stream_key, exc, exc_info=exc)
+            _log.error("Failed to deserialise stream message on '%s': %s", stream_key, exc, exc_info=exc)
             await self._redis.xack(stream_key, group, msg_id)
             return
 
@@ -482,7 +482,7 @@ class EventBus:
                 await self._run_all(event, listeners)
 
         await self._redis.xack(stream_key, group, msg_id)
-        logger.debug("Stream XACK '%s' group=%s id=%s", stream_key, group, msg_id)
+        _log.debug("Stream XACK '%s' group=%s id=%s", stream_key, group, msg_id)
 
     async def dispatch(self, event: Event) -> None:
         """Fire *event* and invoke all registered listeners.
@@ -516,7 +516,7 @@ class EventBus:
                 await self._redis.publish(channel, payload)
                 return
             except Exception as exc:
-                logger.error(
+                _log.error(
                     "Failed to publish event %s to Redis: %s",
                     type(event).__name__,
                     exc,
@@ -547,7 +547,7 @@ class EventBus:
             if isinstance(result, asyncio.CancelledError):
                 raise result  # propagate cancellation instead of swallowing it
             if isinstance(result, BaseException):
-                logger.error(
+                _log.error(
                     "Listener '%s' failed for event '%s': %s",
                     listener.__name__,
                     type(event).__name__,
@@ -586,7 +586,7 @@ class EventBus:
         """
         dir_path = Path(directory)
         if not dir_path.exists():
-            logger.warning("Listeners directory not found: '%s'", directory)
+            _log.warning("Listeners directory not found: '%s'", directory)
             return
 
         for py_file in sorted(dir_path.glob("*.py")):
@@ -601,14 +601,14 @@ class EventBus:
 
         spec = importlib.util.spec_from_file_location(module_name, path)
         if not spec or not spec.loader:
-            logger.warning("Cannot load listener file: %s", path)
+            _log.warning("Cannot load listener file: %s", path)
             return
 
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         try:
             spec.loader.exec_module(module)
-            logger.debug("Loaded listeners from '%s'", path)
+            _log.debug("Loaded listeners from '%s'", path)
         except Exception as exc:
             del sys.modules[module_name]
-            logger.error("Failed to load listener file '%s': %s", path, exc, exc_info=exc)
+            _log.error("Failed to load listener file '%s': %s", path, exc, exc_info=exc)

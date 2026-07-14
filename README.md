@@ -7,12 +7,16 @@
 3. [Core](#3-core)
 4. [Exceptions](#4-exceptions)
 5. [Auth](#5-auth)
-   - [How it works](#how-it-works)
+   - [How it works — Guards](#how-it-works--guards)
    - [CurrentUser and OptionalUser](#currentuser-and-optionaluser)
+   - [Auth facade — issuing tokens](#auth-facade--issuing-tokens)
+   - [Guards facade — multiple auth tables](#guards-facade--multiple-auth-tables)
    - [JWT strategy](#jwt-strategy)
    - [Cookie strategy](#cookie-strategy)
    - [Telegram strategy](#telegram-strategy)
 6. [Pagination](#6-pagination)
+   - [Offset pagination](#offset-pagination)
+   - [Cursor pagination](#cursor-pagination)
 7. [Events](#7-events)
    - [Lifecycle overview](#lifecycle-overview)
    - [Defining events](#defining-events)
@@ -33,26 +37,28 @@
    - [Base classes](#base-classes)
    - [Schema directories](#schema-directories)
    - [generate:schema](#generateschema)
-10. [Permissions](#10-permissions)
+10. [ModelMixin](#10-modelmixin)
+11. [Permissions](#11-permissions)
     - [Setup](#setup)
     - [PermissionsMixin](#permissionsmixin)
     - [Dependencies](#dependencies)
     - [Role and Permission models](#role-and-permission-models)
-11. [Middleware](#11-middleware)
+12. [Logger](#12-logger)
+13. [Middleware](#13-middleware)
     - [CORS](#cors)
     - [Rate limiting](#rate-limiting)
     - [Request ID](#request-id)
     - [Access logging](#access-logging)
-12. [Settings](#12-settings)
-13. [Seeders](#13-seeders)
-14. [CLI reference](#14-cli-reference)
-15. [forgeapi.toml reference](#15-forgeapitoml-reference)
-16. [Telescope](#16-telescope)
+14. [Settings](#14-settings)
+15. [Seeders](#15-seeders)
+16. [CLI reference](#16-cli-reference)
+17. [forgeapi.toml reference](#17-forgeapitoml-reference)
+18. [Telescope](#18-telescope)
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
     - [Recording jobs](#recording-jobs)
-17. [MCP Server](#17-mcp-server)
+19. [MCP Server](#19-mcp-server)
 
 ---
 
@@ -215,7 +221,7 @@ All debug activity is logged as `WARNING` so it's visible in the console even wi
 ### Accessing after setup
 
 ```python
-core.auth       # → AuthBackend | None
+core.auth       # → Auth facade | None (None if auth=False)
 core.config     # → KitConfig (parsed forgeapi.toml)
 ```
 
@@ -293,14 +299,14 @@ except ImportError as e:
 
 ## 5. Auth
 
-### How it works
+### How it works — Guards
 
-Strategy pattern — three built-ins: JWT, Cookie, Telegram. Pick one in `forgeapi.toml`.
+Auth is built around **named Guards**. Each Guard wraps one strategy (JWT / Cookie / Telegram) and targets a specific user model/table. Laravel-style multi-guard setup is supported out of the box.
 
 When `Core(app, auth=True)` runs:
-1. Strategy is built from config / env vars.
-2. `AuthBackend` is registered as a global singleton.
-3. `CurrentUser` and `OptionalUser` become live FastAPI dependencies.
+1. Strategy is built from `forgeapi.toml` / env vars.
+2. A `Guard("api", strategy)` is registered as the default guard.
+3. `CurrentUser` and `OptionalUser` become live FastAPI dependencies that delegate to the default guard.
 
 ### CurrentUser and OptionalUser
 
@@ -316,7 +322,7 @@ async def me(self, user: CurrentUser):
     return {"id": user.id, "username": user.username}
 ```
 
-**`OptionalUser`** — returns `AuthUser` if credentials are present, `None` otherwise. Never raises 401.
+**`OptionalUser`** — returns `AuthUser` if credentials present, `None` otherwise. Never raises `401`.
 
 ```python
 @route.get("/feed")
@@ -328,7 +334,7 @@ async def feed(self, user: OptionalUser):
 
 | Field | Type | Description |
 |---|---|---|
-| `user.id` | `Any` | JWT/Cookie: value of `sub` claim (string). Telegram: `telegram_id` (int). |
+| `user.id` | `Any` | JWT/Cookie: `sub` claim (string). Telegram: `telegram_id` (int). |
 | `user.username` | `str \| None` | Username from token / initData |
 | `user.auth_method` | `str` | `"jwt"` / `"cookie"` / `"telegram"` |
 | `user.extra` | `dict` | Extra claims not in standard fields |
@@ -337,44 +343,92 @@ async def feed(self, user: OptionalUser):
 
 ---
 
+### Auth facade — issuing tokens
+
+```python
+from forgeapi.auth import auth
+
+# issue tokens for the default guard
+access  = auth.token(user)
+refresh = auth.refresh_token(user)
+
+# decode
+payload = auth.decode(token)
+```
+
+`user` can be an `AuthUser` or any ORM model — the facade reads `id` and `email` automatically.
+
+### Guards facade — multiple auth tables
+
+Register multiple guards for different user models (e.g. `users` + `admins`):
+
+```python
+from fastapi import FastAPI
+from forgeapi import Core
+from forgeapi.auth.guard import Guard
+from forgeapi.auth.facade import auth as _auth
+from forgeapi.auth.strategies import JWTStrategy
+
+app = FastAPI()
+core = Core(app, auth=False)   # disable auto-setup
+
+api_guard   = Guard("api",   JWTStrategy(secret_key="..."))
+admin_guard = Guard("admin", JWTStrategy(secret_key="..."))
+
+_auth.register("api",   api_guard)
+_auth.register("admin", admin_guard)
+_auth.set_default("api")
+```
+
+Use a named guard's dependency in a route:
+
+```python
+from forgeapi.auth import guard
+
+AdminCurrentUser = guard("admin").current_user()
+
+@route.get("/admin/me")
+async def admin_me(self, user: AdminCurrentUser):
+    return {"id": user.id}
+```
+
+Issue / decode with a specific guard:
+
+```python
+token   = auth.token(user, guard="admin")
+payload = auth.decode(token, guard="admin")
+```
+
+---
+
 ### JWT strategy
 
-Reads from `Authorization: Bearer <token>`.
+`Authorization: Bearer <token>`.
 
 ```toml
 [auth]
 strategy            = "jwt"
-jwt_secret_env      = "JWT_SECRET"    # env var name
+jwt_secret_env      = "JWT_SECRET"
 access_ttl_minutes  = 30
 refresh_ttl_days    = 7
-```
-
-```python
-from forgeapi.auth.backend import _global_backend
-
-strategy = _global_backend.strategy   # JWTStrategy
-
-# issue tokens
-access  = strategy.create_access_token({"sub": str(user.id), "username": user.username})
-refresh = strategy.create_refresh_token({"sub": str(user.id)})
-
-# decode manually
-payload = strategy.decode(token)      # raises 401 on invalid/expired
 ```
 
 Extra claims land in `user.extra`:
 
 ```python
-token = strategy.create_access_token({"sub": "42", "username": "alice", "role": "admin"})
-# in a route:
-user.extra["role"]  # → "admin"
+access = auth.token(user)   # includes sub, type, exp
+# or build custom payload:
+from forgeapi.auth.strategies import JWTStrategy
+s = JWTStrategy(secret_key="...")
+token = s.create_access_token({"sub": "42", "username": "alice", "role": "admin"})
+# user.extra["role"] → "admin"
 ```
 
 ---
 
 ### Cookie strategy
 
-Stores a signed JSON session in an `HttpOnly` cookie.
+Signed JSON session in an `HttpOnly` cookie. Secret from `COOKIE_SECRET` env var.
 
 ```toml
 [auth]
@@ -385,25 +439,19 @@ cookie_secure   = false    # set true in production
 ```
 
 ```python
-from forgeapi.auth.backend import _global_backend
+from forgeapi.auth.strategies import CookieStrategy
 from fastapi import Response
 
-strategy = _global_backend.strategy   # CookieStrategy
-
-# login
+strategy = CookieStrategy()
 strategy.set_cookie(response, {"sub": str(user.id), "username": user.username})
-
-# logout
 strategy.delete_cookie(response)
 ```
-
-Cookie is signed with HMAC-SHA256. Invalid signature → `401`. Secret from `COOKIE_SECRET` env var.
 
 ---
 
 ### Telegram strategy
 
-Validates `initData` from Telegram Mini App. No login endpoint needed — auth happens on every request.
+Validates `initData` from Telegram Mini App. No login endpoint needed.
 
 ```toml
 [auth]
@@ -411,64 +459,89 @@ strategy = "telegram"
 ```
 
 ```bash
-# single bot
-BOT_TOKEN=123456:ABC-your-token
-
-# multiple bots — comma-separated, no spaces required
-BOT_TOKEN=123456:ABC-bot-one,789012:DEF-bot-two
+BOT_TOKEN=123456:ABC-your-token          # single bot
+BOT_TOKEN=123456:ABC-one,789012:DEF-two  # multiple bots
 ```
 
 Client sends `window.Telegram.WebApp.initData` in:
-- `X-Telegram-Init-Data: <initData>` header (preferred)
-- `Authorization: tma <initData>` header
+- `X-Telegram-Init-Data: <initData>` (preferred)
+- `Authorization: tma <initData>`
 
 ```python
 async def me(self, user: CurrentUser):
     user.id           # telegram_id (int)
     user.username     # @username or None
-    user.extra        # {"first_name": ..., "last_name": ..., "language_code": ..., "auth_date": ...}
-```
-
-Manual validation (e.g. webhooks):
-
-```python
-from forgeapi.auth.backend import _global_backend
-
-tg_user = _global_backend.strategy.validate_init_data(raw_init_data_string)
+    user.extra        # {"first_name": ..., "language_code": ..., "auth_date": ...}
 ```
 
 ---
 
 ## 6. Pagination
 
-Inject `Pagination` as a dependency — reads `?page` and `?limit` from the query string.
+Two flavors: **offset** (page-based) and **cursor** (stable on inserts/deletes, no OFFSET).
+
+### Offset pagination
 
 ```python
 from forgeapi.pagination import Pagination
 
 @route.get("/posts")
-async def list_posts(self, pagination: Pagination) -> dict:
-    total = await Post.all().count()
-    items = await Post.all().offset(pagination.offset).limit(pagination.limit)
-    return {"items": items, "total": total, "page": pagination.page, "limit": pagination.limit}
+async def index(self, p: Pagination, request: Request):
+    return await p.paginate(Post.all().order_by("-created_at"), PostResponse, request)
 ```
 
-| Attribute | Description |
-|---|---|
-| `pagination.page` | Current page (1-based) |
-| `pagination.limit` | Items per page (capped at `max_limit`) |
-| `pagination.offset` | SQL offset = `(page - 1) * limit` |
+`paginate()` executes `COUNT` + `SELECT` in parallel and returns a ready `PaginatedResponse`:
 
-### Query parameter validation
+```json
+{
+  "data": [...],
+  "meta": {
+    "current_page": 2,
+    "per_page": 10,
+    "total": 47,
+    "last_page": 5,
+    "from": 11,
+    "to": 20
+  },
+  "links": {
+    "prev": "/posts?page=1&per_page=10",
+    "next": "/posts?page=3&per_page=10"
+  }
+}
+```
 
-FastAPI enforces these constraints automatically and returns `422` on violation:
+Query params: `?page=1&per_page=20`. `per_page` is clamped to `max_limit` (default 100).
 
-| Parameter | Constraint | Default |
-|---|---|---|
-| `?page` | Integer, 1 ≤ page ≤ 10 000 | `1` |
-| `?limit` | Integer ≥ 1 | `default_limit` from config |
+### Cursor pagination
 
-`?limit` values above `max_limit` are silently clamped — no error is raised.
+No OFFSET — stable and O(1) on large datasets. Returns opaque `cursor` tokens instead of page numbers.
+
+```python
+from forgeapi.pagination import CursorPagination
+
+@route.get("/posts")
+async def index(self, p: CursorPagination, request: Request):
+    return await p.paginate(Post.all(), PostResponse, request, order_by="-id")
+```
+
+Query params: `?cursor=<token>&per_page=20`.
+
+```json
+{
+  "data": [...],
+  "meta": {
+    "per_page": 20,
+    "next_cursor": "eyJpZCI6IDEwfQ==",
+    "prev_cursor": null
+  },
+  "links": {
+    "prev": null,
+    "next": "/posts?cursor=eyJpZCI6IDEwfQ==&per_page=20"
+  }
+}
+```
+
+`order_by` supports any unique monotonic column. Prefix with `-` for descending (`"-id"`, `"-created_at"`).
 
 ### Configuration
 
@@ -481,19 +554,26 @@ max_limit     = 100
 Via `Core`:
 
 ```python
-Core(app, pagination=20)    # default_limit=20, max_limit from toml
+Core(app, pagination=20)    # default_limit=20
 Core(app, pagination=True)  # both from toml
 ```
 
-Via `Paginator.configure()` directly (useful outside `Core`):
+Programmatically:
 
 ```python
-from forgeapi.pagination import Paginator
+from forgeapi.pagination import Paginator, CursorPaginator
 
 Paginator.configure(default_limit=10, max_limit=50)
+CursorPaginator.configure(default_limit=10, max_limit=50)
 ```
 
-`configure()` raises `ValueError` if `default_limit < 1`, `max_limit < 1`, or `default_limit > max_limit`.
+### Response types
+
+```python
+from forgeapi.pagination import PaginatedResponse, CursorResponse, PaginationMeta, PaginationLinks, CursorMeta
+```
+
+Both are generic: `PaginatedResponse[PostResponse]`.
 
 ---
 
@@ -1236,7 +1316,72 @@ If the model isn't found, `pass` stubs are generated — the command still succe
 
 ---
 
-## 10. Permissions
+## 10. ModelMixin
+
+`ModelMixin` adds convenient ORM methods directly to Tortoise models. Mix it alongside `tortoise.Model`:
+
+```python
+from tortoise import fields, Model
+from forgeapi import ModelMixin
+
+class Post(ModelMixin, Model):
+    id    = fields.IntField(pk=True)
+    title = fields.CharField(max_length=255)
+    body  = fields.TextField()
+
+    class Meta:
+        table = "posts"
+```
+
+### Methods
+
+**`find_or_fail(id, field="id")`** — get by field or raise `404`:
+
+```python
+post = await Post.find_or_fail(42)          # 404 if not found
+post = await Post.find_or_fail("slug", field="slug")
+```
+
+**`create_from(payload, **extra)`** — create from a Pydantic schema:
+
+```python
+post = await Post.create_from(payload)
+post = await Post.create_from(payload, author_id=user.id)  # extra kwargs merged
+```
+
+`None` values in `payload` are excluded — no accidental `null` writes.
+
+**`update_from(payload, **extra)`** — partial update from a Pydantic schema, then `save()`:
+
+```python
+await post.update_from(payload)
+await post.update_from(payload, updated_by=user.id)
+```
+
+Also excludes `None` — safe for `BaseUpdateSchema` where every field is optional.
+
+### Before vs after ModelMixin
+
+```python
+# Before
+data = payload.model_dump(exclude_none=True)
+post = await Post.create(**data, author_id=int(user.id))
+
+# After
+post = await Post.create_from(payload, author_id=int(user.id))
+
+# Before
+for k, v in payload.model_dump(exclude_none=True).items():
+    setattr(post, k, v)
+await post.save()
+
+# After
+await post.update_from(payload)
+```
+
+---
+
+## 11. Permissions
 
 Spatie-style roles and permissions using **polymorphic pivot tables**. Any number of models can have roles and permissions without creating extra junction tables per model.
 
@@ -1456,7 +1601,7 @@ await user.can("edit:posts")   # → True (via role)
 
 ---
 
-## 11. Middleware
+## 13. Middleware
 
 Two extension points: **global middleware** wraps every request, **guards** are scoped to a route or controller via DI.
 
@@ -1645,7 +1790,66 @@ logging.getLogger("forgeapi.access").setLevel(logging.WARNING)
 
 ---
 
-## 12. Settings
+## 12. Logger
+
+forge-kits includes a structured logger so you don't need to call `logging.getLogger(__name__)` everywhere.
+
+### In your application
+
+```python
+from forgeapi import Log
+
+Log.info("Order created", order_id=order.id, user_id=user.id)
+Log.warning("Payment retry", order_id=order.id, attempt=3)
+Log.error("Stripe failed", order_id=order.id, reason=str(e))
+```
+
+Context is appended as `key=value` pairs — searchable in any log aggregator:
+
+```
+INFO  Order created | order_id=42  user_id=7
+ERROR Stripe failed | order_id=42  reason='Card declined'
+```
+
+### Named channels
+
+```python
+auth_log = Log.channel("auth")
+auth_log.debug("Token decoded", user_id=42, guard="api")
+# → logger name: app.auth
+```
+
+### Methods
+
+| Method | Level |
+|---|---|
+| `Log.debug(msg, **ctx)` | `DEBUG` |
+| `Log.info(msg, **ctx)` | `INFO` |
+| `Log.warning(msg, **ctx)` | `WARNING` |
+| `Log.error(msg, **ctx)` | `ERROR` |
+| `Log.critical(msg, **ctx)` | `CRITICAL` |
+| `Log.channel(name)` | Returns child `Logger` |
+
+`Log` wraps Python's standard `logging` — existing handlers (file, syslog, cloud) keep working unchanged.
+
+### Internal forge-kits log channels
+
+| Channel | What it logs |
+|---|---|
+| `forgeapi.core` | Core startup, controller discovery, guard registration |
+| `forgeapi.access` | Per-request: method, path, status, duration |
+| `forgeapi.auth.*` | Token decode, strategy events |
+| `forgeapi.events` | Event dispatch, listener errors |
+| `forgeapi.permissions` | Permission / role check failures |
+
+```python
+import logging
+logging.getLogger("forgeapi.access").setLevel(logging.WARNING)  # suppress 2xx logs
+```
+
+---
+
+## 14. Settings
 
 `BaseAppSettings` wraps `pydantic-settings` with `.env` file loading out of the box.
 
@@ -1686,7 +1890,7 @@ This prevents accidental credential exposure in logs and error messages. The act
 
 ---
 
-## 13. Seeders
+## 15. Seeders
 
 Seeders populate the database with initial or test data. The `database/seeds/` directory is created automatically by `forgeapi init`.
 
@@ -1766,7 +1970,7 @@ from forgeapi.database import Seeder
 
 ---
 
-## 14. CLI reference
+## 16. CLI reference
 
 Add `-h` after any command for detailed help:
 
@@ -1951,7 +2155,7 @@ forgeapi db:fresh --force     # DROP all tables including structure (asks confir
 
 ---
 
-## 15. forgeapi.toml reference
+## 17. forgeapi.toml reference
 
 ```toml
 [project]
@@ -1987,7 +2191,7 @@ All fields are optional — `Core` works without a config file using the default
 
 ---
 
-## 16. Telescope
+## 18. Telescope
 
 Telescope is a built-in, in-process request debugger. It captures every HTTP request — including its SQL queries, log output, dispatched events, and custom job records — and streams the data to any connected WebSocket client in real time.
 
@@ -2141,7 +2345,7 @@ The following paths are never captured to prevent recording Telescope's own traf
 
 ---
 
-## 17. MCP Server
+## 19. MCP Server
 
 forge-kits ships an MCP server that exposes API docs and code generation tools directly to AI assistants (Claude Code, Cursor, etc.).
 

@@ -1,11 +1,11 @@
-import logging
 import time
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
+from forgeapi.logging import log
 
-logger = logging.getLogger("forgeapi.access")
+_log = log.channel("access")
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -18,7 +18,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         except Exception as exc:
             duration_ms = (time.perf_counter() - start) * 1000
             request_id = getattr(request.state, "request_id", "-")
-            logger.error(
+            _log.error(
                 "%s %s → ERROR [%.1fms] req_id=%s",
                 request.method,
                 request.url.path,
@@ -31,11 +31,11 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             duration_ms = (time.perf_counter() - start) * 1000
             request_id = getattr(request.state, "request_id", "-")
             log = (
-                logger.error
+                _log.error
                 if status >= 500
-                else logger.warning
+                else _log.warning
                 if status >= 400
-                else logger.info
+                else _log.info
             )
             log(
                 "%s %s → %d [%.1fms] req_id=%s",

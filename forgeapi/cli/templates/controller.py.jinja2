@@ -1,9 +1,10 @@
-from fastapi import HTTPException
+from fastapi import Request
 from forgeapi.auth import CurrentUser
 from forgeapi.pagination import Pagination
 from forgeapi.controllers import Controller, route
 {% if with_model %}
 from {{ models_module }}.{{ module_name }} import {{ class_name }}
+from {{ schemas_module }}.{{ module_name }} import {{ class_name }}Schema
 {% endif %}
 
 
@@ -12,5 +13,9 @@ class {{ class_name }}Controller(Controller):
     tags = ["{{ tag }}"]
 
     @route.get("/")
-    async def index(self, pagination: Pagination, user: CurrentUser):
+    async def index(self, p: Pagination, request: Request, user: CurrentUser):
+{% if with_model %}
+        return await p.paginate({{ class_name }}.all().order_by("-created_at"), {{ class_name }}Schema, request)
+{% else %}
         pass
+{% endif %}

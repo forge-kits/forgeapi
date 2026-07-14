@@ -1,13 +1,13 @@
-import logging
 import time
 from collections import defaultdict, deque
 
 from fastapi import Request
+from forgeapi.logging import log
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-logger = logging.getLogger("forgeapi.rate_limit")
+_log = log.channel("rate_limit")
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -75,7 +75,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             timestamps.popleft()
 
         if len(timestamps) >= self._rpm:
-            logger.warning(
+            _log.warning(
                 "Rate limit exceeded: ip=%s requests=%d limit=%d",
                 client_ip,
                 len(timestamps),

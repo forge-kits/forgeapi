@@ -1,9 +1,9 @@
-import logging
 from typing import Optional, Type
 
 from forgeapi.exceptions import ForgeAPIConfigError
+from forgeapi.logging import log
 
-logger = logging.getLogger("forgeapi.permissions")
+_log = log.channel("permissions")
 
 _user_model: Optional[Type] = None
 
@@ -31,7 +31,7 @@ def setup_permissions(user_model: Type) -> None:
     """
     global _user_model
     _user_model = user_model
-    logger.debug("Permissions: user model registered as '%s'", user_model.__name__)
+    _log.debug("Permissions: user model registered as '%s'", user_model.__name__)
 
 
 def get_user_model() -> Type:

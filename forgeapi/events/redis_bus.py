@@ -1,12 +1,13 @@
 import asyncio
 import json
-import logging
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Awaitable, Callable
 
-logger = logging.getLogger("forgeapi.events.redis_bus")
+from forgeapi.logging import log
+
+_log = log.channel("events.redis_bus")
 
 try:
     from tortoise.models import Model as _TortoiseModel
@@ -127,13 +128,13 @@ class RedisBus:
 
             @bus.on("order:created")   # multiple handlers on same channel — all run
             async def log_order(data: dict) -> None:
-                logger.info("order received: %s", data)
+                _log.info("order received: %s", data)
         """
         def decorator(
             func: Callable[[dict], Awaitable[None]],
         ) -> Callable[[dict], Awaitable[None]]:
             self._handlers.setdefault(channel, []).append(func)
-            logger.debug("RedisBus: registered handler '%s' on '%s'", func.__name__, channel)
+            _log.debug("RedisBus: registered handler '%s' on '%s'", func.__name__, channel)
             return func
         return decorator
 
@@ -182,7 +183,7 @@ class RedisBus:
         redis_channel = f"{self._namespace}:{channel}"
         payload = json.dumps(_serialize(data), default=_json_default)
         await self._redis.publish(redis_channel, payload)
-        logger.debug("RedisBus: emitted to '%s'", redis_channel)
+        _log.debug("RedisBus: emitted to '%s'", redis_channel)
 
     # ── Listen ────────────────────────────────────────────────────────────────
 
@@ -217,7 +218,7 @@ class RedisBus:
             pubsub = self._redis.pubsub()
             try:
                 await pubsub.psubscribe(pattern)
-                logger.debug("RedisBus: listening on pattern '%s'", pattern)
+                _log.debug("RedisBus: listening on pattern '%s'", pattern)
                 reconnect_delay = 1.0
 
                 while True:
@@ -233,7 +234,7 @@ class RedisBus:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.warning(
+                _log.warning(
                     "RedisBus: connection error (%s), reconnecting in %.0fs…",
                     exc,
                     reconnect_delay,
@@ -243,7 +244,7 @@ class RedisBus:
                     await pubsub.punsubscribe(pattern)
                     await pubsub.aclose()
                 except Exception as exc:
-                    logger.debug("RedisBus: error during pubsub cleanup: %s", exc)
+                    _log.debug("RedisBus: error during pubsub cleanup: %s", exc)
 
             try:
                 await asyncio.sleep(reconnect_delay)
@@ -252,7 +253,7 @@ class RedisBus:
 
             reconnect_delay = min(reconnect_delay * 2, 60.0)
 
-        logger.debug("RedisBus: listener stopped")
+        _log.debug("RedisBus: listener stopped")
 
     async def _dispatch(self, message: dict) -> None:
         raw_channel = message["channel"]
@@ -270,7 +271,7 @@ class RedisBus:
         try:
             data = json.loads(raw_data)
         except (json.JSONDecodeError, TypeError):
-            logger.error("RedisBus: failed to parse message on channel '%s'", channel)
+            _log.error("RedisBus: failed to parse message on channel '%s'", channel)
             return
 
         for handler in handlers:
@@ -285,7 +286,7 @@ class RedisBus:
         try:
             await handler(data)
         except Exception as exc:
-            logger.error(
+            _log.error(
                 "RedisBus: handler '%s' raised: %s",
                 handler.__name__,
                 exc,
@@ -324,7 +325,7 @@ class RedisBus:
             retry_on_timeout=True,
             socket_connect_timeout=10,
         )
-        logger.debug(
+        _log.debug(
             "RedisBus: connected to '%s' (namespace='%s')",
             self._url,
             self._namespace,
@@ -335,7 +336,7 @@ class RedisBus:
         if self._redis is not None:
             await self._redis.aclose()
             self._redis = None
-            logger.debug("RedisBus: disconnected")
+            _log.debug("RedisBus: disconnected")
 
     # ── Context manager ───────────────────────────────────────────────────────
 

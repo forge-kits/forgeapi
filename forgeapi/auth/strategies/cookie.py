@@ -3,17 +3,17 @@ import binascii
 import hashlib
 import hmac
 import json
-import logging
 import os
 import time
 from typing import Optional
 
 from fastapi import HTTPException, Request, Response
 
+from forgeapi.logging import log
 from .base import AuthStrategy
 from ..models import AuthUser
 
-logger = logging.getLogger("forgeapi.auth.cookie")
+_log = log.channel("auth.cookie")
 
 
 class CookieStrategy(AuthStrategy):
@@ -75,11 +75,11 @@ class CookieStrategy(AuthStrategy):
         self._secure = secure
         self._samesite = samesite
         if not secure:
-            logger.warning(
+            _log.warning(
                 "CookieStrategy: secure=False — session cookies will be sent over plain HTTP. "
                 "Set secure=True for any deployment accessible over the internet."
             )
-        logger.debug("CookieStrategy ready: cookie='%s' httponly=%s secure=%s", cookie_name, httponly, secure)
+        _log.debug("CookieStrategy ready: cookie='%s' httponly=%s secure=%s", cookie_name, httponly, secure)
 
     def create_session(self, data: dict) -> str:
         """Encode and sign session data for use as a cookie value.
@@ -163,14 +163,14 @@ class CookieStrategy(AuthStrategy):
         """
         raw = request.cookies.get(self._cookie_name)
         if not raw:
-            logger.debug("Cookie auth: no '%s' cookie in request", self._cookie_name)
+            _log.debug("Cookie auth: no '%s' cookie in request", self._cookie_name)
             return None
 
         data = self._verify(raw)
         if data.get("exp", 0) <= time.time():
-            logger.warning("Cookie auth rejected: session expired (sub=%s)", data.get("sub"))
+            _log.warning("Cookie auth rejected: session expired (sub=%s)", data.get("sub"))
             raise HTTPException(status_code=401, detail="Session has expired")
-        logger.debug("Cookie auth OK: user_id=%s", data.get("sub"))
+        _log.debug("Cookie auth OK: user_id=%s", data.get("sub"))
         return AuthUser(
             id=data.get("sub"),
             username=data.get("username"),
@@ -186,15 +186,15 @@ class CookieStrategy(AuthStrategy):
         try:
             payload, sig = cookie_value.rsplit(".", 1)
         except ValueError:
-            logger.warning("Cookie auth rejected: malformed cookie value")
+            _log.warning("Cookie auth rejected: malformed cookie value")
             raise HTTPException(status_code=401, detail="Malformed session cookie")
 
         if not hmac.compare_digest(self._sign(payload), sig):
-            logger.warning("Cookie auth rejected: signature mismatch")
+            _log.warning("Cookie auth rejected: signature mismatch")
             raise HTTPException(status_code=401, detail="Session cookie signature mismatch")
 
         try:
             return json.loads(base64.urlsafe_b64decode(payload + "==").decode())
         except (json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
-            logger.warning("Cookie auth rejected: invalid session payload: %s", exc)
+            _log.warning("Cookie auth rejected: invalid session payload: %s", exc)
             raise HTTPException(status_code=401, detail="Invalid session")

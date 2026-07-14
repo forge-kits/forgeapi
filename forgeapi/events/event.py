@@ -1,8 +1,8 @@
-import logging
 import uuid
 from typing import Any, ClassVar
+from forgeapi.logging import log
 
-logger = logging.getLogger("forgeapi.events")
+_log = log.channel("events")
 
 
 class Event:
@@ -61,7 +61,7 @@ class Event:
         super().__init_subclass__(**kwargs)
         name = cls.__name__
         if name in Event._registry and Event._registry[name] is not cls:
-            logger.warning(
+            _log.warning(
                 "Event class name %r is already registered by %r; overwriting with %r. "
                 "Use unique class names to avoid serialisation collisions.",
                 name,
