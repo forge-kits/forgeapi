@@ -1,11 +1,10 @@
 from fastapi import Depends, HTTPException, Request
 from tortoise.models import Model
 from forgeapi.logging import log
-
-_log = log.channel("permissions")
-
 from forgeapi.auth import CurrentUser
 from .registry import get_user_model
+
+_log = log.channel("permissions")
 
 def require_permission(*permissions: str):
     """FastAPI dependency — 403 if the authenticated user lacks any of the given permissions.

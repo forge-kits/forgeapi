@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 
 from .config import KitConfig, load_config
-from .exceptions import ForgeAPIConfigError, ForgeAPIImportError
+from .exceptions import ForgeAPIConfigError
 from .middleware.cors import add_cors
 from .middleware.rate_limit import RateLimitMiddleware
 from .middleware.request_id import RequestIDMiddleware
