@@ -8,6 +8,7 @@ from .events import Event, EventBus, listen, RedisBus
 from .controllers import Controller, route
 from .middleware import Middleware, Guard
 from .logging import Log
+from .policies import Policy, gate
 
 __all__ = [
     # Facade
@@ -39,6 +40,9 @@ __all__ = [
     "Guard",
     # Logging
     "Log",
+    # Policies
+    "Policy",
+    "gate",
 ]
 
 

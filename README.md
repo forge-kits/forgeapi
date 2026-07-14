@@ -37,28 +37,29 @@
    - [Base classes](#base-classes)
    - [Schema directories](#schema-directories)
    - [generate:schema](#generateschema)
-10. [ModelMixin](#10-modelmixin)
-11. [Permissions](#11-permissions)
+10. [Policies](#10-policies)
+11. [ModelMixin](#11-modelmixin)
+12. [Permissions](#12-permissions)
     - [Setup](#setup)
     - [PermissionsMixin](#permissionsmixin)
     - [Dependencies](#dependencies)
     - [Role and Permission models](#role-and-permission-models)
-12. [Logger](#12-logger)
-13. [Middleware](#13-middleware)
+13. [Logger](#13-logger)
+14. [Middleware](#14-middleware)
     - [CORS](#cors)
     - [Rate limiting](#rate-limiting)
     - [Request ID](#request-id)
     - [Access logging](#access-logging)
-14. [Settings](#14-settings)
-15. [Seeders](#15-seeders)
-16. [CLI reference](#16-cli-reference)
-17. [forgeapi.toml reference](#17-forgeapitoml-reference)
-18. [Telescope](#18-telescope)
+15. [Settings](#15-settings)
+16. [Seeders](#16-seeders)
+17. [CLI reference](#17-cli-reference)
+18. [forgeapi.toml reference](#18-forgeapitoml-reference)
+19. [Telescope](#19-telescope)
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
     - [Recording jobs](#recording-jobs)
-19. [MCP Server](#19-mcp-server)
+20. [MCP Server](#20-mcp-server)
 
 ---
 
@@ -301,7 +302,7 @@ except ImportError as e:
 
 ### How it works — Guards
 
-Auth is built around **named Guards**. Each Guard wraps one strategy (JWT / Cookie / Telegram) and targets a specific user model/table. Laravel-style multi-guard setup is supported out of the box.
+Auth is built around **named Guards**. Each Guard wraps one strategy (JWT / Cookie / Telegram) and targets a specific user model/table. Multi-guard setup lets you authenticate against different tables (e.g. `users` + `admins`) with separate secrets and strategies.
 
 When `Core(app, auth=True)` runs:
 1. Strategy is built from `forgeapi.toml` / env vars.
@@ -330,16 +331,27 @@ async def feed(self, user: OptionalUser):
     return personalised_feed(user.id) if user else public_feed()
 ```
 
-### AuthUser fields
+### What CurrentUser returns
 
-| Field | Type | Description |
-|---|---|---|
-| `user.id` | `Any` | JWT/Cookie: `sub` claim (string). Telegram: `telegram_id` (int). |
-| `user.username` | `str \| None` | Username from token / initData |
-| `user.auth_method` | `str` | `"jwt"` / `"cookie"` / `"telegram"` |
-| `user.extra` | `dict` | Extra claims not in standard fields |
+Depends on the Guard's `user_model`:
 
-> JWT `user.id` is always a **string**. Cast when needed: `int(user.id)`.
+- **No `user_model`** (default) → `AuthUser` — a lightweight token DTO with `id`, `username`, `auth_method`, `extra`.
+- **With `user_model=User`** → the real Tortoise `User` instance fetched from the DB.
+
+```python
+# Without user_model — gets token claims only
+api_guard = Guard("api", JWTStrategy(...))
+
+# With user_model — gets the full DB row
+api_guard = Guard("api", JWTStrategy(...), user_model=User)
+
+CurrentUser = guard("api").current_user()
+
+@route.get("/me")
+async def me(self, user: CurrentUser):
+    user.id       # str (from token) or int (from DB)
+    user.email    # only available when user_model is set
+```
 
 ---
 
@@ -469,7 +481,7 @@ Client sends `window.Telegram.WebApp.initData` in:
 
 ```python
 async def me(self, user: CurrentUser):
-    user.id           # telegram_id (int)
+    user.id           # telegram_id (bigint)
     user.username     # @username or None
     user.extra        # {"first_name": ..., "language_code": ..., "auth_date": ...}
 ```
@@ -1316,7 +1328,101 @@ If the model isn't found, `pass` stubs are generated — the command still succe
 
 ---
 
-## 10. ModelMixin
+## 10. Policies
+
+Policies encapsulate authorization logic per resource. Each policy class maps to a model and defines methods for each action (`view`, `create`, `update`, `delete`, or any custom name).
+
+### Defining a policy
+
+```python
+# app/policies/post_policy.py
+from forgeapi.policies import Policy
+from forgeapi import gate
+
+@gate.policy(Post)
+class PostPolicy(Policy):
+    async def view(self, user, post) -> bool:
+        return True  # anyone can view
+
+    async def create(self, user) -> bool:
+        return user is not None
+
+    async def update(self, user, post) -> bool:
+        return post.author_id == int(user.id)
+
+    async def delete(self, user, post) -> bool:
+        return post.author_id == int(user.id)
+```
+
+`@gate.policy(Post)` registers the class — no separate registration step needed.
+
+### Using in controllers
+
+```python
+from forgeapi import gate
+
+class PostController(Controller):
+    @route.put("/{id}")
+    async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+        post = await Post.find_or_fail(id)
+        await gate.authorize(user, "update", post)   # raises HTTP 403 if denied
+        return await post.update_from(payload)
+
+    @route.post("/")
+    async def create(self, payload: PostCreatePayload, user: CurrentUser):
+        await gate.authorize(user, "create", Post)   # pass class for instance-free checks
+        return await Post.create_from(payload, author_id=int(user.id))
+```
+
+### Checking without raising
+
+```python
+if await gate.allows(user, "delete", post):
+    await post.delete()
+
+if await gate.denies(user, "update", post):
+    raise HTTPException(403, "Not yours")
+```
+
+### before() — blanket checks
+
+`before()` runs before the specific action method. Return `True`/`False` to short-circuit, `None` to continue:
+
+```python
+class PostPolicy(Policy):
+    async def before(self, user, action: str) -> bool | None:
+        if await user.has_role("admin"):
+            return True   # admins bypass every check
+        return None       # proceed to the action method
+
+    async def update(self, user, post) -> bool:
+        return post.author_id == user.id
+```
+
+### Auto-discovery
+
+```python
+gate.discover("app/policies")   # imports all *_policy.py files
+```
+
+Call once at startup — or add to your lifespan. All `@gate.policy(...)` decorators in those files execute on import.
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `gate.authorize(user, action, subject)` | Raise `HTTP 403` if denied |
+| `gate.allows(user, action, subject)` | Return `bool` |
+| `gate.denies(user, action, subject)` | Inverse of `allows` |
+| `gate.policy(ModelClass)` | Decorator — register policy for a model |
+| `gate.register(ModelClass, PolicyClass)` | Explicit registration |
+| `gate.discover(dir)` | Auto-import all `*_policy.py` files |
+
+`subject` can be a model **instance** (for update/delete) or a model **class** (for create — no instance yet).
+
+---
+
+## 11. ModelMixin
 
 `ModelMixin` adds convenient ORM methods directly to Tortoise models. Mix it alongside `tortoise.Model`:
 
@@ -1381,7 +1487,7 @@ await post.update_from(payload)
 
 ---
 
-## 11. Permissions
+## 12. Permissions
 
 Spatie-style roles and permissions using **polymorphic pivot tables**. Any number of models can have roles and permissions without creating extra junction tables per model.
 
@@ -1601,7 +1707,7 @@ await user.can("edit:posts")   # → True (via role)
 
 ---
 
-## 13. Middleware
+## 14. Middleware
 
 Two extension points: **global middleware** wraps every request, **guards** are scoped to a route or controller via DI.
 
@@ -1790,7 +1896,7 @@ logging.getLogger("forgeapi.access").setLevel(logging.WARNING)
 
 ---
 
-## 12. Logger
+## 13. Logger
 
 forge-kits includes a structured logger so you don't need to call `logging.getLogger(__name__)` everywhere.
 
@@ -1849,7 +1955,7 @@ logging.getLogger("forgeapi.access").setLevel(logging.WARNING)  # suppress 2xx l
 
 ---
 
-## 14. Settings
+## 15. Settings
 
 `BaseAppSettings` wraps `pydantic-settings` with `.env` file loading out of the box.
 
@@ -1890,7 +1996,7 @@ This prevents accidental credential exposure in logs and error messages. The act
 
 ---
 
-## 15. Seeders
+## 16. Seeders
 
 Seeders populate the database with initial or test data. The `database/seeds/` directory is created automatically by `forgeapi init`.
 
@@ -1970,7 +2076,7 @@ from forgeapi.database import Seeder
 
 ---
 
-## 16. CLI reference
+## 17. CLI reference
 
 Add `-h` after any command for detailed help:
 
@@ -2155,7 +2261,7 @@ forgeapi db:fresh --force     # DROP all tables including structure (asks confir
 
 ---
 
-## 17. forgeapi.toml reference
+## 18. forgeapi.toml reference
 
 ```toml
 [project]
@@ -2191,7 +2297,7 @@ All fields are optional — `Core` works without a config file using the default
 
 ---
 
-## 18. Telescope
+## 19. Telescope
 
 Telescope is a built-in, in-process request debugger. It captures every HTTP request — including its SQL queries, log output, dispatched events, and custom job records — and streams the data to any connected WebSocket client in real time.
 
@@ -2345,7 +2451,7 @@ The following paths are never captured to prevent recording Telescope's own traf
 
 ---
 
-## 19. MCP Server
+## 20. MCP Server
 
 forge-kits ships an MCP server that exposes API docs and code generation tools directly to AI assistants (Claude Code, Cursor, etc.).
 
