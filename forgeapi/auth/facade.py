@@ -141,6 +141,45 @@ class Auth:
         """
         return self._get(guard).decode(token, expected_type=expected_type)
 
+    def set_cookie(self, response, data: dict, *, guard: str | None = None) -> None:
+        """Sign ``data`` and write a session cookie on *response* (Cookie strategy only).
+
+        Args:
+            response: FastAPI ``Response`` object.
+            data:     Session payload — include ``"sub"`` (user id), optionally ``"username"``.
+            guard:    Guard name override.
+
+        Example::
+
+            auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+        """
+        from .strategies.cookie import CookieStrategy
+        g = self._get(guard)
+        if not isinstance(g._strategy, CookieStrategy):
+            raise NotImplementedError(
+                f"set_cookie() requires CookieStrategy, got {type(g._strategy).__name__}."
+            )
+        g._strategy.set_cookie(response, data)
+
+    def delete_cookie(self, response, *, guard: str | None = None) -> None:
+        """Remove the session cookie from *response* (Cookie strategy only).
+
+        Args:
+            response: FastAPI ``Response`` object.
+            guard:    Guard name override.
+
+        Example::
+
+            auth.delete_cookie(response)
+        """
+        from .strategies.cookie import CookieStrategy
+        g = self._get(guard)
+        if not isinstance(g._strategy, CookieStrategy):
+            raise NotImplementedError(
+                f"delete_cookie() requires CookieStrategy, got {type(g._strategy).__name__}."
+            )
+        g._strategy.delete_cookie(response)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

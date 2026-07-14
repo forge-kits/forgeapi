@@ -15,6 +15,7 @@ class StructureConfig(BaseModel):
     schemas_dir: str = "app/schemas"
     events_dir: str = "app/events"
     listeners_dir: str = "app/listeners"
+    policies_dir: str = "app/policies"
     seeds_dir: str = "database/seeds"
     base_prefix: str = "/api/v1"
 
@@ -47,12 +48,20 @@ class DatabaseConfig(BaseModel):
     tortoise_orm: str = "app.config.TORTOISE_ORM"
 
 
+class CacheConfig(BaseModel):
+    driver: str = "memory"
+    prefix: str = ""
+    ttl: int | None = None
+    redis_url: str = "redis://localhost:6379/0"
+
+
 class KitConfig(BaseModel):
     project: ProjectConfig = ProjectConfig()
     structure: StructureConfig = StructureConfig()
     auth: AuthTomlConfig = AuthTomlConfig()
     pagination: PaginationConfig = PaginationConfig()
     database: DatabaseConfig = DatabaseConfig()
+    cache: CacheConfig = CacheConfig()
 
 
 def load_config(path: str = "forgeapi.toml") -> KitConfig:
@@ -72,6 +81,7 @@ def load_config(path: str = "forgeapi.toml") -> KitConfig:
             auth=raw.get("auth", {}),
             pagination=raw.get("pagination", {}),
             database=raw.get("database", {}),
+            cache=raw.get("cache", {}),
         )
     except ValidationError as exc:
         raise ForgeAPIConfigError(

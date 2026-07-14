@@ -6,7 +6,7 @@ def run(extra_args: List[str]) -> None:
 
     port = 8000
     host = "127.0.0.1"
-    reload = True
+    reload = False
     app_path = "main:app"
 
     i = 0

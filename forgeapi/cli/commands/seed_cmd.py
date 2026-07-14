@@ -53,8 +53,26 @@ async def _execute_from_init(seeds_dir: Path) -> None:
     from forgeapi.database import Seeder
 
     init_file = seeds_dir / "__init__.py"
-    spec = importlib.util.spec_from_file_location("_seeds_pkg", init_file)
+    pkg_name = "_seeds_pkg"
+
+    # Pre-register all sibling seeder files as sub-modules so relative imports work
+    for sibling in sorted(seeds_dir.glob("*.py")):
+        if sibling.name == "__init__.py":
+            continue
+        sub_name = f"{pkg_name}.{sibling.stem}"
+        if sub_name not in sys.modules:
+            sib_spec = importlib.util.spec_from_file_location(sub_name, sibling)
+            sib_mod = importlib.util.module_from_spec(sib_spec)
+            sib_mod.__package__ = pkg_name
+            sys.modules[sub_name] = sib_mod
+            sib_spec.loader.exec_module(sib_mod)
+
+    spec = importlib.util.spec_from_file_location(
+        pkg_name, init_file, submodule_search_locations=[str(seeds_dir)]
+    )
     mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = pkg_name
+    sys.modules[pkg_name] = mod
     spec.loader.exec_module(mod)
 
     names = getattr(mod, "__all__", None)

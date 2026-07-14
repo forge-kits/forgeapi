@@ -66,11 +66,18 @@ class Controller:
     ``prefix`` defaults based on the class name:
     - ``UserController``      → ``/users``
     - ``AdminUserController`` → ``/admin/users``
+
+    Set ``schema`` to apply a default ``response_model`` to all routes
+    that don't specify one explicitly (204 routes are skipped)::
+
+        class PostController(Controller):
+            schema = PostResponse
     """
 
     prefix: str = ""
     tags: list[str] | None = None
     guards: list | None = None
+    schema: type | None = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -112,9 +119,18 @@ class Controller:
             fn = getattr(cls, name)
             if callable(fn) and hasattr(fn, "_route"):
                 meta = fn._route
+                kwargs = dict(meta["kwargs"])
+                # inject controller schema as response_model when not set explicitly
+                # skip 204 No Content routes — they have no body
+                if (
+                    cls.schema is not None
+                    and "response_model" not in kwargs
+                    and kwargs.get("status_code") != 204
+                ):
+                    kwargs["response_model"] = cls.schema
                 cls.router.add_api_route(
                     meta["path"],
                     _make_endpoint(cls, name),
                     methods=meta["methods"],
-                    **meta["kwargs"],
+                    **kwargs,
                 )

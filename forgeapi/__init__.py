@@ -9,6 +9,8 @@ from .controllers import Controller, route
 from .middleware import Middleware, Guard
 from .logging import Log
 from .policies import Policy, gate
+from .support import Number, Str, Time
+from .cache import Cache
 
 __all__ = [
     # Facade
@@ -43,6 +45,12 @@ __all__ = [
     # Policies
     "Policy",
     "gate",
+    # Support
+    "Number",
+    "Str",
+    "Time",
+    # Cache
+    "Cache",
 ]
 
 

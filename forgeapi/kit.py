@@ -33,6 +33,7 @@ class Core:
                      default_limit override; ``False`` → skip (default).
         request_id:  Inject ``X-Request-ID`` header. Default ``False``.
         events:      Auto-load listeners from ``listeners_dir``. Default ``False``.
+        policies:    Auto-discover ``*_policy.py`` from ``policies_dir``. Default ``False``.
         access_log:  Log each request (method, path, status, duration). Default ``True``.
         controllers: Auto-import ``*_controller.py`` and register routers. Default ``True``.
         config_path: Path to ``forgeapi.toml``. Default ``"forgeapi.toml"``.
@@ -65,6 +66,7 @@ class Core:
         pagination: bool | int = False,
         request_id: bool = False,
         events: bool = False,
+        policies: bool = False,
         access_log: bool = True,
         controllers: bool = True,
         permissions: "bool | type | None" = None,
@@ -133,6 +135,10 @@ class Core:
             from .events.bus import EventBus
             EventBus.get_instance().load_from_dir(self._cfg.structure.listeners_dir)
             _log.debug("Events: listeners loaded from '%s'", self._cfg.structure.listeners_dir)
+        if policies:
+            from .policies.gate import gate as _gate
+            _gate.discover(self._cfg.structure.policies_dir)
+            _log.debug("Policies: discovered from '%s'", self._cfg.structure.policies_dir)
         if permissions is True:
             permissions = self._find_permissions_model()
         if permissions not in (None, False):
@@ -142,6 +148,8 @@ class Core:
         if controllers:
             self._load_controllers()
             _log.debug("Controllers: auto-discovered from '%s'", self._cfg.structure.controllers_dir)
+
+        self._configure_cache()
 
     # ── Strategy builders ─────────────────────────────────────────────────────
 
@@ -346,6 +354,19 @@ class Core:
         """
         self._app.add_middleware(middleware_cls, **kwargs)
         return self
+
+    # ── Cache ─────────────────────────────────────────────────────────────────
+
+    def _configure_cache(self) -> None:
+        from .cache import Cache
+        cfg = self._cfg.cache
+        Cache.configure(
+            driver=cfg.driver,
+            prefix=cfg.prefix,
+            ttl=cfg.ttl,
+            redis_url=cfg.redis_url,
+        )
+        _log.debug("Cache: driver=%s prefix=%r", cfg.driver, cfg.prefix)
 
     # ── Router ────────────────────────────────────────────────────────────────
 

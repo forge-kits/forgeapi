@@ -10,11 +10,12 @@
    - [How it works — Guards](#how-it-works--guards)
    - [CurrentUser and OptionalUser](#currentuser-and-optionaluser)
    - [Auth facade — issuing tokens](#auth-facade--issuing-tokens)
-   - [Guards facade — multiple auth tables](#guards-facade--multiple-auth-tables)
+   - [Multiple guards](#multiple-guards)
    - [JWT strategy](#jwt-strategy)
    - [Cookie strategy](#cookie-strategy)
    - [Telegram strategy](#telegram-strategy)
 6. [Pagination](#6-pagination)
+   - [QuerySet .paginate()](#queryset-paginate)
    - [Offset pagination](#offset-pagination)
    - [Cursor pagination](#cursor-pagination)
 7. [Events](#7-events)
@@ -27,10 +28,12 @@
    - [Exception isolation](#exception-isolation)
    - [EventBus](#eventbus)
    - [Redis pub/sub — EventBus](#redis-pubsub--eventbus)
+   - [Redis Streams — EventBus](#redis-streams--eventbus)
    - [RedisBus — cross-project bridge](#redisbus--cross-project-bridge)
    - [Testing events](#testing-events)
 8. [Controllers](#8-controllers)
    - [Base pattern](#base-pattern)
+   - [schema class var](#schema-class-var)
    - [Route decorator](#route-decorator)
    - [Auto-prefix and namespace](#auto-prefix-and-namespace)
 9. [Schemas](#9-schemas)
@@ -44,22 +47,35 @@
     - [PermissionsMixin](#permissionsmixin)
     - [Dependencies](#dependencies)
     - [Role and Permission models](#role-and-permission-models)
-13. [Logger](#13-logger)
-14. [Middleware](#14-middleware)
+13. [Cache](#13-cache)
+    - [Basic operations](#basic-operations)
+    - [Common patterns](#common-patterns)
+    - [Drivers](#drivers)
+    - [Configuration](#cache-configuration)
+14. [Support](#14-support)
+    - [Number](#number)
+    - [Str](#str)
+    - [Time](#time)
+15. [Logger](#15-logger)
+16. [Middleware](#16-middleware)
     - [CORS](#cors)
     - [Rate limiting](#rate-limiting)
     - [Request ID](#request-id)
     - [Access logging](#access-logging)
-15. [Settings](#15-settings)
-16. [Seeders](#16-seeders)
-17. [CLI reference](#17-cli-reference)
-18. [forgeapi.toml reference](#18-forgeapitoml-reference)
-19. [Telescope](#19-telescope)
+17. [Settings](#17-settings)
+18. [Seeders](#18-seeders)
+19. [CLI reference](#19-cli-reference)
+20. [forgeapi.toml reference](#20-forgeapitoml-reference)
+21. [Telescope](#21-telescope)
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
     - [Recording jobs](#recording-jobs)
-20. [MCP Server](#20-mcp-server)
+22. [MCP Server](#22-mcp-server)
+    - [Install](#install)
+    - [Global setup for Claude Code](#global-setup-for-claude-code)
+    - [Per-project setup](#per-project-setup)
+    - [Available tools](#available-tools)
 
 ---
 
@@ -78,6 +94,7 @@ pip install forge-kits
 | `aiosqlite` | `tortoise-orm`, `aiosqlite` | SQLite |
 | `aiomysql` | `tortoise-orm`, `aiomysql` | MySQL / MariaDB |
 | `db` | `tortoise-orm` | ORM only, bring your own driver |
+| `redis` | `redis` | Cache Redis driver / Redis events |
 | `full-asyncpg` | auth + asyncpg | PostgreSQL + JWT |
 | `full-aiosqlite` | auth + aiosqlite | SQLite + JWT |
 | `full-aiomysql` | auth + aiomysql | MySQL + JWT |
@@ -87,6 +104,7 @@ pip install forge-kits
 ```bash
 pip install forge-kits[full-asyncpg]   # PostgreSQL + JWT
 pip install forge-kits[mcp]            # MCP server
+pip install forge-kits[redis]          # Redis cache / events
 ```
 
 ```bash
@@ -117,6 +135,7 @@ my-project/
     schemas/                 # Pydantic schemas
     events/                  # Event subclasses
     listeners/               # @listen(...) handlers
+    policies/                # Policy classes (gate.discover)
   database/
     models/                  # Tortoise models
     migrations/              # migration files (tortoise CLI)
@@ -184,45 +203,15 @@ core = Core(
 | `logging` | `bool` | `True` | Logs method + path + status + duration for every request |
 | `controllers` | `bool` | `True` | Auto-imports `*_controller.py` (recursive) and registers routers |
 | `middleware` | `list \| None` | `None` | List of middleware classes or `(cls, kwargs)` tuples to register |
-| `debug` | `bool` | `False` | Debug mode — enables Telescope + relaxes security checks. **Never use in production.** |
+| `debug` | `bool` | `False` | Debug mode — enables Telescope. **Never use in production.** |
 | `config_path` | `str` | `"forgeapi.toml"` | Path to the TOML config file |
 
-### permissions=True — auto-detection
-
-When `permissions=True`, Core scans `models_dir` for a class that inherits `PermissionsMixin` and registers it automatically. No need to import the model in `main.py`.
-
-```python
-# Auto — scans models_dir, finds User (or any PermissionsMixin subclass)
-core = Core(app, auth=True, permissions=True)
-
-# Explicit — use when you have multiple PermissionsMixin models
-from database.models import User
-core = Core(app, auth=True, permissions=User)
-```
-
-If zero models are found → `ForgeAPIConfigError` with a hint.  
-If more than one model is found → `ForgeAPIConfigError` listing the models — pass explicitly.
-
-### Debug mode
-
-```python
-core = Core(app, auth="telegram", debug=True)
-```
-
-`debug=True` disables security checks that are inconvenient during development:
-
-| Component | Normal | Debug |
-|---|---|---|
-| Telegram `auth_date` | Rejected if older than 24 h | Skipped — any age accepted |
-
-All debug activity is logged as `WARNING` so it's visible in the console even without configuring log levels. **Never use `debug=True` in production.**
-
----
+`Core` also auto-configures `Cache` from the `[cache]` section in `forgeapi.toml` on startup.
 
 ### Accessing after setup
 
 ```python
-core.auth       # → Auth facade | None (None if auth=False)
+core.auth       # → Auth facade | None
 core.config     # → KitConfig (parsed forgeapi.toml)
 ```
 
@@ -233,233 +222,171 @@ core.include_router(admin_router)                    # prefix: /api/v1
 core.include_router(admin_router, prefix="/admin")   # prefix: /api/v1/admin
 ```
 
+### Debug mode
+
+```python
+core = Core(app, auth="telegram", debug=True)
+```
+
+All debug activity is logged as `WARNING`. **Never use `debug=True` in production.**
+
 ---
 
 ## 4. Exceptions
-
-ForgeAPI uses a typed exception hierarchy so you can catch errors precisely.
 
 ```python
 from forgeapi import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 ```
 
-| Class | Inherits | When raised |
-|---|---|---|
-| `ForgeAPIError` | `Exception` | Base — all ForgeAPI errors |
-| `ForgeAPIConfigError` | `ForgeAPIError` | Misconfiguration: missing secret, unknown strategy, model not found |
-| `ForgeAPIImportError` | `ForgeAPIError`, `ImportError` | Optional dependency not installed |
+| Class | When raised |
+|---|---|
+| `ForgeAPIError` | Base — all ForgeAPI errors |
+| `ForgeAPIConfigError` | Misconfiguration: missing secret, unknown strategy, model not found |
+| `ForgeAPIImportError` | Optional dependency not installed |
 
-Every exception includes a `hint` field with a fix suggestion. The hint is appended to the message automatically:
-
-```
-ForgeAPIConfigError: Auth backend is not configured.
-  Hint: Enable auth in Core: Core(app, auth=True).
-```
-
-### Catching examples
+Every exception includes a `hint` field with a fix suggestion.
 
 ```python
-from forgeapi import ForgeAPIConfigError, ForgeAPIImportError
-
-# Catch a specific error
 try:
     core = Core(app, auth=True)
 except ForgeAPIConfigError as e:
-    print(e)        # full message + hint
-    print(e.hint)   # just the hint string
-
-# ForgeAPIImportError is also an ImportError — existing except clauses still work
-try:
-    from forgeapi.auth.strategies.jwt import JWTStrategy
-except ImportError as e:
-    print("missing dep:", e)
+    print(e.hint)
 ```
-
-### When each error is raised
-
-**`ForgeAPIConfigError`**
-
-| Trigger | Message |
-|---|---|
-| `Core(app, auth=True)` without JWT_SECRET set | `JWT secret key is not set.` |
-| `Core(app, auth="unknown")` | `Unknown auth strategy 'unknown'.` |
-| `Core(app, permissions=True)` — no PermissionsMixin model found | `No model with PermissionsMixin found in '…'.` |
-| `Core(app, permissions=True)` — multiple PermissionsMixin models | `Multiple PermissionsMixin models found: User, Team.` |
-| `forgeapi.auth.auth.<method>` called before `Core(app, auth=True)` | `Auth backend is not configured.` |
-| `RequirePermission` / `RequireRole` used before `permissions=` set | `User model not registered.` |
-| `COOKIE_SECRET` env var missing for CookieStrategy | `Cookie secret key is not set.` |
-
-**`ForgeAPIImportError`**
-
-| Trigger | Message |
-|---|---|
-| `Core(app, auth=True)` without PyJWT installed | `Auth backend could not be loaded.` |
-| `JWTStrategy` imported without PyJWT | `JWTStrategy requires PyJWT.` |
 
 ---
 
 ## 5. Auth
 
-### How it works — Guards
+Auth is based on **Guards**. A Guard combines a **strategy** (how to verify credentials) with an optional **user_model** (which Tortoise model to load from the DB).
 
-Auth is built around **named Guards**. Each Guard wraps one strategy (JWT / Cookie / Telegram) and targets a specific user model/table. Multi-guard setup lets you authenticate against different tables (e.g. `users` + `admins`) with separate secrets and strategies.
+### Step 1 — configure strategy in forgeapi.toml
 
-When `Core(app, auth=True)` runs:
-1. Strategy is built from `forgeapi.toml` / env vars.
-2. A `Guard("api", strategy)` is registered as the default guard.
-3. `CurrentUser` and `OptionalUser` become live FastAPI dependencies that delegate to the default guard.
+```toml
+[auth]
+strategy           = "jwt"      # jwt | cookie | telegram
+jwt_secret_env     = "JWT_SECRET"
+access_ttl_minutes = 30
+refresh_ttl_days   = 7
+```
 
-### CurrentUser and OptionalUser
+### Step 2 — enable in Core
+
+```python
+core = Core(app, auth=True)
+```
+
+### Step 3 — protect routes
 
 ```python
 from forgeapi.auth import CurrentUser, OptionalUser
-```
 
-**`CurrentUser`** — required auth. Returns `AuthUser` or raises `401`.
-
-```python
 @route.get("/me")
 async def me(self, user: CurrentUser):
-    return {"id": user.id, "username": user.username}
-```
+    return {"id": user.id}
 
-**`OptionalUser`** — returns `AuthUser` if credentials present, `None` otherwise. Never raises `401`.
-
-```python
 @route.get("/feed")
 async def feed(self, user: OptionalUser):
-    return personalised_feed(user.id) if user else public_feed()
+    if user:
+        return await personalised_feed(user.id)
+    return await public_feed()
 ```
 
-### What CurrentUser returns
+### What the user object contains
 
-Depends on the Guard's `user_model`:
-
-- **No `user_model`** (default) → `AuthUser` — a lightweight token DTO with `id`, `username`, `auth_method`, `extra`.
-- **With `user_model=User`** → the real Tortoise `User` instance fetched from the DB.
-
-```python
-# Without user_model — gets token claims only
-api_guard = Guard("api", JWTStrategy(...))
-
-# With user_model — gets the full DB row
-api_guard = Guard("api", JWTStrategy(...), user_model=User)
-
-CurrentUser = guard("api").current_user()
-
-@route.get("/me")
-async def me(self, user: CurrentUser):
-    user.id       # str (from token) or int (from DB)
-    user.email    # only available when user_model is set
-```
-
----
+| Field | Type | Description |
+|---|---|---|
+| `user.id` | `str` | JWT `sub` claim — cast with `int(user.id)` for DB queries |
+| `user.username` | `str \| None` | From token payload |
+| `user.auth_method` | `str` | `"jwt"` / `"cookie"` / `"telegram"` |
+| `user.extra` | `dict` | Any extra claims (`role`, `email`, etc.) |
 
 ### Auth facade — issuing tokens
 
 ```python
 from forgeapi.auth import auth
 
-# issue tokens for the default guard
-access  = auth.token(user)
-refresh = auth.refresh_token(user)
+access  = auth.token(user)           # access token — takes DB model instance
+refresh = auth.refresh_token(user)   # refresh token — JWT only, takes DB model instance
 
-# decode
-payload = auth.decode(token)
+# Decode
+payload = auth.decode(token, expected_type="access")  # raises TokenExpiredError | TokenInvalidError
+
+# Cookie strategy only
+auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+auth.delete_cookie(response)
 ```
 
-`user` can be an `AuthUser` or any ORM model — the facade reads `id` and `email` automatically.
+`auth.token(user)` and `auth.refresh_token(user)` accept any model instance — they extract `id`, `username`/`email`/`name` automatically via `_build_payload`.
 
-### Guards facade — multiple auth tables
-
-Register multiple guards for different user models (e.g. `users` + `admins`):
+### Login endpoint pattern
 
 ```python
-from fastapi import FastAPI
-from forgeapi import Core
+@route.post("/login")
+async def login(self, payload: LoginPayload) -> dict:
+    user = await User.get_or_none(email=payload.email)
+    if not user or not user.verify_password(payload.password):
+        raise HTTPException(401, "Invalid credentials")
+    return {
+        "access_token":  auth.token(user),
+        "refresh_token": auth.refresh_token(user),
+        "token_type":    "bearer",
+    }
+
+@route.post("/refresh")
+async def refresh(self, payload: RefreshPayload) -> dict:
+    try:
+        data = auth.decode(payload.refresh_token, expected_type="refresh")
+    except (TokenExpiredError, TokenInvalidError) as e:
+        raise HTTPException(401, str(e))
+    user = await User.find_or_fail(int(data["sub"]))
+    return {"access_token": auth.token(user), "token_type": "bearer"}
+```
+
+### Multiple guards
+
+```python
 from forgeapi.auth.guard import Guard
-from forgeapi.auth.facade import auth as _auth
+from forgeapi.auth.facade import auth
 from forgeapi.auth.strategies import JWTStrategy
 
-app = FastAPI()
-core = Core(app, auth=False)   # disable auto-setup
+core = Core(app, auth=False)
 
-api_guard   = Guard("api",   JWTStrategy(secret_key="..."))
-admin_guard = Guard("admin", JWTStrategy(secret_key="..."))
-
-_auth.register("api",   api_guard)
-_auth.register("admin", admin_guard)
-_auth.set_default("api")
+auth.register("api", Guard(name="api", strategy=JWTStrategy(secret_key="user-secret"), user_model=User))
+auth.register("admin", Guard(name="admin", strategy=JWTStrategy(secret_key="admin-secret"), user_model=Admin))
+auth.set_default("api")
 ```
-
-Use a named guard's dependency in a route:
-
-```python
-from forgeapi.auth import guard
-
-AdminCurrentUser = guard("admin").current_user()
-
-@route.get("/admin/me")
-async def admin_me(self, user: AdminCurrentUser):
-    return {"id": user.id}
-```
-
-Issue / decode with a specific guard:
-
-```python
-token   = auth.token(user, guard="admin")
-payload = auth.decode(token, guard="admin")
-```
-
----
 
 ### JWT strategy
 
-`Authorization: Bearer <token>`.
+Reads `Authorization: Bearer <token>`.
 
 ```toml
 [auth]
-strategy            = "jwt"
-jwt_secret_env      = "JWT_SECRET"
-access_ttl_minutes  = 30
-refresh_ttl_days    = 7
+strategy           = "jwt"
+jwt_secret_env     = "JWT_SECRET"
+access_ttl_minutes = 30
+refresh_ttl_days   = 7
 ```
-
-Extra claims land in `user.extra`:
-
-```python
-access = auth.token(user)   # includes sub, type, exp
-# or build custom payload:
-from forgeapi.auth.strategies import JWTStrategy
-s = JWTStrategy(secret_key="...")
-token = s.create_access_token({"sub": "42", "username": "alice", "role": "admin"})
-# user.extra["role"] → "admin"
-```
-
----
 
 ### Cookie strategy
 
-Signed JSON session in an `HttpOnly` cookie. Secret from `COOKIE_SECRET` env var.
+Stores a signed JSON session in an `HttpOnly` cookie. Secret from `COOKIE_SECRET` env var.
 
 ```toml
 [auth]
 strategy        = "cookie"
 cookie_name     = "session"
 cookie_httponly = true
-cookie_secure   = false    # set true in production
+cookie_secure   = false    # true in production (HTTPS)
 ```
 
 ```python
 from forgeapi.auth.strategies import CookieStrategy
-from fastapi import Response
-
 strategy = CookieStrategy()
-strategy.set_cookie(response, {"sub": str(user.id), "username": user.username})
+
+strategy.set_cookie(response, {"sub": str(user.id)})
 strategy.delete_cookie(response)
 ```
-
----
 
 ### Telegram strategy
 
@@ -471,89 +398,89 @@ strategy = "telegram"
 ```
 
 ```bash
-BOT_TOKEN=123456:ABC-your-token          # single bot
-BOT_TOKEN=123456:ABC-one,789012:DEF-two  # multiple bots
+BOT_TOKEN=123456:ABC-your-token
+BOT_TOKEN=123456:ABC-one,789012:DEF-two   # multiple bots, comma-separated
 ```
 
-Client sends `window.Telegram.WebApp.initData` in:
-- `X-Telegram-Init-Data: <initData>` (preferred)
-- `Authorization: tma <initData>`
-
-```python
-async def me(self, user: CurrentUser):
-    user.id           # telegram_id (bigint)
-    user.username     # @username or None
-    user.extra        # {"first_name": ..., "language_code": ..., "auth_date": ...}
-```
+Client sends `window.Telegram.WebApp.initData` via `X-Telegram-Init-Data` header or `Authorization: tma <initData>`.
 
 ---
 
 ## 6. Pagination
 
-Two flavors: **offset** (page-based) and **cursor** (stable on inserts/deletes, no OFFSET).
+Two flavors: **QuerySet `.paginate()`** (recommended), **offset** (classic), and **cursor** (stable on inserts/deletes).
 
-### Offset pagination
+### QuerySet .paginate()
+
+The cleanest way — call `.paginate()` directly on any QuerySet:
 
 ```python
-from forgeapi.pagination import Pagination
+from fastapi import Request
+from forgeapi.controllers import Controller, route
 
-@route.get("/posts")
-async def index(self, p: Pagination, request: Request):
-    return await p.paginate(Post.all().order_by("-created_at"), PostResponse, request)
+class PostController(Controller):
+    prefix = "/posts"
+    tags   = ["posts"]
+    schema = PostResponse
+
+    @route.get("/", response_model=None)
+    async def index(self, request: Request):
+        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
+
+    @route.get("/published", response_model=None)
+    async def published(self, request: Request):
+        return await Post.filter(is_published=True).paginate(request, PostResponse)
 ```
 
-`paginate()` executes `COUNT` + `SELECT` in parallel and returns a ready `PaginatedResponse`:
+Query params: `?page=1&per_page=20`. Response:
 
 ```json
 {
   "data": [...],
   "meta": {
-    "current_page": 2,
-    "per_page": 10,
+    "current_page": 1,
+    "per_page": 20,
     "total": 47,
-    "last_page": 5,
-    "from": 11,
+    "last_page": 3,
+    "from": 1,
     "to": 20
   },
   "links": {
-    "prev": "/posts?page=1&per_page=10",
-    "next": "/posts?page=3&per_page=10"
+    "prev": null,
+    "next": "/posts?page=2&per_page=20"
   }
 }
 ```
 
-Query params: `?page=1&per_page=20`. `per_page` is clamped to `max_limit` (default 100).
+`schema` is optional — omit to get raw ORM objects.
+
+### Offset pagination
+
+Classic DI-based pagination:
+
+```python
+from forgeapi.pagination import Pagination
+
+@route.get("/")
+async def index(self, pagination: Pagination, request: Request):
+    return await pagination.paginate(Post.all().order_by("-created_at"), PostResponse, request)
+```
+
+`pagination.page`, `pagination.limit`, `pagination.offset` are available as attributes.
 
 ### Cursor pagination
 
-No OFFSET — stable and O(1) on large datasets. Returns opaque `cursor` tokens instead of page numbers.
+No OFFSET — stable and O(1) on large datasets:
 
 ```python
 from forgeapi.pagination import CursorPagination
 
-@route.get("/posts")
+@route.get("/")
 async def index(self, p: CursorPagination, request: Request):
     return await p.paginate(Post.all(), PostResponse, request, order_by="-id")
 ```
 
 Query params: `?cursor=<token>&per_page=20`.
-
-```json
-{
-  "data": [...],
-  "meta": {
-    "per_page": 20,
-    "next_cursor": "eyJpZCI6IDEwfQ==",
-    "prev_cursor": null
-  },
-  "links": {
-    "prev": null,
-    "next": "/posts?cursor=eyJpZCI6IDEwfQ==&per_page=20"
-  }
-}
-```
-
-`order_by` supports any unique monotonic column. Prefix with `-` for descending (`"-id"`, `"-created_at"`).
 
 ### Configuration
 
@@ -563,35 +490,15 @@ default_limit = 20
 max_limit     = 100
 ```
 
-Via `Core`:
-
 ```python
-Core(app, pagination=20)    # default_limit=20
-Core(app, pagination=True)  # both from toml
+Core(app, pagination=20)   # default_limit=20
 ```
-
-Programmatically:
-
-```python
-from forgeapi.pagination import Paginator, CursorPaginator
-
-Paginator.configure(default_limit=10, max_limit=50)
-CursorPaginator.configure(default_limit=10, max_limit=50)
-```
-
-### Response types
-
-```python
-from forgeapi.pagination import PaginatedResponse, CursorResponse, PaginationMeta, PaginationLinks, CursorMeta
-```
-
-Both are generic: `PaginatedResponse[PostResponse]`.
 
 ---
 
 ## 7. Events
 
-Events decouple side effects (emails, notifications, cache invalidation, analytics) from business logic. Instead of calling three different services inside a route handler, dispatch one event and let registered listeners handle everything independently.
+Events decouple side effects (emails, notifications, cache invalidation) from business logic.
 
 ### Lifecycle overview
 
@@ -601,316 +508,186 @@ route handler
     └─ await event.dispatch()
               │
               ├─ background=False → asyncio.gather(all listeners) → await → continue
-              │
               ├─ background=True  → asyncio.create_task(gather) → continue immediately
-              │
-              └─ redis=True       → publish to Redis channel
-                                         │
-                                   each worker's subscriber
-                                         │
-                                   (ttl set?) → SET NX EX {ttl} → only first worker continues
-                                         │
-                                   asyncio.gather(all local listeners)
+              └─ redis=True       → publish to Redis → each worker runs local listeners
 ```
 
 ### Defining events
 
 ```python
-# app/events/order_created_event.py
 from forgeapi import Event
 
 class OrderCreated(Event):
-    background = True        # True = fire-and-forget; False = await before response
-    redis      = False       # True = publish to Redis (multi-worker distribution)
-    redis_type = "pubsub"    # "pubsub" = fan-out to all workers | "stream" = persistent, consumer groups
-    namespace  = "forgeapi:events"  # Redis key prefix: {namespace}:{ClassName}
-    ttl: int | None = None   # Redis dedup window in seconds; None = no dedup
+    background = True        # True = fire-and-forget
+    redis      = False       # True = publish to Redis
+    redis_type = "pubsub"    # "pubsub" | "stream"
+    namespace  = "forgeapi:events"
+    ttl: int | None = None   # Redis dedup window in seconds
 
     def __init__(self, order_id: int, total: float) -> None:
         self.order_id = order_id
         self.total    = total
 ```
 
-#### Class-level flags
-
 | Flag | Default | Effect |
 |---|---|---|
-| `background` | `False` | `False` — `dispatch()` awaits all listeners before returning. `True` — listeners are `create_task`-ed, the caller continues immediately |
-| `redis` | `False` | `True` — event is serialised and published to Redis |
-| `redis_type` | `"pubsub"` | `"pubsub"` — fan-out via Redis Pub/Sub (`PUBLISH`); `"stream"` — persistent delivery via Redis Streams (`XADD`) with consumer groups |
-| `namespace` | `"forgeapi:events"` | Redis key prefix. Pub/sub channel: `{namespace}:{ClassName}`. Stream key: `{namespace}:{ClassName}` |
-| `ttl` | `None` | Dedup window in seconds (pub/sub only). Only the first worker that wins `SET NX EX {ttl}` on `event_id` processes the event |
-
-Combinations:
-
-| `background` | `redis` | Behaviour |
-|---|---|---|
-| `False` | `False` | Default: await listeners, then return the response |
-| `True` | `False` | Fire-and-forget: schedule listeners in background, return response now |
-| `True` | `True` | Publish to Redis (fast), each worker picks up and runs listeners in background |
-| `False` | `True` | Rarely useful — publishes to Redis but still blocks on local listener completion |
+| `background` | `False` | `True` = listeners run in background task |
+| `redis` | `False` | `True` = publish to Redis |
+| `redis_type` | `"pubsub"` | `"pubsub"` = fan-out; `"stream"` = persistent consumer groups |
+| `ttl` | `None` | Dedup window — only first worker that wins `SET NX EX {ttl}` processes it |
 
 ### event_id and serialisation
 
-Every `Event` instance automatically receives a `self.event_id = str(uuid.uuid4())`. This ID is preserved across Redis serialisation so all workers see the same ID — which is what `ttl`-based deduplication locks on.
-
-`to_dict()` is called when publishing to Redis. The default implementation serialises all public instance attributes. Override it for non-JSON-serialisable fields:
+Every event automatically gets `self.event_id = str(uuid.uuid4())`. Override `to_dict()` / `from_dict()` for custom serialisation:
 
 ```python
-class OrderCreated(Event):
-    redis = True
-
-    def __init__(self, order_id: int, items: list) -> None:
-        self.order_id = order_id
-        self.items = items          # list of ORM objects — not directly JSON-serialisable
-
-    def to_dict(self) -> dict:
-        base = super().to_dict()    # includes event_id + order_id automatically
-        base["items"] = [{"id": i.id, "name": i.name} for i in self.items]
-        return base
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "OrderCreated":
-        obj = cls.__new__(cls)
-        obj.event_id  = data["event_id"]
-        obj.order_id  = data["order_id"]
-        obj.items     = data["items"]   # already plain dicts on the receiving side
-        return obj
+def to_dict(self) -> dict:
+    base = super().to_dict()
+    base["items"] = [{"id": i.id} for i in self.items]
+    return base
 ```
-
-The default `from_dict` sets all keys from the dict as instance attributes, so override is only needed for custom reconstruction.
 
 ### @listen decorator
 
 ```python
-# app/listeners/order_listener.py
 from forgeapi import listen
-from app.events.order_created_event import OrderCreated
 
 @listen(OrderCreated)
 async def send_confirmation(event: OrderCreated) -> None:
-    await mailer.send(f"Order #{event.order_id} total: {event.total}")
+    await mailer.send(f"Order #{event.order_id} confirmed")
 
 @listen(OrderCreated)
 async def update_inventory(event: OrderCreated) -> None:
     await Inventory.decrease(order_id=event.order_id)
 ```
 
-Both listeners are registered at import time. `Core(app, events=True)` imports all files in `listeners_dir` automatically.
-
-Multiple listeners for the same event run **in parallel** via `asyncio.gather`.
-
-An alternative is `@bus.on` — identical registration, different import path:
-
-```python
-from forgeapi import EventBus
-
-bus = EventBus.get_instance()
-
-@bus.on(OrderCreated)
-async def log_order(event: OrderCreated) -> None:
-    logger.info("order %d created, total=%.2f", event.order_id, event.total)
-```
+Multiple listeners run **in parallel** via `asyncio.gather`. `Core(app, events=True)` imports all files in `listeners_dir` automatically.
 
 ### Dispatching
 
 ```python
-@route.post("/orders")
-async def create(self, payload: OrderCreatePayload, user: CurrentUser) -> OrderResponse:
-    order = await Order.create(**payload.model_dump(), user_id=int(user.id))
-    await OrderCreated(order_id=order.id, total=order.total).dispatch()
-    return OrderResponse.model_validate(order)
+await OrderCreated(order_id=order.id, total=order.total).dispatch()
 ```
-
-`dispatch()` is an instance method — always call it on a freshly constructed event object. The same event object should not be dispatched twice.
 
 ### Background vs synchronous dispatch
 
-`background = False` (default): the route handler waits for all listeners to finish before sending the response. Use when the response depends on the side effects, or when ordering matters.
-
-`background = True`: listeners are scheduled as an `asyncio.Task` and the response is returned immediately. Use for fire-and-forget work like emails, analytics, cache warming.
-
 ```python
-# background=False — response returned AFTER send_welcome_email and create_profile finish
+# background=False — route waits for all listeners
 class UserRegistered(Event):
     background = False
 
-    def __init__(self, user_id: int, email: str) -> None:
-        self.user_id = user_id
-        self.email   = email
-
-# background=True — response returned immediately, notifications sent after
+# background=True — response returned immediately
 class OrderShipped(Event):
     background = True
-
-    def __init__(self, order_id: int) -> None:
-        self.order_id = order_id
 ```
 
 ### Exception isolation
 
-Each listener is wrapped in a try/except. If one listener raises, the exception is **logged** but does not propagate — other listeners still run and the route handler is not affected.
-
-```python
-@listen(OrderShipped)
-async def send_sms(event: OrderShipped) -> None:
-    raise RuntimeError("SMS gateway down")   # logged, does NOT kill the request
-
-@listen(OrderShipped)
-async def update_inventory(event: OrderShipped) -> None:
-    await Inventory.ship(event.order_id)    # still runs
-```
+Each listener is wrapped in try/except — one failure doesn't kill the others.
 
 ### EventBus
-
-`Core(app, events=True)` calls `EventBus.load_from_dir("app/listeners")` which imports every `*.py` file in the listeners directory. `@listen` registers on import — no manual wiring needed.
 
 ```python
 from forgeapi import EventBus
 
-# singleton
 bus = EventBus.get_instance()
-
-# manual registration (without decorator)
-bus.register(OrderCreated, my_async_handler)
-
-# inspect registered listeners
-listeners = bus.listeners_for(OrderCreated)  # → [send_confirmation, update_inventory]
-
-# reset singleton and all registrations — useful in tests
-EventBus.reset()
+bus.register(OrderCreated, my_handler)
+bus.load_from_dir("app/listeners")
+EventBus.reset()   # clear all listeners — use in tests
 ```
-
----
 
 ### Redis pub/sub — EventBus
 
-The built-in `EventBus` supports Redis pub/sub for distributing events across multiple workers (replicas) of the **same project**. Add `redis = True` to any event class:
-
 ```python
-# app/events/order_shipped_event.py
-from forgeapi import Event
-
 class OrderShipped(Event):
     background = True
-    redis = True      # publish to Redis; all workers receive it
-    ttl = 300         # dedup window — only the first worker that wins the lock processes it
+    redis = True
+    ttl = 300  # one worker per event_id per 5 minutes
 
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 ```
 
-Wire up Redis in the app lifespan:
-
-```python
-import asyncio
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-import redis.asyncio as aioredis
-from forgeapi import Core, EventBus
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    bus = EventBus.get_instance()
-    await bus.redis_connect("redis://localhost:6379")   # no redis.asyncio import needed
-    task = asyncio.create_task(bus.start_redis_subscriber())
-    yield
-    task.cancel()
-    await bus.redis_disconnect()
-
-app = FastAPI(lifespan=lifespan)
-Core(app, events=True)
-```
-
-Dispatching is unchanged — `await OrderShipped(order_id=42).dispatch()`.
-
-**How dedup works:** when `ttl` is set, the subscriber performs `SET NX EX {ttl} forgeapi:dedup:{event_id}` before running listeners. Only the first worker that acquires the key processes the event; all others skip it silently.
-
-| `redis` | `ttl` | Behaviour |
-|---|---|---|
-| `False` (default) | — | Local dispatch only, no Redis |
-| `True` | `None` | Published to Redis, **all** subscribers run listeners |
-| `True` | `60` | Published to Redis, exactly one subscriber processes per 60-second window |
-
----
-
-### Redis Streams — EventBus
-
-Use `redis_type = "stream"` when you need **persistent delivery with consumer groups** — messages survive worker restarts and each independent group receives every message exactly once.
-
-```python
-# app/events/order_event.py
-from forgeapi import Event
-
-class OrderEvent(Event):
-    background = True
-    redis      = True
-    redis_type = "stream"    # XADD instead of PUBLISH
-    namespace  = "shop"      # stream key → shop:OrderEvent
-
-    def __init__(self, order_id: int, total: float, customer: str) -> None:
-        self.order_id = order_id
-        self.total    = total
-        self.customer = customer
-```
-
-Wire up the publisher (FastAPI):
+Wire up in lifespan:
 
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     bus = EventBus.get_instance()
     await bus.redis_connect("redis://localhost:6379")
+    task = asyncio.create_task(bus.start_redis_subscriber())
     yield
+    task.cancel()
     await bus.redis_disconnect()
 ```
 
-Wire up each consumer (standalone bot / worker):
+### Redis Streams — EventBus
+
+Persistent delivery with consumer groups — messages survive worker restarts:
 
 ```python
-import asyncio
-from forgeapi import EventBus
-from app.events.order_event import OrderEvent
+class OrderEvent(Event):
+    background = True
+    redis      = True
+    redis_type = "stream"
+    namespace  = "shop"      # stream key → shop:OrderEvent
 
+    def __init__(self, order_id: int, total: float) -> None:
+        self.order_id = order_id
+        self.total    = total
+```
+
+Consumer:
+
+```python
 async def main():
     bus = EventBus.get_instance()
     await bus.redis_connect("redis://localhost:6379")
 
     @bus.on(OrderEvent)
     async def on_order(event: OrderEvent):
-        print(f"order_id={event.order_id}  customer={event.customer}")
+        await warehouse.fulfill(event.order_id)
 
     await bus.start_stream_subscriber(
-        group="bot1",           # consumer group name — each group gets every message
-        consumer="bot1-worker", # worker id within the group
+        group="warehouse_group",
+        consumer="worker_1",
         event_classes=[OrderEvent],
     )
-
-asyncio.run(main())
 ```
-
-Run two independent bots — both receive every order:
-
-```
-# Windows PowerShell
-$env:BOT_NAME="bot1"; python bot.py
-$env:BOT_NAME="bot2"; python bot.py
-```
-
-**Pub/Sub vs Streams**
 
 | | `redis_type="pubsub"` | `redis_type="stream"` |
 |---|---|---|
-| Transport | `PUBLISH` / `SUBSCRIBE` | `XADD` / `XREADGROUP` |
-| Persistence | None — lost if no subscriber | Stored until all groups ACK |
+| Persistence | None | Stored until all groups ACK |
 | Delivery | All subscribers simultaneously | Each group independently |
 | Offline workers | Miss messages | Catch up on reconnect |
-| Dedup | `ttl` class var + SET NX | Not built-in |
-| Use case | Same-project multi-worker fan-out | Cross-service / bots that must not miss messages |
+| Dedup | `ttl` class var | Not built-in |
+
+### RedisBus — cross-project bridge
+
+Communication between **different projects** sharing a Redis URL:
+
+```python
+from forgeapi import RedisBus
+
+bus = RedisBus("redis://localhost:6379", namespace="shop")
+
+@bus.on("order:created")
+async def handle(data: dict) -> None:
+    await telegram.send(f"Order #{data['id']}")
+
+await bus.emit("order:created", {"id": 42, "total": 99.0})
+```
+
+Lifecycle with FastAPI:
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with bus:
+        yield
+```
 
 ### Testing events
-
-Always reset the bus before and after each test — listeners registered in one test bleed into the next otherwise.
 
 ```python
 import pytest
@@ -923,310 +700,105 @@ def reset_bus():
     EventBus.reset()
 ```
 
-For background events (`background=True`) use `asyncio.gather` to wait for all scheduled tasks before asserting:
-
-```python
-import asyncio
-import pytest
-from forgeapi import EventBus, listen
-from app.events.order_shipped_event import OrderShipped
-
-@pytest.mark.anyio
-async def test_order_shipped_notifies_warehouse():
-    results = []
-
-    @listen(OrderShipped)
-    async def capture(event: OrderShipped) -> None:
-        results.append(event.order_id)
-
-    bus = EventBus.get_instance()
-    await OrderShipped(order_id=42).dispatch()
-
-    # flush all background tasks
-    await asyncio.gather(*bus._bg_tasks, return_exceptions=True)
-
-    assert results == [42]
-```
-
-For synchronous events (`background=False`) the `await event.dispatch()` line already waits — no extra flush needed.
-
----
-
-### RedisBus — cross-project bridge
-
-`RedisBus` is a **standalone** Redis pub/sub bus for communication between **different projects** on the same server. It has no connection to the per-process `EventBus` singleton — both projects only share a Redis URL.
-
-```python
-from forgeapi import RedisBus
-```
-
-#### Setup — both projects
-
-```python
-# project_a/events.py  AND  project_b/events.py — same code, same Redis URL
-bus = RedisBus("redis://localhost:6379", namespace="shop")
-```
-
-`namespace` is a channel prefix that isolates projects. Two projects with different namespaces never receive each other's events. Two projects with the **same** namespace share all events — which is exactly what cross-project communication needs.
-
-#### Publishing
-
-```python
-# plain dict
-await bus.emit("order:created", {"id": 42, "total": 99.9})
-
-# Tortoise model — scalar fields are serialised automatically
-order = await Order.get(id=42)
-await bus.emit("order:created", order)
-
-# prefetch relations to include them in the payload
-order = await Order.get(id=42).prefetch_related("items")
-await bus.emit("order:created", order)
-```
-
-`datetime`, `Decimal`, and `UUID` are converted to JSON automatically.  
-Un-fetched FK relations are skipped; only the `_id` column is included.
-
-#### Subscribing
-
-```python
-@bus.on("order:created")
-async def handle_order(data: dict) -> None:
-    await telegram.send(f"New order #{data['id']}, total: {data['total']}")
-    # reply back to Project A
-    await bus.emit("notification:sent", {"order_id": data["id"]})
-```
-
-Multiple handlers on the same channel all run in parallel. Handlers receive a plain `dict` — no shared Python classes needed between projects.
-
-#### Lifecycle — FastAPI
-
-```python
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from forgeapi import RedisBus
-
-bus = RedisBus("redis://localhost:6379", namespace="shop")
-
-@bus.on("order:created")
-async def handle_order(data: dict) -> None:
-    await telegram.send(f"Order #{data['id']}")
-    await bus.emit("notification:sent", {"order_id": data["id"]})
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    async with bus:   # connects + starts listener coroutine in existing event loop
-        yield         # disconnects + cancels listener on shutdown
-
-app = FastAPI(lifespan=lifespan)
-```
-
-#### Lifecycle — standalone script (no FastAPI)
-
-```python
-import asyncio
-from forgeapi import RedisBus
-
-bus = RedisBus("redis://localhost:6379", namespace="shop")
-
-@bus.on("order:created")
-async def handle(data: dict) -> None:
-    print("received:", data)
-
-async def main():
-    async with bus:
-        await asyncio.sleep(float("inf"))
-
-asyncio.run(main())
-```
-
-#### Manual control
-
-```python
-await bus.connect()
-task = asyncio.create_task(bus.listen())  # safe in existing event loop
-
-# later
-task.cancel()
-await bus.disconnect()
-```
-
-#### Full cross-project example
-
-```
-Project A (shop)                Redis (namespace="shop")       Project B (notifier)
-────────────────                ───────────────────────        ────────────────────
-order = await Order.get(42)              │                     @bus.on("order:created")
-await bus.emit(                          │                     async def handle(data):
-  "order:created", order     ──publish──►│◄──subscribe──         await tg.send(...)
-)                                        │                       await bus.emit(
-                                         │                         "notification:sent",
-@bus.on("notification:sent") ◄──subscribe│──publish──►             {"order_id": data["id"]}
-async def handle(data):                  │                       )
-  await Order.filter(                    │
-    id=data["order_id"]                  │
-  ).update(notified=True)               │
-```
-
-#### `RedisBus` vs `EventBus`
-
-| | `EventBus` | `RedisBus` |
-|---|---|---|
-| Scope | Same project, multiple workers | Different projects |
-| Channel key | Python class | String name |
-| Payload | Typed `Event` instance | Plain `dict` |
-| Shared code needed | Yes — event classes | No |
-| Transport | Optional Redis via `set_redis()` | Always Redis |
-| Dedup | `ttl` on event class | Not built-in |
-
 ---
 
 ## 8. Controllers
 
-Controllers are classes that group routes. `Core` auto-discovers all `*_controller.py` files in `controllers_dir` (recursively) and registers their routers under `base_prefix`.
+Controllers group routes. `Core` auto-discovers all `*_controller.py` files in `controllers_dir` (recursively) and registers their routers under `base_prefix`.
 
 ### Base pattern
 
 ```python
-# app/controllers/post_controller.py
+from fastapi import Request
 from forgeapi.controllers import Controller, route
 from forgeapi.auth import CurrentUser
-from forgeapi.pagination import Pagination
-from app.models import Post
-from app.schemas.response.post import PostResponse
-from app.schemas.payload.post import PostCreatePayload, PostUpdatePayload
+from database.models.post import Post
+from app.schemas.post import PostResponse, PostCreatePayload, PostUpdatePayload
+
 
 class PostController(Controller):
     prefix = "/posts"
     tags   = ["posts"]
+    schema = PostResponse   # auto response_model (see below)
 
-    @route.get("/")
-    async def index(self, pagination: Pagination) -> dict:
-        total = await Post.all().count()
-        items = await Post.all().offset(pagination.offset).limit(pagination.limit)
-        return {"items": [PostResponse.model_validate(p) for p in items], "total": total}
+    @route.get("/", response_model=None)
+    async def index(self, request: Request):
+        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
 
-    @route.post("/", response_model=PostResponse, status_code=201)
-    async def create(self, payload: PostCreatePayload, user: CurrentUser) -> PostResponse:
-        post = await Post.create(**payload.model_dump(), author_id=int(user.id))
-        return PostResponse.model_validate(post)
+    @route.post("/", status_code=201)
+    async def create(self, payload: PostCreatePayload, user: CurrentUser):
+        return await Post.create_from(payload, author_id=int(user.id))
 
-    @route.get("/{post_id}", response_model=PostResponse)
-    async def show(self, post_id: int) -> PostResponse:
-        post = await Post.get_or_none(id=post_id)
-        if not post:
-            raise HTTPException(404, "Not found")
-        return PostResponse.model_validate(post)
+    @route.get("/{id}")
+    async def show(self, id: int):
+        return await Post.find_or_fail(id)
 
-    @route.patch("/{post_id}", response_model=PostResponse)
-    async def update(self, post_id: int, payload: PostUpdatePayload, user: CurrentUser) -> PostResponse:
-        post = await Post.get_or_none(id=post_id, author_id=int(user.id))
-        if not post:
-            raise HTTPException(404, "Not found or not yours")
-        for field, value in payload.model_dump(exclude_none=True).items():
-            setattr(post, field, value)
-        await post.save()
-        return PostResponse.model_validate(post)
+    @route.patch("/{id}")
+    async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+        post = await Post.find_or_fail(id)
+        return await post.update_from(payload)
 
-    @route.delete("/{post_id}")
-    async def destroy(self, post_id: int, user: CurrentUser) -> dict:
-        post = await Post.get_or_none(id=post_id, author_id=int(user.id))
-        if not post:
-            raise HTTPException(404, "Not found or not yours")
+    @route.delete("/{id}", status_code=204)
+    async def destroy(self, id: int):
+        post = await Post.find_or_fail(id)
         await post.delete()
-        return {"detail": "deleted"}
 ```
+
+### schema class var
+
+Set `schema` on the controller class to auto-inject `response_model` on every route — no need to repeat it on each decorator:
+
+```python
+class PostController(Controller):
+    schema = PostResponse   # applied automatically to all routes
+
+    @route.get("/")           # → response_model=PostResponse (auto)
+    async def index(self): ...
+
+    @route.get("/", response_model=None)   # override: disable for this route
+    async def index(self, request: Request):
+        return await Post.all().paginate(request, PostResponse)
+
+    @route.delete("/{id}", status_code=204)  # skipped: no response body on 204
+    async def destroy(self, id: int): ...
+```
+
+Rules:
+- Routes with `status_code=204` are skipped (no body)
+- Routes with an explicit `response_model=...` keep their own value
+- All other routes get `response_model=schema`
 
 ### Route decorator
 
 ```python
-from forgeapi.controllers import Controller, route
-
-# shorthand — preferred
 @route.get("/")
-@route.post("/")
+@route.post("/", status_code=201)
 @route.put("/{id}")
 @route.patch("/{id}")
-@route.delete("/{id}")
+@route.delete("/{id}", status_code=204)
 
-# explicit form — still works, supports multiple methods
-@route("/", methods=["GET"])
-@route("/{id}", methods=["PATCH", "PUT"])
+# explicit form — multiple methods
+@route("/", methods=["GET", "POST"])
 ```
 
-All kwargs are forwarded to FastAPI:
-
-```python
-@route.post("/", response_model=PostResponse, status_code=201, summary="Create post",
-            dependencies=[Depends(some_dep)])
-async def create(self, payload: PostCreatePayload) -> PostResponse: ...
-```
+All kwargs are forwarded to FastAPI (`response_model`, `summary`, `dependencies`, etc.).
 
 ### Auto-prefix and namespace
 
-If `prefix` is not set on the class, it is derived from the class name at definition time.
+If `prefix` is not set, it is derived from the class name:
 
-**Formula** (strip `Controller`, split on CamelCase):
-
-```
-/{first-word}/{remaining-words-joined-with-hyphens-then-pluralised}
-```
-
-The result is **always exactly two path segments** — one slash, never more. Hyphens appear only inside the resource part when there are two or more remaining words.
-
-| Class → split | Namespace | Resource | Auto prefix |
-|---|---|---|---|
-| `UserController` → `[User]` | — | `users` | `/users` |
-| `AdminUserController` → `[Admin, User]` | `admin` | `users` | `/admin/users` |
-| `SuperAdminReportController` → `[Super, Admin, Report]` | `super` | `admin-reports` | `/super/admin-reports` |
-| `SuperAdminOrderItemController` → `[Super, Admin, Order, Item]` | `super` | `admin-order-items` | `/super/admin-order-items` |
-
-The slash in `/admin/users` is the **namespace/resource separator** — not a word separator. The same slash appears in `/super/admin-reports`. There is always exactly one.
-
-### API versioning — use base_prefix, not the controller name
-
-`Core` prepends `base_prefix` (default `/api/v1`) to every controller's prefix automatically. **Do not encode the API version in the controller name.** A `PostController` with auto-prefix `/posts` is registered as `/api/v1/posts` — no naming change needed.
-
-```toml
-# forgeapi.toml
-[structure]
-base_prefix = "/api/v1"
-```
-
-```python
-Core(app)                          # uses base_prefix from toml → /api/v1/posts
-Core(app, base_prefix="/api/v2")   # override inline
-```
+| Class | Auto prefix |
+|---|---|
+| `PostController` | `/posts` |
+| `AdminUserController` | `/admin/users` |
+| `SuperAdminOrderController` | `/super/admin/orders` |
 
 Final URL = `base_prefix` + `controller.prefix` + `route path`
 
-### make:controller file placement
-
-The CLI uses its own rule for where to write the file: **all CamelCase words except the last** form the subdirectory path; the **last word** is the resource. It writes `prefix` explicitly into the generated file, so auto-derivation is irrelevant for generated controllers.
-
 ```bash
 forgeapi make:controller Post          # controllers/post_controller.py
-                                        # prefix = "/posts"
 forgeapi make:controller AdminUser     # controllers/admin/user_controller.py
-                                        # prefix = "/admin/users"
-forgeapi make:controller SuperAdminOrder  # controllers/super/admin/order_controller.py
-                                           # prefix = "/super/admin/orders"
 ```
-
-```
-controllers/
-  post_controller.py          # PostController        → /api/v1/posts
-  admin/
-    __init__.py
-    user_controller.py        # AdminUserController   → /api/v1/admin/users
-  super/
-    __init__.py
-    admin/
-      __init__.py
-      order_controller.py     # SuperAdminOrderController → /api/v1/super/admin/orders
-```
-
-`Core` discovers all of these automatically via recursive glob.
 
 ---
 
@@ -1238,14 +810,14 @@ controllers/
 from forgeapi import BaseSchema, BaseCreateSchema, BaseUpdateSchema
 ```
 
-**`BaseSchema`** — response schemas. Adds `id: int | str` (supports both integer and UUID primary keys), `created_at: datetime`, `updated_at: datetime`. Has `from_attributes=True` so it reads directly from Tortoise model instances.
+**`BaseSchema`** — response schemas. Has `id`, `created_at`, `updated_at`. `from_attributes=True` reads directly from Tortoise instances.
 
 ```python
 class PostResponse(BaseSchema):
     title: str
     body:  str
 
-return PostResponse.model_validate(post)
+PostResponse.model_validate(post)
 ```
 
 **`BaseCreateSchema`** — POST payloads. Plain `BaseModel` subclass.
@@ -1254,83 +826,40 @@ return PostResponse.model_validate(post)
 class PostCreatePayload(BaseCreateSchema):
     title: str
     body:  str
-    is_published: bool = True
 ```
 
-**`BaseUpdateSchema`** — PATCH payloads. Plain `BaseModel` subclass. **Enforces that every field is `Optional`** — declaring a field without a default value (i.e. required) raises `TypeError` at class definition time, not at runtime:
+**`BaseUpdateSchema`** — PATCH payloads. Enforces that every field is `Optional` at class definition time.
 
 ```python
 class PostUpdatePayload(BaseUpdateSchema):
-    title: str | None = None   # OK
-    body:  str | None = None   # OK
-    # title: str               # TypeError at class definition time
-
-# applying a partial update:
-for field, value in payload.model_dump(exclude_none=True).items():
-    setattr(post, field, value)
-await post.save()
+    title: str | None = None
+    body:  str | None = None
 ```
 
 ### Schema directories
 
-Recommended layout:
-
 ```
 schemas/
   payload/
-    __init__.py
-    post.py       # PostCreatePayload, PostGetPayload, PostUpdatePayload
-    user.py       # UserCreatePayload, UserGetPayload, UserUpdatePayload
+    post.py       # PostCreatePayload, PostUpdatePayload
   response/
-    __init__.py
-    post.py       # PostResponse, PostListResponse
-    user.py       # UserResponse, UserListResponse
+    post.py       # PostResponse
 ```
 
 ### generate:schema
 
-Generate typed schemas from an existing Tortoise model by reading `_meta.fields_map` at runtime.
-
 ```bash
-forgeapi generate:schema Post --payload             # cru by default
-forgeapi generate:schema Post --response            # Response + ListResponse
+forgeapi generate:schema Post --payload             # Create + Update payloads
+forgeapi generate:schema Post --response            # PostResponse
 forgeapi generate:schema Post --payload --response  # both
-forgeapi generate:schema Post --payload -crud       # all four payload classes
-forgeapi generate:schema Post --payload --cu        # Create + Update only
+forgeapi generate:schema Post --payload -crud       # all four classes
 ```
-
-**`--payload`** output:
-
-| CRUD flag | Class | Base |
-|---|---|---|
-| `c` | `PostCreatePayload` | `BaseCreateSchema` |
-| `r` | `PostGetPayload` | `BaseModel` (all Optional, for filtering) |
-| `u` | `PostUpdatePayload` | `BaseUpdateSchema` |
-| `d` | `PostDeletePayload` | `BaseModel` |
-
-Default when `--payload` is given without CRUD flags: `cru` (no delete).  
-Use `-d` or `-crud` to include delete.
-
-**`--response`** always generates exactly:
-
-```python
-class PostResponse(BaseSchema):
-    title: str        # real types from the model
-    body:  str
-    ...
-
-class PostListResponse(BaseModel):
-    items: list[PostResponse]
-    total: int
-```
-
-If the model isn't found, `pass` stubs are generated — the command still succeeds.
 
 ---
 
 ## 10. Policies
 
-Policies encapsulate authorization logic per resource. Each policy class maps to a model and defines methods for each action (`view`, `create`, `update`, `delete`, or any custom name).
+Policies encapsulate authorization logic per resource.
 
 ### Defining a policy
 
@@ -1341,8 +870,13 @@ from forgeapi import gate
 
 @gate.policy(Post)
 class PostPolicy(Policy):
+    async def before(self, user, action: str) -> bool | None:
+        if await user.has_role("admin"):
+            return True   # admins bypass all checks
+        return None       # continue to action method
+
     async def view(self, user, post) -> bool:
-        return True  # anyone can view
+        return True
 
     async def create(self, user) -> bool:
         return user is not None
@@ -1354,49 +888,25 @@ class PostPolicy(Policy):
         return post.author_id == int(user.id)
 ```
 
-`@gate.policy(Post)` registers the class — no separate registration step needed.
+`@gate.policy(Post)` registers the class — no separate step needed.
 
 ### Using in controllers
 
 ```python
 from forgeapi import gate
 
-class PostController(Controller):
-    @route.put("/{id}")
-    async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
-        post = await Post.find_or_fail(id)
-        await gate.authorize(user, "update", post)   # raises HTTP 403 if denied
-        return await post.update_from(payload)
-
-    @route.post("/")
-    async def create(self, payload: PostCreatePayload, user: CurrentUser):
-        await gate.authorize(user, "create", Post)   # pass class for instance-free checks
-        return await Post.create_from(payload, author_id=int(user.id))
+@route.patch("/{id}")
+async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+    post = await Post.find_or_fail(id)
+    await gate.authorize(user, "update", post)   # raises HTTP 403 if denied
+    return await post.update_from(payload)
 ```
 
 ### Checking without raising
 
 ```python
-if await gate.allows(user, "delete", post):
-    await post.delete()
-
-if await gate.denies(user, "update", post):
-    raise HTTPException(403, "Not yours")
-```
-
-### before() — blanket checks
-
-`before()` runs before the specific action method. Return `True`/`False` to short-circuit, `None` to continue:
-
-```python
-class PostPolicy(Policy):
-    async def before(self, user, action: str) -> bool | None:
-        if await user.has_role("admin"):
-            return True   # admins bypass every check
-        return None       # proceed to the action method
-
-    async def update(self, user, post) -> bool:
-        return post.author_id == user.id
+if await gate.allows(user, "delete", post): ...
+if await gate.denies(user, "update", post): ...
 ```
 
 ### Auto-discovery
@@ -1405,9 +915,7 @@ class PostPolicy(Policy):
 gate.discover("app/policies")   # imports all *_policy.py files
 ```
 
-Call once at startup — or add to your lifespan. All `@gate.policy(...)` decorators in those files execute on import.
-
-### Methods
+### Gate methods
 
 | Method | Description |
 |---|---|
@@ -1418,53 +926,79 @@ Call once at startup — or add to your lifespan. All `@gate.policy(...)` decora
 | `gate.register(ModelClass, PolicyClass)` | Explicit registration |
 | `gate.discover(dir)` | Auto-import all `*_policy.py` files |
 
-`subject` can be a model **instance** (for update/delete) or a model **class** (for create — no instance yet).
+`subject` can be a model **instance** (update/delete) or a model **class** (create).
 
 ---
 
 ## 11. ModelMixin
 
-`ModelMixin` adds convenient ORM methods directly to Tortoise models. Mix it alongside `tortoise.Model`:
+`ModelMixin` adds ORM shortcuts and enables `.paginate()` on every QuerySet. Mix it alongside `tortoise.Model`:
 
 ```python
 from tortoise import fields, Model
 from forgeapi import ModelMixin
 
 class Post(ModelMixin, Model):
-    id    = fields.IntField(pk=True)
-    title = fields.CharField(max_length=255)
-    body  = fields.TextField()
+    id           = fields.IntField(pk=True)
+    title        = fields.CharField(max_length=255)
+    body         = fields.TextField()
+    is_published = fields.BooleanField(default=False)
+    author_id    = fields.IntField()
+    created_at   = fields.DatetimeField(auto_now_add=True)
+    updated_at   = fields.DatetimeField(auto_now=True)
 
     class Meta:
         table = "posts"
+
+    @classmethod
+    def published(cls):
+        return cls.filter(is_published=True)
+
+    @classmethod
+    def by_author(cls, author_id: int):
+        return cls.filter(author_id=author_id)
 ```
 
 ### Methods
 
-**`find_or_fail(id, field="id")`** — get by field or raise `404`:
+**`find_or_fail(id, field="id")`** — get by field or raise HTTP 404:
 
 ```python
-post = await Post.find_or_fail(42)          # 404 if not found
-post = await Post.find_or_fail("slug", field="slug")
+post = await Post.find_or_fail(42)
+post = await Post.find_or_fail("my-slug", field="slug")
 ```
 
 **`create_from(payload, **extra)`** — create from a Pydantic schema:
 
 ```python
 post = await Post.create_from(payload)
-post = await Post.create_from(payload, author_id=user.id)  # extra kwargs merged
+post = await Post.create_from(payload, author_id=int(user.id))
 ```
 
-`None` values in `payload` are excluded — no accidental `null` writes.
+`None` values are excluded — no accidental `null` writes.
 
-**`update_from(payload, **extra)`** — partial update from a Pydantic schema, then `save()`:
+**`update_from(payload, **extra)`** — partial update from schema, then `save()`:
 
 ```python
 await post.update_from(payload)
-await post.update_from(payload, updated_by=user.id)
+await post.update_from(payload, updated_by=int(user.id))
 ```
 
-Also excludes `None` — safe for `BaseUpdateSchema` where every field is optional.
+### QuerySet .paginate()
+
+`ModelMixin` injects `ForgeManager` automatically so `.paginate()` is available on every QuerySet chain:
+
+```python
+# Full paginated response
+result = await Post.all().order_by("-created_at").paginate(request, PostResponse)
+
+# With filters
+result = await Post.published().paginate(request, PostResponse)
+result = await Post.by_author(user_id).order_by("-created_at").paginate(request, PostResponse)
+
+# Without schema — returns raw ORM objects
+result = await Post.all().paginate(request)
+```
 
 ### Before vs after ModelMixin
 
@@ -1489,42 +1023,27 @@ await post.update_from(payload)
 
 ## 12. Permissions
 
-Spatie-style roles and permissions using **polymorphic pivot tables**. Any number of models can have roles and permissions without creating extra junction tables per model.
+Spatie-style roles and permissions using polymorphic pivot tables.
 
 ### How it works
 
-Instead of `user_roles` / `user_permissions` per model, two shared tables store all assignments:
+Two shared tables store all assignments:
 
 ```
-model_has_roles        model_has_permissions
-──────────────────     ──────────────────────
-model_type  = "user"   model_type  = "user"
-model_id    = 42       model_id    = 42
-role_id     = 1        permission_id = 3
+model_has_roles             model_has_permissions
+──────────────────          ──────────────────────
+model_type = "user"         model_type = "user"
+model_id   = 42             model_id   = 42
+role_id    = 1              permission_id = 3
 ```
 
-`model_type` is the lowercase class name. Adding permissions to a new model (e.g. `Team`) requires zero new migrations — it reuses the same two tables.
-
-> The permission models register under the `models` app — no separate `permissions` app needed in your config.
-
-### DB tables
-
-| Table | Description |
-|---|---|
-| `permissions` | Permission records (`id`, `name`, `guard`) |
-| `roles` | Role records (`id`, `name`, `guard`) |
-| `role_permissions` | Role ↔ Permission M2M |
-| `model_has_roles` | Polymorphic — `model_type`, `model_id`, `role_id` |
-| `model_has_permissions` | Polymorphic — `model_type`, `model_id`, `permission_id` |
-
----
+`model_type` is the lowercase class name. Adding permissions to a new model requires zero new migrations.
 
 ### Setup
 
 **1. Add `PermissionsMixin` to your model:**
 
 ```python
-# database/models/user.py
 from tortoise import fields
 from forgeapi.permissions import PermissionsMixin
 
@@ -1537,33 +1056,24 @@ class User(PermissionsMixin):
         table = "users"
 ```
 
-`PermissionsMixin` is `abstract = True` — it adds no columns and no junction tables to `users`. All assignments are stored in the shared polymorphic pivots.
-
-**2. Add permissions models to your Tortoise config:**
+**2. Add permissions models to TORTOISE_ORM:**
 
 ```python
-# app/config.py
 TORTOISE_ORM = {
     "apps": {
         "models": {
-            "models": ["database.models", "forgeapi.permissions.models"],  # ← add here
-            "default_connection": "default",
-            "migrations": "database.migrations",
+            "models": ["database.models", "forgeapi.permissions.models"],
+            ...
         },
     },
-    ...
 }
 ```
 
-**3. Register in `Core`:**
+**3. Register in Core:**
 
 ```python
-# Auto-detect — Core scans models_dir and finds the PermissionsMixin subclass
-core = Core(app, auth=True, permissions=True)
-
-# Explicit — required when you have multiple PermissionsMixin models
-from database.models import User
-core = Core(app, auth=True, permissions=User)
+core = Core(app, auth=True, permissions=True)    # auto-detect
+core = Core(app, auth=True, permissions=User)    # explicit
 ```
 
 **4. Run migrations:**
@@ -1572,214 +1082,323 @@ core = Core(app, auth=True, permissions=User)
 forgeapi db:makemigrations && forgeapi db:migrate
 ```
 
----
-
-### PermissionsMixin — all methods
-
-All methods are `async`.
-
-#### Checking permissions
-
-All check methods accept an optional `guard` keyword argument (default `"api"`) that scopes the lookup to a specific auth guard, preventing cross-guard permission leakage.
+### PermissionsMixin
 
 ```python
-await user.can("edit:posts")                         # True if has ANY of the given perms (direct or via role)
-await user.can("edit:posts", "admin")                # True if has ANY one of the two
-await user.can("edit:posts", guard="web")            # check against a specific guard
-await user.cannot("delete:users")                    # inverse of can()
-await user.has_all_permissions("read", "write")      # True only if has ALL
+# Checking
+await user.can("edit:posts")                        # True if has any (direct or via role)
+await user.can("edit:posts", "admin")               # OR logic
+await user.cannot("delete:users")
+await user.has_all_permissions("read", "write")     # AND logic
+await user.has_role("admin")
+await user.has_all_roles("admin", "editor")
 
-await user.get_all_permissions()                     # → ["edit:posts", "admin", ...]
-await user.get_all_permissions(guard="web")          # scoped to a guard
-```
-
-#### Granting / revoking permissions
-
-```python
+# Granting / revoking
 await user.give_permission("edit:posts", "delete:posts")
-await user.revoke_permission("delete:posts", "edit:posts")   # one or many
-```
-
-#### Checking roles
-
-```python
-await user.has_role("admin")                  # True if has ANY of the given roles
-await user.has_role("admin", "editor")        # True if has ANY one
-await user.has_all_roles("admin", "editor")   # True only if has ALL
-
-await user.get_role_names()   # → ["admin", "editor"]
-```
-
-#### Assigning / removing roles
-
-```python
+await user.revoke_permission("delete:posts")
 await user.assign_role("admin", "editor")
-await user.remove_role("editor", "viewer")   # one or many
+await user.remove_role("editor")
+
+# Listing
+await user.get_all_permissions()   # → ["edit:posts", ...]
+await user.get_role_names()        # → ["admin", "editor"]
 ```
-
-#### Filtering collections by role
-
-Class-level methods — return a Tortoise `QuerySet` that you can chain freely.
-
-```python
-# all non-admins
-users = await (await User.without_role("admin"))
-
-# all admins
-users = await (await User.with_role("admin"))
-
-# chain additional filters
-qs = await User.without_role("admin")
-users = await qs.filter(is_active=True).order_by("id").all()
-
-# count
-count = await User.without_role("admin").count()  # still async
-```
-
-`with_role` / `without_role` accept multiple role names — any match is sufficient:
-
-```python
-# users that are neither admin nor moderator
-users = await (await User.without_role("admin", "moderator"))
-```
-
----
 
 ### Dependencies
-
-Enforce access control in route handlers. Both return the DB user instance on success, raise `401` for an invalid/inactive user, or raise `403` (with a generic `"Forbidden"` detail — no internal permission names are exposed) when the check fails.
 
 ```python
 from forgeapi.permissions import require_permission, require_role
 
-# Aliases kept for backward compatibility
-from forgeapi.permissions import RequirePermission, RequireRole
-```
-
-**`require_permission(*permissions)`** — user must have **at least one**:
-
-```python
 @route.delete("/{id}")
-async def destroy(self, id: int, user=require_permission("delete:posts")):
-    ...
+async def destroy(self, id: int, user=require_permission("delete:posts")): ...
 
 @route.post("/")
-async def create(self, payload: PostCreatePayload, user=require_permission("create:posts", "admin")):
-    ...
-```
+async def create(self, payload, user=require_permission("create:posts", "admin")): ...   # OR
 
-**`require_role(*roles)`** — user must have **at least one**:
-
-```python
 @route.get("/admin/stats")
-async def stats(self, user=require_role("admin")):
-    ...
-
-@route.get("/dashboard")
-async def dashboard(self, user=require_role("admin", "moderator")):
-    ...
+async def stats(self, user=require_role("admin")): ...
 ```
 
-Both dependencies also check `db_user.is_active` when the field exists on the model — inactive users receive `401` rather than proceeding to the permission check.
+Both dependencies also check `db_user.is_active` when the field exists — inactive users receive `401`.
 
-To resolve the user model per FastAPI app instance (useful in multi-app or multi-tenant setups) set `app.state.user_model = YourUserModel` in your lifespan; the dependencies prefer `request.app.state.user_model` and fall back to the global registry set by `Core`.
-
----
-
-### Role model
-
-`Role` itself can have permissions — useful for bulk assignment.
+### Role and Permission models
 
 ```python
 from forgeapi.permissions.models import Role, Permission
 
 role = await Role.find_or_create("editor")
-
 await role.give_permission("edit:posts", "read:posts")
-await role.revoke_permission("read:posts")
-await role.has_permission("edit:posts")            # → bool
-await role.has_permission("edit:posts", guard="web")  # scoped to guard
+await role.has_permission("edit:posts")   # → bool
 
-# assigning a role gives the user all permissions of that role
-await user.assign_role("editor")
-await user.can("edit:posts")   # → True (via role)
+# Filtering by role
+users = await (await User.with_role("admin"))
+users = await (await User.without_role("admin"))
 ```
 
 ---
 
-## 14. Middleware
+## 13. Cache
 
-Two extension points: **global middleware** wraps every request, **guards** are scoped to a route or controller via DI.
+Async key-value cache. Two drivers: **memory** (default, no dependencies) and **redis** (persistent, shared across workers).
+
+`Core` auto-configures `Cache` from `forgeapi.toml` on startup.
+
+```python
+from forgeapi import Cache
+```
+
+### Basic operations
+
+```python
+await Cache.set("key", value, ttl=60)        # store for 60 seconds
+await Cache.get("key")                        # → value or None
+await Cache.get("key", default="fallback")
+await Cache.has("key")                        # → bool
+await Cache.missing("key")                    # → bool (inverse)
+await Cache.forget("key")                     # delete → bool
+await Cache.flush()                           # clear all
+await Cache.forever("key", value)             # store without TTL
+```
+
+### Common patterns
+
+**`remember()`** — get or compute and store:
+
+```python
+posts = await Cache.remember(
+    "posts:popular",
+    fn=lambda: Post.filter(is_published=True).limit(10),
+    ttl=300,
+)
+
+# async fn works too
+async def fetch_stats():
+    return await compute_heavy_stats()
+
+stats = await Cache.remember("stats:global", fn=fetch_stats, ttl=3600)
+```
+
+**`pull()`** — get and immediately delete (one-time tokens):
+
+```python
+token = await Cache.pull(f"reset:token:{user_id}")
+if token != submitted_token:
+    raise HTTPException(400, "Invalid token")
+```
+
+**Counters:**
+
+```python
+await Cache.increment("views:post:42")         # → int
+await Cache.increment("views:post:42", amount=5)
+await Cache.decrement("stock:item:5")
+```
+
+**Use in a controller:**
+
+```python
+@route.get("/popular", response_model=None)
+async def popular(self, request: Request):
+    cached = await Cache.get("posts:popular")
+    if cached:
+        return cached
+    result = await Post.filter(is_published=True).paginate(request, PostResponse)
+    await Cache.set("posts:popular", result, ttl=60)
+    return result
+```
+
+### Drivers
+
+| Driver | When to use |
+|---|---|
+| `memory` | Single process, development, testing. Resets on restart. |
+| `redis` | Multiple workers, production. Requires `pip install forge-kits[redis]` |
+
+### Cache configuration
+
+```toml
+[cache]
+driver    = "memory"                    # "memory" | "redis"
+prefix    = ""                          # key prefix, e.g. "myapp:"
+ttl       = null                        # default TTL in seconds (null = no expiry)
+redis_url = "redis://localhost:6379/0"  # used when driver = "redis"
+```
+
+Programmatic setup (without Core):
+
+```python
+from forgeapi import Cache
+
+Cache.configure(driver="redis", prefix="myapp:", ttl=3600, redis_url="redis://localhost:6379/1")
+```
 
 ---
 
-### Custom global middleware
+## 14. Support
 
-Subclass `Middleware`, override `dispatch` — the standard Starlette hook. `call_next` passes the request to the handler and returns the response.
+Utility helpers for formatting numbers, strings, and datetimes.
+
+```python
+from forgeapi import Number, Str, Time
+```
+
+### Number
+
+```python
+Number.format(1234567.89)             # "1,234,567.89"
+Number.format(1234.5, decimals=0)     # "1,235"
+Number.format(1234.5, thousands=".", decimal=",")  # "1.234,50" (EU style)
+
+Number.currency(99.9)                 # "99.90"
+Number.currency(100.00044443)         # "100.00"  — messy float, clean output
+Number.currency(1234.5)               # "1,234.50"
+
+Number.file_size(1024)                # "1.0 KB"
+Number.file_size(1048576)             # "1.0 MB"
+Number.file_size(1073741824)          # "1.0 GB"
+Number.file_size(1024, unit="MB")     # "0.0 MB"  — forced unit
+
+Number.percent(0.754)                 # "75.4%"
+Number.percent(0.5, decimals=0)       # "50%"
+
+Number.abbreviate(1500000)            # "1.5M"
+Number.abbreviate(2300)               # "2.3K"
+Number.abbreviate(500)                # "500"
+
+Number.clamp(150, 0, 100)             # 100
+Number.clamp(-5, 0, 100)              # 0
+```
+
+### Str
+
+```python
+Str.limit("Hello world", 5)           # "Hello..."
+Str.limit("Hello world", 5, " →")    # "Hello →"
+
+Str.slug("Hello World!")              # "hello-world"
+Str.slug("  Café & Bistro  ")        # "café-bistro"
+
+Str.random(16)                        # "Xk9mR2pLqT8vNcYw"
+Str.random(8, alphabet="0123456789") # "48291037"
+
+Str.title("hello world")              # "Hello World"
+Str.snake("HelloWorld")               # "hello_world"
+Str.snake("hello-world")              # "hello_world"
+Str.camel("hello_world")              # "helloWorld"
+Str.pascal("hello_world")             # "HelloWorld"
+
+Str.truncate_words("one two three four", 2)  # "one two..."
+
+Str.strip_tags("<b>Hello</b> <i>world</i>")  # "Hello world"
+
+Str.mask("1234567890", start=4)       # "1234******"
+Str.mask("1234567890", char="•", start=0, length=4)  # "••••567890"
+
+Str.contains("Hello World", "world", case_sensitive=False)  # True
+Str.starts_with("Hello", "He")        # True
+Str.ends_with("Hello", "lo")          # True
+```
+
+### Time
+
+```python
+Time.now()                            # datetime UTC
+Time.now("Europe/Kyiv")               # datetime in timezone
+
+Time.parse("2025-07-14")              # → datetime
+Time.parse("2025-07-14T12:00:00Z")    # → datetime
+Time.parse(1720958400)                # → datetime from Unix timestamp
+
+Time.format(dt)                       # "2025-07-14 12:00:00"
+Time.format(dt, "%d/%m/%Y")           # "14/07/2025"
+
+Time.to_timezone(dt, "US/Eastern")    # convert timezone
+Time.to_timezone(dt, "Europe/Kyiv")
+
+Time.timestamp(dt)                    # → int (Unix timestamp)
+
+Time.add(dt, days=1, hours=3)         # → datetime
+Time.subtract(dt, days=7)             # → datetime
+Time.diff_in_days(dt1, dt2)           # → int (absolute)
+Time.diff_in_seconds(dt1, dt2)        # → int (absolute)
+
+Time.human(dt)                        # "just now" / "5 minutes ago" / "in 3 hours"
+Time.human(dt, relative_to=other_dt)  # relative to a specific point
+
+Time.is_past(dt)                      # → bool
+Time.is_future(dt)                    # → bool
+
+Time.start_of_day(dt)                 # 00:00:00.000000
+Time.end_of_day(dt)                   # 23:59:59.999999
+```
+
+---
+
+## 15. Logger
+
+forge-kits includes a structured logger so you don't need to call `logging.getLogger(__name__)` everywhere.
+
+```python
+from forgeapi import Log
+
+Log.info("Order created", order_id=order.id, user_id=user.id)
+Log.warning("Payment retry", order_id=order.id, attempt=3)
+Log.error("Stripe failed", order_id=order.id, reason=str(e))
+```
+
+Context is appended as `key=value` pairs:
+
+```
+INFO  Order created | order_id=42  user_id=7
+ERROR Stripe failed | order_id=42  reason='Card declined'
+```
+
+### Named channels
+
+```python
+auth_log = Log.channel("auth")
+auth_log.debug("Token decoded", user_id=42)
+```
+
+### Methods
+
+| Method | Level |
+|---|---|
+| `Log.debug(msg, **ctx)` | `DEBUG` |
+| `Log.info(msg, **ctx)` | `INFO` |
+| `Log.warning(msg, **ctx)` | `WARNING` |
+| `Log.error(msg, **ctx)` | `ERROR` |
+| `Log.critical(msg, **ctx)` | `CRITICAL` |
+| `Log.channel(name)` | Returns child `Logger` |
+
+`Log` wraps Python's standard `logging` — existing handlers keep working unchanged.
+
+---
+
+## 16. Middleware
+
+Two extension points: **global middleware** wraps every request, **guards** scope to a route or controller.
+
+### Custom global middleware
 
 ```python
 from forgeapi import Middleware
 from fastapi import Request, Response
-from typing import Callable
 
 class TimingMiddleware(Middleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next) -> Response:
         import time
         start = time.perf_counter()
         response = await call_next(request)
         response.headers["X-Process-Time"] = f"{time.perf_counter() - start:.3f}s"
         return response
-```
 
-**Register:**
-
-```python
-# at Core init
 core = Core(app, middleware=[TimingMiddleware])
-
-# multiple, with kwargs via tuple
-core = Core(app, middleware=[
-    TimingMiddleware,
-    (TenantMiddleware, {"default_tenant": "acme"}),
-])
-
-# after init — chainable
 core.use(TimingMiddleware)
 core.use(TenantMiddleware, default_tenant="acme")
 ```
 
-Use `request.state` to pass data to downstream handlers:
-
-```python
-class TenantMiddleware(Middleware):
-    def __init__(self, app, default_tenant: str = "public"):
-        super().__init__(app)
-        self.default_tenant = default_tenant
-
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        request.state.tenant = request.headers.get("X-Tenant", self.default_tenant)
-        return await call_next(request)
-```
-
-To short-circuit the request without reaching the handler:
-
-```python
-from fastapi.responses import JSONResponse
-
-class MaintenanceMiddleware(Middleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.headers.get("X-Bypass") != "secret":
-            return JSONResponse({"detail": "Under maintenance"}, status_code=503)
-        return await call_next(request)
-```
-
----
-
 ### Guards — per-route / per-controller
-
-Guards are FastAPI dependencies. They run before the handler and raise `HTTPException` to block access. Unlike global middleware they can target a single route or a whole controller.
-
-Subclass `Guard` and override `handle`. FastAPI injects parameters declared in `handle` automatically — the same way as a regular route handler. `__call__` is internal and mirrors `handle`'s signature at class creation time.
 
 ```python
 from forgeapi import Guard
@@ -1794,31 +1413,21 @@ class ApiKeyGuard(Guard):
             raise HTTPException(403, "Missing API key")
 ```
 
-**Per-route:**
+Per-route:
 
 ```python
-from fastapi import Depends
-
-class PostController(Controller):
-    @route.post("/", dependencies=[Depends(ApiKeyGuard())])
-    async def create(self, payload: PostCreatePayload): ...
+@route.delete("/{id}", dependencies=[Depends(ApiKeyGuard())])
+async def destroy(self, id: int): ...
 ```
 
-**Per-controller** — `guards` applies to every route in the class:
+Per-controller:
 
 ```python
 class AdminController(Controller):
-    prefix = "/admin"
     guards = [ApiKeyGuard("X-Admin-Key")]
-
-    @route.get("/stats")
-    async def stats(self): ...
-
-    @route.get("/users")
-    async def users(self): ...
 ```
 
-Declare FastAPI dependencies directly in `handle` — they are injected automatically:
+Guards can use FastAPI dependencies directly in `handle`:
 
 ```python
 from forgeapi.auth import CurrentUser
@@ -1827,26 +1436,9 @@ class ActiveUserGuard(Guard):
     async def handle(self, user: CurrentUser) -> None:
         if not user.is_active:
             raise HTTPException(403, "Account disabled")
-
-class AdminController(Controller):
-    guards = [ActiveUserGuard()]
 ```
-
-Mix `Guard` instances and raw `Depends` in `guards`:
-
-```python
-class AdminController(Controller):
-    guards = [
-        ActiveUserGuard(),           # auto-wrapped in Depends
-        Depends(require_admin_role), # raw Depends — used as-is
-    ]
-```
-
----
 
 ### Built-in middleware
-
-Configured via `Core` keyword arguments.
 
 | Argument | Default | Description |
 |---|---|---|
@@ -1868,96 +1460,21 @@ Sliding window per IP. Returns `429` with `Retry-After` header.
 
 ```python
 Core(app, rate_limit=True)   # 60 req/min
-Core(app, rate_limit=200)    # 200 req/min
-```
-
-```json
-{"success": false, "error": {"code": "RATE_LIMITED", "message": "Too many requests. Slow down."}}
+Core(app, rate_limit=200)
 ```
 
 #### Request ID
 
 ```python
 Core(app, request_id=True)
-```
-
-Access in a route or downstream middleware via `request.state.request_id`.
-
-#### Access logging
-
-Logger name: `forgeapi.access`. Format: `GET /api/v1/users → 200 [12.3ms] req_id=abc`.
-
-```python
-Core(app, logging=False)  # disable
-
-import logging
-logging.getLogger("forgeapi.access").setLevel(logging.WARNING)
+# Access via: request.state.request_id
 ```
 
 ---
 
-## 13. Logger
+## 17. Settings
 
-forge-kits includes a structured logger so you don't need to call `logging.getLogger(__name__)` everywhere.
-
-### In your application
-
-```python
-from forgeapi import Log
-
-Log.info("Order created", order_id=order.id, user_id=user.id)
-Log.warning("Payment retry", order_id=order.id, attempt=3)
-Log.error("Stripe failed", order_id=order.id, reason=str(e))
-```
-
-Context is appended as `key=value` pairs — searchable in any log aggregator:
-
-```
-INFO  Order created | order_id=42  user_id=7
-ERROR Stripe failed | order_id=42  reason='Card declined'
-```
-
-### Named channels
-
-```python
-auth_log = Log.channel("auth")
-auth_log.debug("Token decoded", user_id=42, guard="api")
-# → logger name: app.auth
-```
-
-### Methods
-
-| Method | Level |
-|---|---|
-| `Log.debug(msg, **ctx)` | `DEBUG` |
-| `Log.info(msg, **ctx)` | `INFO` |
-| `Log.warning(msg, **ctx)` | `WARNING` |
-| `Log.error(msg, **ctx)` | `ERROR` |
-| `Log.critical(msg, **ctx)` | `CRITICAL` |
-| `Log.channel(name)` | Returns child `Logger` |
-
-`Log` wraps Python's standard `logging` — existing handlers (file, syslog, cloud) keep working unchanged.
-
-### Internal forge-kits log channels
-
-| Channel | What it logs |
-|---|---|
-| `forgeapi.core` | Core startup, controller discovery, guard registration |
-| `forgeapi.access` | Per-request: method, path, status, duration |
-| `forgeapi.auth.*` | Token decode, strategy events |
-| `forgeapi.events` | Event dispatch, listener errors |
-| `forgeapi.permissions` | Permission / role check failures |
-
-```python
-import logging
-logging.getLogger("forgeapi.access").setLevel(logging.WARNING)  # suppress 2xx logs
-```
-
----
-
-## 15. Settings
-
-`BaseAppSettings` wraps `pydantic-settings` with `.env` file loading out of the box.
+`BaseAppSettings` wraps `pydantic-settings` with `.env` file loading:
 
 ```python
 from forgeapi.settings import BaseAppSettings
@@ -1967,284 +1484,92 @@ class Settings(BaseAppSettings):
     redis_url: str | None = None
     jwt_secret: str
     debug: bool = False
-    app_name: str = "My App"   # overrides the default
 
 settings = Settings()   # reads .env automatically
 ```
 
-`.env` file:
-
-```bash
-DATABASE_URL=postgresql://user:pass@localhost/mydb
-JWT_SECRET=supersecret
-DEBUG=true
-```
-
-`BaseAppSettings` already has `debug: bool = False` and `app_name: str = "FastAPI App"`.  
-All env vars are case-insensitive. Unknown vars are ignored (`extra="ignore"`).
-
-### Sensitive field masking
-
-`BaseAppSettings.__repr__` automatically masks fields whose names contain any of: `password`, `secret`, `token`, `key`, `auth`, `credential`. Masked values are shown as `***` when the settings object is printed or logged:
+Sensitive field masking — fields containing `password`, `secret`, `token`, `key`, `auth`, `credential` show `***` in `repr`:
 
 ```python
 >>> print(settings)
 Settings(database_url='postgresql://...', jwt_secret='***', debug=True)
 ```
 
-This prevents accidental credential exposure in logs and error messages. The actual field value is unaffected — masking only applies to `__repr__`.
-
 ---
 
-## 16. Seeders
+## 18. Seeders
 
-Seeders populate the database with initial or test data. The `database/seeds/` directory is created automatically by `forgeapi init`.
-
-### Creating a seeder
+Seeders populate the database with initial or test data.
 
 ```bash
 forgeapi make:seed User
 # → database/seeds/user_seeder.py
 ```
 
-Generated file:
-
-```python
-from forgeapi.database import Seeder
-
-class UserSeeder(Seeder):
-    async def run(self) -> None:
-        pass
-```
-
-Implement `run()` using Tortoise ORM — it runs inside an active DB connection:
-
 ```python
 from forgeapi.database import Seeder
 from database.models import User
-from app.utils import hash_password
 
 class UserSeeder(Seeder):
     async def run(self) -> None:
         await User.get_or_create(
             username="admin",
-            defaults={
-                "email":         "admin@example.com",
-                "password_hash": hash_password("admin123"),
-                "is_active":     True,
-            },
+            defaults={"email": "admin@example.com", "is_active": True},
         )
 ```
 
-### Running seeders
+Running:
 
 ```bash
-forgeapi db:seed              # run all *_seeder.py files in seeds_dir
-forgeapi db:seed User         # run only UserSeeder
-forgeapi db:seed User Post    # run specific seeders in order
+forgeapi db:seed              # run all seeders
+forgeapi db:seed User         # run UserSeeder only
+forgeapi db:seed User Post    # run in order
 ```
 
-Seeders are discovered by filename: `forgeapi db:seed User` looks for `database/seeds/user_seeder.py`.
-
-### Transaction behaviour
-
-The CLI (`db:seed`) calls `Seeder.execute()`, which wraps `run()` in an explicit database transaction:
-
-```python
-async with in_transaction():
-    await seeder.run()
-```
-
-If `run()` raises any exception the transaction is rolled back and no partial data is committed. When you call `run()` directly (e.g. from a test or another seeder), **no transaction wrapper is added** — you are responsible for wrapping it yourself if atomicity matters:
-
-```python
-from tortoise.transactions import in_transaction
-
-async with in_transaction():
-    await UserSeeder().run()
-```
-
-### Seeder base class
-
-```python
-from forgeapi.database import Seeder
-```
-
-| Method | Description |
-|---|---|
-| `async run(self) -> None` | Override to define seed logic. Called once per seeder run. |
+`db:seed` wraps each seeder in a transaction — rollback on error.
 
 ---
 
-## 17. CLI reference
-
-Add `-h` after any command for detailed help:
+## 19. CLI reference
 
 ```bash
+forgeapi --help
 forgeapi make:controller -h
-forgeapi generate:schema -h
-forgeapi make -H           # list all make: variants
 ```
 
----
-
-### `forgeapi init <project-name>`
-
-Scaffold a new project.
+### Project scaffolding
 
 ```bash
-forgeapi init my-blog
+forgeapi init my-project
 ```
 
-Asks for:
-- Auth strategy: `jwt` / `cookie` / `telegram`
-- DB driver: `asyncpg` / `aiosqlite` / `aiomysql`
-- Welcome boilerplate: User + Post + events (y/n)
-
-Creates the full project skeleton including `database/seeds/` for seeders.
-
----
-
-### `forgeapi make:controller <Name> [flags]`
-
-Generate a controller. CamelCase namespace supported — all words except the last become the subdirectory path; the last word is the resource.
+### Code generation
 
 ```bash
-forgeapi make:controller User                 # controllers/user_controller.py
-forgeapi make:controller User --ms            # + model + stub schemas
-forgeapi make:controller AdminUser            # controllers/admin/user_controller.py
-forgeapi make:controller SuperAdminOrder      # controllers/super/admin/order_controller.py
-```
-
-API versioning comes from `base_prefix` in config, not the controller name — use `make:controller Post`, not `make:controller ApiV1Post`.
-
-| Flag | Short | Generates |
-|---|---|---|
-| `--model` | `-m` | Tortoise model |
-| `--schema` | `-s` | Stub schemas |
-
-Compound: `--ms` `--mc` `--mcs` `-ms` `-cs` etc.
-
----
-
-### `forgeapi make:model <Name> [flags]`
-
-```bash
+forgeapi make:controller Post          # controllers/post_controller.py
+forgeapi make:controller AdminUser     # controllers/admin/user_controller.py
+forgeapi make:controller Post --ms     # + model + schema stubs
 forgeapi make:model Post
-forgeapi make:model Post -cs            # + controller + schema
-
-# --alias: write into a specific file instead of the default <name>.py
-# If the file already exists and is non-empty, the class is appended at the end
-forgeapi make:model Employee --alias Worker     # → models/worker.py  (creates)
-forgeapi make:model Contractor --alias Worker   # → models/worker.py  (appends)
+forgeapi make:model Post -cs           # + controller + schema
+forgeapi make:event OrderShipped       # app/events/order_shipped_event.py
+forgeapi make:listener OrderShipped    # app/listeners/order_shipped_listener.py
+forgeapi make:seed User                # database/seeds/user_seeder.py
+forgeapi make:schema Post              # stub schemas (3 classes with pass)
 ```
 
-| Flag | Short | Description |
-|---|---|---|
-| `--controller` | `-c` | Also generate controller |
-| `--schema` | `-s` | Also generate stub schemas |
-| `--alias <FileName>` | — | Target file name in models_dir (snake_case). Appends if file exists. |
-
----
-
-### `forgeapi make:schema <Name> [flags]`
-
-Generate stub schemas (3 classes with `pass`). For typed schemas from an existing model use `generate:schema`.
+### Typed schema generation (from existing model)
 
 ```bash
-forgeapi make:schema Post
-forgeapi make:schema Post --mc  # + model + controller
+forgeapi generate:schema Post --payload             # Create + Update payloads
+forgeapi generate:schema Post --response            # PostResponse
+forgeapi generate:schema Post --payload --response  # both
+forgeapi generate:schema Post --payload -crud       # all four incl. DeletePayload
+forgeapi generate:schema Post --payload --cu        # Create + Update only
 ```
 
----
+### DB commands
 
-### `forgeapi make:event <Name>`
-
-```bash
-forgeapi make:event UserRegistered
-# → app/events/user_registered_event.py
-```
-
----
-
-### `forgeapi make:listener <Name>`
-
-```bash
-forgeapi make:listener UserRegistered
-# → app/listeners/user_registered_listener.py
-```
-
----
-
-### `forgeapi generate:schema <Name> --payload | --response [crud]`
-
-Generate typed schemas from an existing Tortoise model. At least one of `--payload` / `--response` required.
-
-```bash
-forgeapi generate:schema User --payload             # CreatePayload + GetPayload + UpdatePayload
-forgeapi generate:schema User --response            # UserResponse + UserListResponse
-forgeapi generate:schema User --payload --response  # both
-forgeapi generate:schema User --payload -crud       # all four incl. DeletePayload
-forgeapi generate:schema User --payload --cu        # Create + Update only
-```
-
-CRUD flags (`--payload` only):
-
-| Flag | Operations |
-|---|---|
-| `--crud` | c + r + u (default — no delete) |
-| `-crud` | c + r + u + d (all four) |
-| `--cu` / `-cu` | create + update |
-| `--cr` / `-cr` | create + read |
-| `-d` | delete only |
-
-`--response` ignores CRUD flags — always generates `{Name}Response` + `{Name}ListResponse`.
-
----
-
-### `forgeapi runserver [options]`
-
-```bash
-forgeapi runserver
-forgeapi runserver --reload
-forgeapi runserver --port 9000 --host 0.0.0.0 --reload
-```
-
----
-
-### `forgeapi routers`
-
-Print every registered route across all controllers — no DB connection needed.
-
-```bash
-forgeapi routers
-# METHOD  PATH                          HANDLER
-# GET     /api/v1/users/                UserController.index
-# POST    /api/v1/users/register        UserController.register
-```
-
----
-
-### `forgeapi models`
-
-List all Tortoise model classes found in `models_dir` with their table names and fields.
-
-```bash
-forgeapi models
-```
-
----
-
-### `forgeapi make:seed <Name>`
-
-```bash
-forgeapi make:seed User
-# → database/seeds/user_seeder.py
-```
-
----
-
-### `forgeapi db:<subcommand>`
+> Never run `aerich` directly — always use `forgeapi db:*`
 
 ```bash
 forgeapi db:init
@@ -2253,15 +1578,31 @@ forgeapi db:makemigrations -n add_email_field
 forgeapi db:migrate
 forgeapi db:downgrade
 forgeapi db:history
-forgeapi db:seed              # run all seeders
-forgeapi db:seed User Post    # run specific seeders
-forgeapi db:fresh             # TRUNCATE all tables — clears data, keeps structure (asks confirmation)
-forgeapi db:fresh --force     # DROP all tables including structure (asks confirmation, irreversible)
+forgeapi db:seed
+forgeapi db:fresh             # TRUNCATE all tables (asks confirmation)
+forgeapi db:fresh --force     # DROP all tables (irreversible)
+```
+
+### Dev server
+
+> Never use `uvicorn` directly — always use `forgeapi runserver`
+
+```bash
+forgeapi runserver
+forgeapi runserver --reload
+forgeapi runserver --port 9000 --host 0.0.0.0 --reload
+```
+
+### Inspection
+
+```bash
+forgeapi routers   # list all registered routes (METHOD, PATH, HANDLER)
+forgeapi models    # list all Tortoise model classes, tables, and fields
 ```
 
 ---
 
-## 18. forgeapi.toml reference
+## 20. forgeapi.toml reference
 
 ```toml
 [project]
@@ -2278,182 +1619,85 @@ seeds_dir       = "database/seeds"
 base_prefix     = "/api/v1"
 
 [auth]
-strategy             = "jwt"        # jwt | cookie | telegram
-jwt_secret_env       = "JWT_SECRET" # name of env var holding the secret
-access_ttl_minutes   = 30
-refresh_ttl_days     = 7
-
-# cookie-only:
-cookie_name          = "session"
-cookie_httponly      = true
-cookie_secure        = false        # set true in production (HTTPS)
+strategy           = "jwt"          # jwt | cookie | telegram
+jwt_secret_env     = "JWT_SECRET"   # name of env var holding the secret
+access_ttl_minutes = 30
+refresh_ttl_days   = 7
+cookie_name        = "session"      # cookie strategy only
+cookie_httponly    = true
+cookie_secure      = false          # true in production (HTTPS)
 
 [pagination]
 default_limit = 20
 max_limit     = 100
+
+[cache]
+driver    = "memory"                    # "memory" | "redis"
+prefix    = ""                          # key prefix applied to all keys
+ttl       = null                        # default TTL in seconds (null = no expiry)
+redis_url = "redis://localhost:6379/0"  # used when driver = "redis"
 ```
 
 All fields are optional — `Core` works without a config file using the defaults above.
 
 ---
 
-## 19. Telescope
+## 21. Telescope
 
-Telescope is a built-in, in-process request debugger. It captures every HTTP request — including its SQL queries, log output, dispatched events, and custom job records — and streams the data to any connected WebSocket client in real time.
-
-Telescope activates automatically when `debug=True` is passed to `Core`. It adds zero overhead to production builds.
+Debug-only request inspector activated by `Core(debug=True)`. **Never use in production.**
 
 ```python
 core = Core(app, debug=True)
 ```
 
-> **Never use `debug=True` in production.** It exposes internal request data over an unauthenticated WebSocket endpoint.
+Captures per request: SQL queries, log output, dispatched events, custom jobs. Up to **200** entries in a circular buffer.
 
 ### What Telescope captures
 
-Each request is stored as a `RequestEntry` with the following fields:
-
 | Field | Description |
 |---|---|
-| `method`, `path`, `query_string` | HTTP basics |
-| `headers` | All request headers — sensitive headers replaced with `"***"` |
-| `payload` | Parsed request body — sensitive fields recursively masked |
-| `status` | Response HTTP status code |
-| `response_body` | Parsed response body — same masking, capped at 64 KB |
-| `duration_ms` | Total handler time in milliseconds |
-| `timestamp` | ISO 8601 UTC timestamp |
-| `queries` | List of SQL queries (text, params, duration, source location) |
-| `logs` | All `logging` calls made during the request (level, logger, message, time) |
-| `events` | Events dispatched during the request (class name, listener names, background flag) |
-| `jobs` | Custom job executions recorded via `record_job()` |
-
-Up to **200** entries are kept in a circular in-memory buffer. Oldest entries are evicted automatically when the buffer is full.
+| `method`, `path`, `status` | HTTP basics |
+| `headers` | All headers — sensitive ones replaced with `"***"` |
+| `payload` | Request body — sensitive fields masked |
+| `response_body` | Response body — same masking, capped at 64 KB |
+| `duration_ms` | Handler time |
+| `queries` | SQL queries: text, params, duration, source location |
+| `logs` | All `logging` calls during the request |
+| `events` | Events dispatched during the request |
+| `jobs` | Custom jobs recorded via `record_job()` |
 
 ### WebSocket live stream
 
-Connect to `ws://<host>/_forge/telescope/ws`. The protocol is:
+Connect to `ws://<host>/_forge/telescope/ws`:
 
-| Direction | Message | Description |
-|---|---|---|
-| Server → Client | `{"type": "init", "data": [...]}` | Sent immediately on connect — all current entries |
-| Server → Client | `{"type": "entry", "data": {...}}` | Sent after every completed HTTP request |
-| Server → Client | `{"type": "clear"}` | Sent after the store is cleared |
-| Client → Server | `{"type": "clear"}` | Clears all stored entries and broadcasts `{"type": "clear"}` to all clients |
-
-Maximum 100 simultaneous WebSocket connections are accepted. The 101st connection is closed with code `1008`.
+| Direction | Message |
+|---|---|
+| Server → Client | `{"type": "init", "data": [...]}` — all current entries on connect |
+| Server → Client | `{"type": "entry", "data": {...}}` — after each request |
+| Client → Server | `{"type": "clear"}` — clear the store |
 
 ### Sensitive data masking
 
-Telescope never stores plaintext credentials. Masking is applied in two layers:
+Headers `Authorization`, `Cookie`, `X-API-Key`, `X-Telegram-Init-Data` → `"***"`
 
-**Headers** — the following header names are always replaced with `"***"`:
-- `Authorization`
-- `Cookie`
-- `X-API-Key`
-- `X-Telegram-Init-Data`
-
-**Body fields** — any JSON key whose name contains one of these words is replaced with `"***"` (case-insensitive, recursive through nested objects and arrays):
-
-```
-password  secret  token  key  auth  credential  access_token  refresh_token
-```
-
-Example — a login request body `{"email": "user@example.com", "password": "s3cr3t"}` is stored as:
-
-```json
-{"email": "user@example.com", "password": "***"}
-```
-
-### SQL query tracking
-
-When Tortoise ORM is installed, Telescope patches every `execute_*` method on every backend client at startup. Each query is recorded with:
-
-| Field | Description |
-|---|---|
-| `sql` | The raw SQL string |
-| `params` | Bound parameters |
-| `duration_ms` | Query execution time |
-| `location` | `file.py:line in function_name` — first non-framework frame in the call stack |
-
-Failed queries (those that raise an exception) are also recorded — the `try/finally` wrapper ensures the record is appended even if the query errors.
-
-### Log capture
-
-A custom `logging.Handler` is added to the root logger. Every log record emitted during a request is appended to that request's `logs` list. Telescope's own logger (`forgeapi.telescope`) and the access logger (`forgeapi.access`) are excluded to prevent recursion — and so are all their sub-loggers.
-
-### Event tracking
-
-The `EventBus.dispatch` method is patched at startup. Whenever an event is dispatched during a request, Telescope records the event class name, the names of all registered listeners, and whether the event is background or not.
-
-```json
-{
-  "event": "OrderCreated",
-  "listeners": ["send_confirmation", "update_inventory"],
-  "background": true
-}
-```
+Body fields containing: `password`, `secret`, `token`, `key`, `auth`, `credential`, `access_token`, `refresh_token` → `"***"`
 
 ### Recording jobs
 
-If you have a custom background job system, attach execution records to the current Telescope entry with `record_job()`:
-
 ```python
 from forgeapi.telescope import record_job
-import time
 
-async def process_payment(order_id: int) -> None:
-    t = time.perf_counter()
-    try:
-        await stripe.charge(order_id)
-        record_job(
-            "ProcessPayment",
-            status="done",
-            attempts=1,
-            duration_ms=round((time.perf_counter() - t) * 1000, 3),
-        )
-    except Exception as exc:
-        record_job(
-            "ProcessPayment",
-            status="failed",
-            attempts=1,
-            error=str(exc),
-        )
-        raise
+record_job("ProcessPayment", status="done", duration_ms=45.2)
+record_job("SendEmail", status="failed", error=str(exc))
 ```
 
-`record_job()` is a no-op when called outside an active Telescope request context (e.g., from a background task or CLI command) — no error is raised.
-
-```python
-record_job(
-    job: str,           # job class name or identifier
-    status: str,        # "queued" | "running" | "done" | "failed"
-    attempts: int = 1,
-    duration_ms: float | None = None,
-    error: str | None = None,
-)
-```
-
-### Skipped paths
-
-The following paths are never captured to prevent recording Telescope's own traffic or OpenAPI docs:
-
-- `/_forge/telescope/...`
-- `/docs`
-- `/redoc`
-- `/openapi.json`
-
-### Performance notes
-
-- `_caller_location()` in the SQL hook uses `sys._getframe()` instead of `traceback.extract_stack()` — no `FrameSummary` objects are allocated per query.
-- Response body buffering is capped at **64 KB**. Larger responses are captured partially.
-- Request body passed to `json.loads` is also capped at 64 KB.
-- The WebSocket broadcast is scheduled as an `asyncio.Task` and never blocks the request path.
+No-op when called outside a Telescope request context.
 
 ---
 
-## 20. MCP Server
+## 22. MCP Server
 
-forge-kits ships an MCP server that exposes API docs and code generation tools directly to AI assistants (Claude Code, Cursor, etc.).
+forge-kits ships an MCP server that gives AI assistants (Claude Code, Cursor, etc.) direct access to API docs, code generation tools, and project structure scanning — without reading source files.
 
 ### Install
 
@@ -2461,9 +1705,39 @@ forge-kits ships an MCP server that exposes API docs and code generation tools d
 pip install forge-kits[mcp]
 ```
 
-### Wire up in your project
+This installs `forgeapi-mcp` as a CLI entry point.
 
-Add to `.claude/settings.json` (or your editor's MCP config):
+---
+
+### Quick setup via CLI
+
+The easiest way — no JSON editing required:
+
+```bash
+# Per-project — adds to .mcp.json in the current directory
+claude mcp add forge-kits forgeapi-mcp
+
+# Global — adds to ~/.claude/settings.json, available in all projects
+claude mcp add forge-kits forgeapi-mcp --scope global
+```
+
+---
+
+### Global setup for Claude Code (manual)
+
+Install once and use across **all your projects**. Edit the global Claude Code settings file:
+
+**macOS / Linux:**
+```
+~/.claude/settings.json
+```
+
+**Windows:**
+```
+C:\Users\<your-username>\.claude\settings.json
+```
+
+Add the MCP server:
 
 ```json
 {
@@ -2475,13 +1749,112 @@ Add to `.claude/settings.json` (or your editor's MCP config):
 }
 ```
 
+After saving, restart Claude Code. The tools are now available in every project.
+
+---
+
+### Per-project setup
+
+Useful when different projects use different versions of forge-kits, or when you want to use a virtualenv-specific install.
+
+Create `.mcp.json` in your **project root** (can be committed to the repo):
+
+```json
+{
+  "mcpServers": {
+    "forge-kits": {
+      "command": "forgeapi-mcp"
+    }
+  }
+}
+```
+
+If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
+
+**macOS / Linux:**
+```json
+{
+  "mcpServers": {
+    "forge-kits": {
+      "command": "/path/to/project/.venv/bin/forgeapi-mcp"
+    }
+  }
+}
+```
+
+**Windows:**
+```json
+{
+  "mcpServers": {
+    "forge-kits": {
+      "command": "C:\\path\\to\\project\\.venv\\Scripts\\forgeapi-mcp.exe"
+    }
+  }
+}
+```
+
+> **Priority:** per-project `.mcp.json` takes precedence over the global `~/.claude/settings.json` when both exist.
+
+---
+
 ### Available tools
 
 | Tool | Description |
 |---|---|
-| `get_docs(topic)` | API reference for: `core`, `controllers`, `events`, `auth`, `permissions`, `pagination`, `schemas`, `middleware`, `cli`, `config` |
-| `get_example(pattern)` | Complete working code for: `crud_controller`, `redis_event`, `stream_event`, `jwt_auth`, `rbac`, `pagination`, `guard` |
+| `get_docs(topic)` | Full API reference for a topic |
+| `get_example(pattern)` | Complete working code for a pattern |
 | `generate_controller(name, routes)` | Generate a `Controller` class |
 | `generate_event(name, fields)` | Generate an `Event` class + listener |
 | `generate_schema(name, fields, mode)` | Generate Pydantic schemas |
-| `project_info(path)` | Read `forgeapi.toml` and scan project structure |
+| `scan_project(path)` | Deep AST scan: models, controllers, schemas, events, listeners, seeders, deps |
+| `project_info(path)` | Read `forgeapi.toml` and list project files |
+
+#### get_docs topics
+
+| Topic | Content |
+|---|---|
+| `cheatsheet` | Controller + queries + auth + events quick reference |
+| `workflow` | CLI rules — which commands to use and which to avoid |
+| `core` | Core constructor, options, startup sequence |
+| `controllers` | Controller, @route, schema class var, auto-prefix |
+| `events` | EventBus, Redis pub/sub, Streams, RedisBus |
+| `auth` | Guards, CurrentUser, strategies, token operations |
+| `permissions` | PermissionsMixin, require_permission, roles |
+| `policies` | Policy, Gate, authorize, allows, discover |
+| `pagination` | QuerySet .paginate(), offset, cursor, configuration |
+| `schemas` | BaseSchema, BaseCreateSchema, BaseUpdateSchema |
+| `middleware` | Middleware, Guard, built-in middleware |
+| `cli` | All CLI commands reference |
+| `config` | forgeapi.toml full reference |
+| `models` | ModelMixin, Tortoise field types, relationships |
+| `cache` | Cache facade, drivers, remember/pull/increment |
+| `support` | Number, Str, Time helpers |
+| `tortoise` | Basic CRUD, filter, order, async gather |
+| `tortoise_advanced` | Q objects, prefetch_related, transactions, raw SQL |
+
+#### get_example patterns
+
+| Pattern | Content |
+|---|---|
+| `crud_controller` | Full CRUD with ModelMixin + schema class var |
+| `jwt_auth` | Login, refresh, protected routes |
+| `redis_event` | Redis pub/sub fan-out event |
+| `stream_event` | Redis Streams consumer |
+| `rbac` | Full RBAC — model, seeder, protected routes |
+| `pagination` | QuerySet .paginate() with filters |
+| `guard` | API key, active-user, admin guards |
+| `cache` | remember, pull, counters in a controller |
+
+#### generate_controller
+
+```
+generate_controller("Post", ["GET /", "POST /", "GET /{id}", "PATCH /{id}", "DELETE /{id}"])
+```
+
+#### scan_project
+
+```
+scan_project(".")
+```
+
+Returns a structured report of all models, controllers, schemas, events, listeners, seeders, pyproject.toml dependencies, and .env keys (values hidden). Call this at the start of every session on a forge-kits project.

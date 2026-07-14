@@ -65,7 +65,7 @@ TORTOISE_ORM = {{
     }},
     "apps": {{
         "models": {{
-            "models":             ["database.models"],
+            "models":             ["database.models", "forgeapi.permissions.models"],
             "default_connection": "default",
             "migrations":         "database.migrations",
         }}
@@ -89,7 +89,7 @@ TORTOISE_ORM = {{
     }},
     "apps": {{
         "models": {{
-            "models":             ["database.models"],
+            "models":             ["database.models", "forgeapi.permissions.models"],
             "default_connection": "default",
             "migrations":         "database.migrations",
         }}
@@ -117,7 +117,7 @@ TORTOISE_ORM = {{
     }},
     "apps": {{
         "models": {{
-            "models":             ["database.models"],
+            "models":             ["database.models", "forgeapi.permissions.models"],
             "default_connection": "default",
             "migrations":         "database.migrations",
         }}
@@ -159,7 +159,7 @@ _ENV_VARS = {
 
 _MAIN_TEMPLATE = """\
 from fastapi import FastAPI
-from forgeapi import Core
+from forgeapi import Core, gate
 from tortoise.contrib.fastapi import register_tortoise
 from app.config import TORTOISE_ORM
 
@@ -173,7 +173,10 @@ core = Core(
     pagination=20,
     request_id=True,
     events=True,
+    permissions=True,
 )
+
+gate.discover("app/policies")
 
 register_tortoise(
     app,
@@ -252,7 +255,7 @@ def run(name: str) -> None:
     typer.echo("")
     root.mkdir()
 
-    for d in ["app/controllers", "app/schemas", "app/events", "app/listeners",
+    for d in ["app/controllers", "app/schemas", "app/events", "app/listeners", "app/policies",
               "database/models", "database/migrations", "database/seeds"]:
         p = root / d
         p.mkdir(parents=True, exist_ok=True)
@@ -294,8 +297,10 @@ def run(name: str) -> None:
     )
 
     typer.echo("")
-    if typer.confirm("Create a welcome project? (User + Post, auth, pagination, events)", default=False):
-        from .boilerplate_cmd import run as run_boilerplate
+    if typer.confirm(
+        "Create a welcome project? (User + Post, events, policies, cache, permissions)", default=False
+    ):
+        from .boilerplate import run as run_boilerplate
         run_boilerplate(root, strategy=strategy)
     else:
         typer.echo("\nDone. Next:")
