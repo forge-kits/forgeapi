@@ -2,47 +2,102 @@ import secrets
 from pathlib import Path
 
 
-_TOML_TEMPLATE = """\
-[project]
-name        = "{name}"
-version     = "0.1.0"
-description = ""
+_CONFIG_PROJECT_TEMPLATE = '''\
+from forgeapi import env
 
-[structure]
-models_dir      = "database/models"
-controllers_dir = "app/controllers"
-schemas_dir     = "app/schemas"
-events_dir      = "app/events"
-listeners_dir   = "app/listeners"
-seeds_dir       = "database/seeds"
-base_prefix     = "/api/v1"
+config = {{
+    "name": "{name}",
+    "version": "0.1.0",
+    "description": "",
+    "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    # Extra forgeapi.foundation.Provider classes to run on startup:
+    "providers": [],
+}}
+'''
 
-[auth]
-strategy = "{strategy}"
-{auth_fields}
-[pagination]
-default_limit = 20
-max_limit     = 100
+_CONFIG_HTTP_TEMPLATE = '''\
+config = {
+    "cors": ["*"],        # True → all origins; list → specific; False → off
+    "rate_limit": 60,     # req/min per IP; False → off
+    "request_id": True,   # inject X-Request-ID header
+    "access_log": True,   # log method/path/status/duration per request
+    "middleware": [],     # custom middleware classes or (cls, kwargs) tuples
+}
+'''
 
-[database]
-tortoise_orm = "app.config.TORTOISE_ORM"
-"""
+_CONFIG_STRUCTURE_TEMPLATE = '''\
+config = {
+    "models_dir": "database/models",
+    "controllers_dir": "app/controllers",
+    "schemas_dir": "app/schemas",
+    "events_dir": "app/events",
+    "listeners_dir": "app/listeners",
+    "policies_dir": "app/policies",
+    "seeds_dir": "database/seeds",
+    "base_prefix": "/api/v1",
+}
+'''
 
-_AUTH_FIELDS = {
-    "jwt": """\
-jwt_secret_env     = "JWT_SECRET"
-access_ttl_minutes = 30
-refresh_ttl_days   = 7
-""",
-    "cookie": """\
-cookie_name     = "session"
-cookie_httponly = true
-cookie_secure   = false
-""",
-    "telegram": "",
+_CONFIG_AUTH_TEMPLATES = {
+    "jwt": '''\
+from forgeapi import env
+
+config = {
+    "default": "api",
+    "guards": {
+        "api": {
+            "strategy": "jwt",
+            "secret": env("JWT_SECRET"),
+            "access_ttl": 30,    # minutes
+            "refresh_ttl": 7,    # days
+            # "model": "database.models.user.User",  # resolve to a DB model
+        },
+    },
+}
+''',
+    "cookie": '''\
+from forgeapi import env
+
+config = {
+    "default": "web",
+    "guards": {
+        "web": {
+            "strategy": "cookie",
+            "secret": env("COOKIE_SECRET"),
+            "cookie_name": "session",
+            "httponly": True,
+            "secure": False,   # set True behind HTTPS
+        },
+    },
+}
+''',
+    "telegram": '''\
+from forgeapi import env
+
+config = {
+    "default": "api",
+    "guards": {
+        "api": {
+            "strategy": "telegram",
+            "bot_token": env("BOT_TOKEN"),
+            "max_age": 86400,   # seconds
+        },
+    },
+}
+''',
 }
 
-_CONFIG_PY_TEMPLATES = {
+_CONFIG_PAGINATION_TEMPLATE = '''\
+config = {
+    "default_limit": 20,
+    "max_limit": 100,
+}
+'''
+
+# config/database.py per driver — TORTOISE_ORM lives here (Laravel-style:
+# connection params in config/database); the loader derives the dotted
+# path for the tortoise CLI from the file location, no "config" dict needed.
+_CONFIG_DATABASE_TEMPLATES = {
     "asyncpg": """\
 import os
 from dotenv import load_dotenv
@@ -159,24 +214,13 @@ _ENV_VARS = {
 
 _MAIN_TEMPLATE = """\
 from fastapi import FastAPI
-from forgeapi import Core, gate
+from forgeapi import Core
 from tortoise.contrib.fastapi import register_tortoise
-from app.config import TORTOISE_ORM
+from config.database import TORTOISE_ORM
 
 app = FastAPI()
 
-core = Core(
-    app,
-    auth=True,
-    cors=["*"],
-    rate_limit=60,
-    pagination=20,
-    request_id=True,
-    events=True,
-    permissions=True,
-)
-
-gate.discover("app/policies")
+core = Core(app)   # everything is wired from config/
 
 register_tortoise(
     app,
@@ -184,21 +228,6 @@ register_tortoise(
     generate_schemas=False,
     add_exception_handlers=True,
 )
-"""
-
-_PYPROJECT_TEMPLATE = """\
-[project]
-name            = "{name}"
-version         = "0.1.0"
-requires-python = ">=3.11"
-dependencies    = [
-    "forgeapi[auth,{driver}]>=0.1.0",
-    "uvicorn[standard]>=0.34",
-    "python-dotenv>=1.1",
-]
-
-[tool.tortoise]
-tortoise_orm = "app.config.TORTOISE_ORM"
 """
 
 _CONTROLLER_BASE = """\
@@ -265,15 +294,14 @@ def run(name: str) -> None:
 
     _write(root / "app/controllers/controller.py", _CONTROLLER_BASE, name, typer)
 
+    _write(root / "config/project.py", _CONFIG_PROJECT_TEMPLATE.format(name=name), name, typer)
+    _write(root / "config/structure.py", _CONFIG_STRUCTURE_TEMPLATE, name, typer)
+    _write(root / "config/http.py", _CONFIG_HTTP_TEMPLATE, name, typer)
+    _write(root / "config/auth.py", _CONFIG_AUTH_TEMPLATES[strategy], name, typer)
+    _write(root / "config/pagination.py", _CONFIG_PAGINATION_TEMPLATE, name, typer)
     _write(
-        root / "forgeapi.toml",
-        _TOML_TEMPLATE.format(name=name, strategy=strategy, auth_fields=_AUTH_FIELDS[strategy]),
-        name, typer,
-    )
-
-    _write(
-        root / "app/config.py",
-        _CONFIG_PY_TEMPLATES[driver].format(name=name),
+        root / "config/database.py",
+        _CONFIG_DATABASE_TEMPLATES[driver].format(name=name),
         name, typer,
     )
 
@@ -289,12 +317,6 @@ def run(name: str) -> None:
     )
 
     _write(root / "main.py", _MAIN_TEMPLATE, name, typer)
-
-    _write(
-        root / "pyproject.toml",
-        _PYPROJECT_TEMPLATE.format(name=name, driver=driver),
-        name, typer,
-    )
 
     typer.echo("")
     if typer.confirm(

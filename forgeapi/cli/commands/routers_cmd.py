@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-def run(config_path: str = "forgeapi.toml") -> None:
+def run(config_path: str = "") -> None:
     import typer
     from forgeapi.config import load_config
 

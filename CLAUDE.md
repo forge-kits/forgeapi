@@ -8,6 +8,66 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Published to PyPI as `forge-kits`. Requires Python 3.11+.
 
+## Design Principles
+
+forge-kits is a **Laravel-style framework in Python**. When designing new features or refactoring, think "how does Laravel solve this?" first, then translate to Python/FastAPI idioms. The mapping so far:
+
+| Laravel | forge-kits |
+|---------|-----------|
+| Service Provider | `Core` wiring (should orchestrate registration, not contain module logic) |
+| Facade | Module-level singletons: `Cache`, `gate`, `auth`, `EventBus` |
+| Eloquent | `ModelMixin` + Tortoise (`find_or_fail`, `create_from`, `.paginate()`) |
+| Artisan | `forgeapi` CLI (`make:*`, `db:*`) |
+| Gate / Policy | `forgeapi/policies/` |
+| spatie/laravel-permission | `forgeapi/permissions/` (same pivot-table design) |
+| Events / Listeners | `forgeapi/events/` |
+| Middleware / Route guards | `Middleware` + `Guard` |
+| `Str` / `Number` / Carbon | `forgeapi/support/` |
+| Telescope | `forgeapi/telescope/` |
+
+### API surface
+
+- **Public vs private is explicit, not implied.** Anything not meant to be imported by users gets a `_` prefix or lives in an `internal/` module. "Just not documented" is not private. If the docs tell users to import something underscore-prefixed (e.g. a `_global_backend`), that's a design bug — rename/re-export it properly.
+- **One way to do a thing.** Each feature has one primary path (`Core(app)` + `config/` sections); manual wiring (`auth.register()`, `core.use()`) is an explicit escape hatch, not an equal alternative. Never add a second equivalent API for convenience.
+- **Stable core, experimental edge.** Auth, Controllers, Schemas, ModelMixin — breaking changes here are expensive; design carefully (see Versioning for the current breaking-change policy). Telescope, Policies — may still churn freely until they settle.
+- **Zero-config must work.** `Core(app)` with no config files must not raise. This is the first thing every new user tries; keep a test asserting it.
+- **`Core` is not a God Object.** It wires and delegates. Module logic (cache setup, event loading, auth backend construction) lives in the module's own package; `Core` only calls a register/setup entry point. If `Core` starts accumulating per-module logic, extract a Service Provider–style registration hook instead.
+
+### Extension points
+
+If a third implementation of something is plausible (auth strategy, cache driver, event transport), define the interface **first** — a `Protocol` or ABC in the module's package — then implement against it. Existing extension points: auth strategies (jwt/cookie/telegram), cache drivers (memory/redis), event transports (in-process/pubsub/stream). New strategies/drivers must implement the shared interface, never duck-type against one concrete class.
+
+### Behavioural consistency (especially auth)
+
+All auth strategies must behave **identically at the edges**. For every strategy, these cases return the same exception type and the same error body shape:
+
+- missing header/cookie/initData
+- expired token/signature
+- invalid signature
+- valid token, but user no longer in DB
+
+This is enforced structurally, not by tests: strategies may raise **only**
+`ForgeAPIAuthError` subclasses (never `HTTPException`), and `Guard.authenticate`
+is the single point translating them to HTTP 401. A new strategy that follows
+the contract is consistent by construction. (Matrix testing across strategies
+was considered and rejected — the user prefers the structural guarantee.)
+Prefer edge-case tests over happy-path tests — the happy path gets checked by hand anyway.
+
+### Versioning & breaking changes
+
+- Semver, with a **solo-user phase caveat** (decided 2026-07): while the author
+  is the only user, breaking changes land directly — no deprecation cycle, no
+  compat shims — but every one is recorded in `CHANGELOG.md`
+  (Added / Changed / Removed per version). Once there are external users,
+  switch to deprecate-before-delete (`warnings.warn(..., DeprecationWarning)`
+  for at least one minor release).
+- Never silently remove or rename a public symbol — CHANGELOG entry always.
+- Public docstrings carry a short usage example — future-you is the first user who forgets why a flag exists.
+
+### Documentation
+
+`README.md` is the reference (what exists). Any new user-facing feature also needs a **getting-started narrative** angle — the "build a blog API in 5 minutes" path is what converts a PyPI visitor into a user. When adding a feature, ask: where does it appear in that 5-minute story?
+
 ## MCP Server
 
 forge-kits ships an MCP server so Claude can look up API docs and generate boilerplate without reading source files.
@@ -43,7 +103,7 @@ claude mcp add forge-kits forgeapi-mcp --scope global  # global (~/.claude/setti
 - `generate_event(name, fields)` — Generate an Event class + listener
 - `generate_schema(name, fields, mode)` — Generate Pydantic schemas
 - `scan_project(path)` — Deep AST scan: models, controllers, schemas, events, listeners, seeders, deps, .env keys
-- `project_info(path)` — Read `forgeapi.toml` and list project files
+- `project_info(path)` — Read the project config and list project files (NOTE: still reads legacy forgeapi.toml — pending update to config/)
 
 ## Commands
 
@@ -76,31 +136,39 @@ Tests use `asyncio_mode = "auto"` (configured in `pyproject.toml`) — no need t
 
 ## Architecture
 
-### Entry point: `Core` (forgeapi/kit.py)
+### Entry point: `Core` (forgeapi/kit.py) + Providers (forgeapi/foundation/)
 
-`Core` is the main wiring class. It accepts a FastAPI `app` and optional feature flags:
+**`Core(app)` takes only the app** — everything else is config-driven,
+convention over configuration:
 
 ```python
-Core(
-    app,
-    auth=True,          # JWT / Cookie / Telegram (from forgeapi.toml)
-    cors=["*"],
-    rate_limit=60,      # req/min per IP
-    pagination=20,      # default page size
-    events=True,        # auto-load listeners
-    permissions=True,   # auto-detect PermissionsMixin model
-    controllers=True,   # auto-discover *_controller.py
-    debug=False,        # enables Telescope (never in production)
-)
+from fastapi import FastAPI
+from forgeapi import Core
+
+app = FastAPI()
+Core(app)   # the entire wiring
 ```
 
-On startup `Core`:
-1. Loads `forgeapi.toml` via `KitConfig` (Pydantic models, all fields optional)
-2. Registers middleware in stack order
-3. Auto-discovers controllers via `**/*_controller.py` glob
-4. Auto-loads event listeners from `listeners_dir`
-5. Auto-detects the model that inherits `PermissionsMixin`
-6. Configures `Cache` from `[cache]` section
+What runs is decided by `config/`:
+- middleware stack — `config/http.py` (cors, rate_limit, request_id, access_log, middleware)
+- auth guards — boot when `config/auth.py` exists
+- Telescope — `"debug": True` in `config/project.py` (never in production)
+- permissions — boot automatically when a model in `models_dir` inherits `PermissionsMixin` (no config file)
+- controllers / listeners / policies — boot when their directory exists
+- pagination and cache — always configured (from their sections or defaults)
+- custom providers — `"providers"` in `config/project.py`
+
+`Core` is a **thin orchestrator** (Service Provider pattern): it collects
+module `Provider`s, runs `register()` on all, then `boot()` on all. Module
+wiring logic lives in `forgeapi/<module>/provider.py`, never in Core.
+
+Provider phase rules (`forgeapi/foundation/provider.py`):
+- `register()` — configure the module itself (facades, middleware). Must NOT import user code.
+- `boot()` — runs after all `register()`s. Discovery that imports user code
+  (controllers, listeners, policies, models, auth guard models) goes here, so
+  user modules see fully configured facades at import time.
+
+`Core(app)` with no config files must never raise — covered by tests.
 
 ### Controllers (forgeapi/controllers/base.py)
 
@@ -190,7 +258,7 @@ await user.has_role("admin")     # → bool
 async def destroy(self, id: int, user=require_permission("delete:posts")): ...
 ```
 
-`setup_permissions(UserModel)` must be called before queries. `Core(permissions=True)` does this automatically when it detects a `PermissionsMixin` subclass.
+`setup_permissions(UserModel)` must be called before queries. `Core(app)` does this automatically: `PermissionProvider` scans `models_dir` and activates when it finds the single `PermissionsMixin` subclass (silently skips when there is none).
 
 ### Policies (forgeapi/policies/)
 
@@ -224,33 +292,58 @@ await gate.denies(user, "update", post)      # → bool
 
 ### Auth (forgeapi/auth/)
 
-Three strategies, selected via `forgeapi.toml` `[auth] strategy`:
+Strict layer hierarchy (each layer's knowledge is capped):
 
-- **jwt** — `Authorization: Bearer <token>` header, uses `JWT_SECRET` env var
-- **cookie** — HMAC-SHA256 signed JSON in HttpOnly cookie
-- **telegram** — validates `initData` from Telegram Mini App
+```
+Auth (facade)   — guard registry + strategy factories. Pure delegation, zero logic.
+ └─ Guard       — strategy + user model. The ONLY layer that speaks HTTP (401)
+                  and touches the DB (get_or_none). Single domain-error → HTTP
+                  translation point.
+     └─ AuthStrategy — pure domain: extract/verify credentials, issue tokens.
+                  Raises ONLY ForgeAPIAuthError subclasses. Never HTTPException,
+                  never DB, never user models.
+```
+
+Built-in strategies: **jwt** (Bearer header), **cookie** (HMAC-signed HttpOnly
+cookie), **telegram** (Mini App `initData`). Custom strategies register via
+`auth.extend("apikey", ApiKeyStrategy)`; every strategy implements
+`from_config(cfg: dict)`.
+
+Capabilities are protocols (`forgeapi/auth/contracts.py`): `TokenIssuer`,
+`RefreshCapable`, `SessionIssuer`. `Guard.token()/decode()/set_cookie()`
+dispatch on `isinstance(strategy, Protocol)` — never on concrete classes.
+
+Error semantics (uniform across strategies):
+- credentials **absent** → `None` from strategy; Guard: 401 if required, `None` if optional
+- credentials **present but invalid** (expired / bad signature / user gone from DB)
+  → domain exception → 401 **always**, even for `OptionalUser`
+- 401s carry `WWW-Authenticate: Bearer error="<code>"` (code from the exception:
+  `token_expired`, `session_invalid`, `user_not_found`, ...)
 
 ```python
-from forgeapi.auth import CurrentUser, OptionalUser, auth
+from forgeapi.auth import CurrentUser, OptionalUser, auth, guard
 
 @route.get("/me")
 async def me(user: CurrentUser): ...      # 401 if missing
 
-@route.get("/feed")
-async def feed(user: OptionalUser): ...   # None if missing
+# multi-guard (guards defined in config/auth.py):
+CurrentAdmin = guard("admin").current_user()
 
 access  = auth.token(user)           # access token (takes DB model instance)
-refresh = auth.refresh_token(user)   # refresh token (JWT only)
+refresh = auth.refresh_token(user)   # refresh token (RefreshCapable strategies)
 payload = auth.decode(token, expected_type="access")  # verify + decode
 
-# Cookie strategy only:
+# SessionIssuer (cookie) strategies:
 auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
 auth.delete_cookie(response)
 ```
 
+Token claims: define `auth_claims() -> dict` on the user model to control
+what goes into tokens (`sub` is auto-filled from `user.id`).
+
 ### Cache (forgeapi/cache/)
 
-Async key-value cache with memory (default) and Redis drivers. Configured automatically by `Core` from `forgeapi.toml`.
+Async key-value cache with memory (default) and Redis drivers. Configured automatically by `Core` from `config/cache.py`.
 
 ```python
 from forgeapi import Cache
@@ -310,33 +403,50 @@ from forgeapi.telescope import record_job
 record_job("SendEmail", status="done", duration_ms=45.2)
 ```
 
-### Configuration (forgeapi/config.py)
+### Configuration (forgeapi/config/)
 
-`forgeapi.toml` in the project root. All sections are optional:
+The only format: **`config/` directory of Python dict files** (Laravel-style).
+Each `config/<section>.py` defines a module-level `config = {...}`; the
+filename is the section name. All sections optional. (`forgeapi.toml` is gone —
+`load_config` raises on it with a migration hint.)
 
-```toml
-[project]
-name = "my-app"
+```python
+# config/project.py
+from forgeapi import env
+config = {"name": "my-app", "debug": env("APP_DEBUG", False), "providers": []}
 
-[structure]
-models_dir = "database/models"
-controllers_dir = "app/controllers"
-base_prefix = "/api/v1"
+# config/http.py
+config = {"cors": ["*"], "rate_limit": 60, "request_id": True,
+          "access_log": True, "middleware": []}
 
-[auth]
-strategy = "jwt"          # jwt | cookie | telegram
-jwt_secret_env = "JWT_SECRET"
+# config/auth.py
+config = {
+    "default": "api",
+    "guards": {
+        "api":   {"strategy": "jwt", "secret": env("JWT_SECRET"),
+                  "access_ttl": 30, "model": "database.models.user.User"},
+        "admin": {"strategy": "jwt", "secret": env("ADMIN_JWT_SECRET")},
+    },
+}
 
-[pagination]
-default_limit = 20
-max_limit = 100
+# config/cache.py
+config = {"driver": "memory", "prefix": "", "ttl": 3600,
+          "redis_url": "redis://localhost:6379/0"}
 
-[cache]
-driver    = "memory"      # memory | redis
-prefix    = ""
-ttl       = 3600          # default TTL in seconds (null = no expiry)
-redis_url = "redis://localhost:6379/0"
+# config/database.py — the TORTOISE_ORM dict lives HERE (not in app/);
+# that's all the file needs — the loader derives the importable dotted path
+# for the tortoise CLI (config/ is a namespace package). An explicit
+# config = {"tortoise_orm": "app.settings.ORM"} overrides for non-standard
+# locations only.
+TORTOISE_ORM = {"connections": {...}, "apps": {...}}
 ```
+
+- `env("KEY", default)` reads env vars (casts `"true"`/`"false"`/`"null"`).
+- Custom sections are allowed (`config/services.py`) and reachable via dot
+  access: `cfg.get("services.stripe.key", default)`.
+- Known sections are validated by Pydantic models in `forgeapi/config/models.py`.
+- `KitConfig.provided("auth")` tells whether a section came from the user —
+  feature enablement is decided by section presence.
 
 ### CLI (forgeapi/cli/)
 
@@ -346,14 +456,20 @@ Built with Typer + Rich. Code generation uses Jinja2 templates in `forgeapi/cli/
 
 | File | Purpose |
 |------|---------|
-| `forgeapi/kit.py` | `Core` class — main wiring |
-| `forgeapi/config.py` | `KitConfig` — TOML config model |
+| `forgeapi/kit.py` | `Core` — thin provider orchestrator |
+| `forgeapi/foundation/provider.py` | `Provider` base (register/boot phases) |
+| `forgeapi/config/models.py` | `KitConfig` + section models |
+| `forgeapi/config/loader.py` | `load_config` — config/ dir + toml fallback |
+| `forgeapi/config/env.py` | `env()` helper for config files |
 | `forgeapi/controllers/base.py` | `Controller` + `@route` |
 | `forgeapi/database/model.py` | `ModelMixin` — find_or_fail, create_from, update_from |
 | `forgeapi/database/queryset.py` | `ForgeQuerySet` + `ForgeManager` — `.paginate()` |
 | `forgeapi/events/bus.py` | `EventBus` singleton + Redis integration |
 | `forgeapi/events/redis_bus.py` | Cross-project Redis event bridge |
-| `forgeapi/auth/backend.py` | Auth strategies + DI dependencies |
+| `forgeapi/auth/facade.py` | `Auth` facade — guard registry + `extend()` |
+| `forgeapi/auth/guard.py` | `Guard` — domain-error → HTTP translation point |
+| `forgeapi/auth/contracts.py` | `TokenIssuer` / `RefreshCapable` / `SessionIssuer` protocols |
+| `forgeapi/auth/provider.py` | `AuthProvider` — builds guards from config |
 | `forgeapi/permissions/mixins.py` | `PermissionsMixin` abstract base |
 | `forgeapi/policies/gate.py` | `Gate` singleton + `Policy` base |
 | `forgeapi/cache/cache.py` | `Cache` facade singleton |

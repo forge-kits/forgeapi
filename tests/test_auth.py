@@ -1,12 +1,11 @@
 """Tests for auth: JWTStrategy, Guard, Auth facade."""
 import pytest
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI
 from starlette.requests import Request as StarletteRequest
 
 from forgeapi.auth.strategies.jwt import JWTStrategy
 from forgeapi.auth.guard import Guard
-from forgeapi.auth.facade import auth, Auth
+from forgeapi.auth.facade import Auth
 from forgeapi.auth.models import AuthUser
 from forgeapi.exceptions import ForgeAPIConfigError, TokenExpiredError, TokenInvalidError
 
@@ -139,7 +138,7 @@ class TestGuardNoModel:
 
     async def test_authenticate_valid_token(self, guard, strategy):
         token = strategy.create_access_token({"sub": "5", "username": "carol"})
-        user = await guard._authenticate(
+        user = await guard.authenticate(
             make_request({"Authorization": f"Bearer {token}"}), required=True
         )
         assert isinstance(user, AuthUser)
@@ -148,11 +147,11 @@ class TestGuardNoModel:
     async def test_authenticate_missing_token_raises_401(self, guard):
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc:
-            await guard._authenticate(make_request(), required=True)
+            await guard.authenticate(make_request(), required=True)
         assert exc.value.status_code == 401
 
     async def test_optional_missing_returns_none(self, guard):
-        result = await guard._authenticate(make_request(), required=False)
+        result = await guard.authenticate(make_request(), required=False)
         assert result is None
 
     def test_current_user_returns_annotated(self, guard):
@@ -266,3 +265,179 @@ class TestAuthFacade:
         # admin guard with different secret cannot decode api token
         with pytest.raises(TokenInvalidError):
             a.decode(token, guard="admin")
+
+
+# ---------------------------------------------------------------------------
+# Guard — domain-error → HTTP translation (single point)
+# ---------------------------------------------------------------------------
+
+class TestGuardErrorTranslation:
+    @pytest.fixture
+    def strategy(self):
+        return JWTStrategy(secret_key="translation_secret_key_tests!!!!")
+
+    @pytest.fixture
+    def guard(self, strategy):
+        return Guard(name="api", strategy=strategy)
+
+    async def test_expired_token_translates_to_401(self, guard):
+        from fastapi import HTTPException
+        expired = _jwt.encode(
+            {"sub": "1", "exp": datetime.now(timezone.utc) - timedelta(seconds=1), "type": "access"},
+            "translation_secret_key_tests!!!!",
+            algorithm="HS256",
+        )
+        with pytest.raises(HTTPException) as exc:
+            await guard.authenticate(
+                make_request({"Authorization": f"Bearer {expired}"}), required=True
+            )
+        assert exc.value.status_code == 401
+        assert 'error="token_expired"' in exc.value.headers["WWW-Authenticate"]
+
+    async def test_invalid_token_translates_to_401(self, guard):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            await guard.authenticate(
+                make_request({"Authorization": "Bearer not.a.token"}), required=True
+            )
+        assert exc.value.status_code == 401
+        assert 'error="token_invalid"' in exc.value.headers["WWW-Authenticate"]
+
+    async def test_invalid_token_raises_even_when_optional(self, guard):
+        """Present-but-invalid credentials are a client bug — 401, not None."""
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            await guard.authenticate(
+                make_request({"Authorization": "Bearer not.a.token"}), required=False
+            )
+        assert exc.value.status_code == 401
+
+    async def test_missing_credentials_has_challenge_header(self, guard):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            await guard.authenticate(make_request(), required=True)
+        assert exc.value.headers["WWW-Authenticate"].startswith("Bearer")
+
+    async def test_cookie_strategy_omits_challenge_header(self):
+        from fastapi import HTTPException
+        from forgeapi.auth.strategies.cookie import CookieStrategy
+        g = Guard("web", CookieStrategy(secret_key="cookie_translation_secret!!"))
+        with pytest.raises(HTTPException) as exc:
+            await g.authenticate(make_request(), required=True)
+        assert not exc.value.headers or "WWW-Authenticate" not in exc.value.headers
+
+
+# ---------------------------------------------------------------------------
+# Capability contracts — protocol dispatch instead of isinstance-on-class
+# ---------------------------------------------------------------------------
+
+class TestContracts:
+    def test_jwt_capabilities(self):
+        from forgeapi.auth.contracts import TokenIssuer, RefreshCapable, SessionIssuer
+        s = JWTStrategy(secret_key="contract_check_secret_key!!!!!!!")
+        assert isinstance(s, TokenIssuer)
+        assert isinstance(s, RefreshCapable)
+        assert not isinstance(s, SessionIssuer)
+
+    def test_cookie_capabilities(self):
+        from forgeapi.auth.contracts import TokenIssuer, RefreshCapable, SessionIssuer
+        from forgeapi.auth.strategies.cookie import CookieStrategy
+        s = CookieStrategy(secret_key="contract_check_cookie_secret!!")
+        assert isinstance(s, SessionIssuer)
+        assert not isinstance(s, TokenIssuer)
+        assert not isinstance(s, RefreshCapable)
+
+    def test_custom_token_issuer_works_with_guard(self):
+        """A custom strategy implementing TokenIssuer gets guard.token() for free."""
+        from forgeapi.auth.strategies.base import AuthStrategy
+
+        class StubStrategy(AuthStrategy):
+            async def authenticate(self, request):
+                return None
+
+            def create_access_token(self, payload: dict) -> str:
+                return f"stub:{payload['sub']}"
+
+            def decode(self, token, *, expected_type=None):
+                return {"sub": token.removeprefix("stub:")}
+
+        g = Guard("stub", StubStrategy())
+        user = AuthUser(id="7", auth_method="stub")
+        assert g.token(user) == "stub:7"
+        assert g.decode("stub:7") == {"sub": "7"}
+
+    def test_unsupported_capability_raises(self):
+        from forgeapi.auth.strategies.telegram import TelegramStrategy
+        g = Guard("tg", TelegramStrategy(bot_token="1:x"))
+        user = AuthUser(id="1", auth_method="telegram")
+        with pytest.raises(NotImplementedError):
+            g.token(user)
+        with pytest.raises(NotImplementedError):
+            g.refresh_token(user)
+        with pytest.raises(NotImplementedError):
+            g.set_cookie(None, {})
+
+
+# ---------------------------------------------------------------------------
+# Strategy factories — from_config + auth.extend()
+# ---------------------------------------------------------------------------
+
+class TestStrategyFactories:
+    def test_create_builtin_jwt(self):
+        a = fresh_auth()
+        s = a.create_strategy("jwt", {"secret": "factory_secret_key_for_tests!!", "access_ttl": 5})
+        assert isinstance(s, JWTStrategy)
+        assert s._access_ttl == 5
+
+    def test_jwt_from_config_custom_env(self, monkeypatch):
+        monkeypatch.setenv("MY_JWT", "env_factory_secret_for_tests!!!")
+        s = JWTStrategy.from_config({"secret_env": "MY_JWT"})
+        assert s._secret == "env_factory_secret_for_tests!!!"
+
+    def test_jwt_from_config_missing_secret_names_env(self, monkeypatch):
+        monkeypatch.delenv("CUSTOM_SECRET", raising=False)
+        with pytest.raises(ForgeAPIConfigError, match="CUSTOM_SECRET"):
+            JWTStrategy.from_config({"secret_env": "CUSTOM_SECRET"})
+
+    def test_unknown_strategy_raises(self):
+        a = fresh_auth()
+        with pytest.raises(ForgeAPIConfigError, match="Unknown auth strategy"):
+            a.create_strategy("oauth99")
+
+    def test_extend_registers_custom_strategy(self):
+        from forgeapi.auth.strategies.base import AuthStrategy
+
+        class ApiKeyStrategy(AuthStrategy):
+            def __init__(self, header: str = "X-Api-Key"):
+                self.header = header
+
+            async def authenticate(self, request):
+                return None
+
+        a = fresh_auth()
+        a.extend("apikey", ApiKeyStrategy)
+        s = a.create_strategy("apikey", {"header": "X-Key"})
+        assert isinstance(s, ApiKeyStrategy)
+        assert s.header == "X-Key"
+
+
+# ---------------------------------------------------------------------------
+# auth_claims() hook
+# ---------------------------------------------------------------------------
+
+class TestAuthClaims:
+    def test_model_controls_claims(self):
+        strategy = JWTStrategy(secret_key="claims_hook_secret_key_tests!!!")
+        g = Guard("api", strategy)
+
+        class User:
+            id = 42
+            email = "ignored@example.com"
+
+            def auth_claims(self) -> dict:
+                return {"username": "alice", "role": "admin"}
+
+        payload = strategy.decode(g.token(User()))
+        assert payload["sub"] == "42"
+        assert payload["role"] == "admin"
+        assert "email" not in payload

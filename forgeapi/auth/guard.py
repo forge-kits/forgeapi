@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Optional, TYPE_CHECKING
 from fastapi import Depends, HTTPException, Request
+from forgeapi.exceptions import ForgeAPIAuthError
 from forgeapi.logging import log
+
+from .contracts import RefreshCapable, SessionIssuer, TokenIssuer
 
 if TYPE_CHECKING:
     from .strategies.base import AuthStrategy
@@ -13,23 +16,19 @@ _log = log.channel("auth.guard")
 class Guard:
     """Named authentication context — strategy + optional DB model.
 
-    Each guard has its own strategy (JWT, Cookie, Telegram) and optionally
-    resolves the authenticated token to a real DB model instance.
+    Each guard has its own strategy (JWT, Cookie, Telegram, custom) and
+    optionally resolves the authenticated token to a real DB model instance.
 
-    Configure in ``forgeapi.toml``::
+    The guard is the **only** layer that speaks HTTP: strategies raise
+    :class:`~forgeapi.exceptions.ForgeAPIAuthError` subclasses, and
+    :meth:`authenticate` translates them to 401 responses with a uniform
+    shape.  Capabilities (tokens, sessions) are dispatched via the protocols
+    in :mod:`forgeapi.auth.contracts`, so custom strategies that implement
+    them work automatically.
 
-        [auth.guards.api]
-        strategy = "jwt"
-        model = "app.models.User"
+    Configure in code::
 
-        [auth.guards.admin]
-        strategy = "jwt"
-        model = "app.models.Admin"
-
-    Or register in code::
-
-        from forgeapi.auth import auth
-        from forgeapi.auth.guard import Guard
+        from forgeapi.auth import auth, Guard
         from forgeapi.auth.strategies import JWTStrategy
 
         api_guard = Guard("api", JWTStrategy(secret_key="..."), user_model=User)
@@ -60,6 +59,63 @@ class Guard:
         self._current_dep: Any = None
         self._optional_dep: Any = None
 
+    @property
+    def strategy(self) -> AuthStrategy:
+        """The strategy this guard authenticates with (read-only)."""
+        return self._strategy
+
+    @property
+    def user_model(self) -> type | None:
+        """The DB model authenticated users resolve to, or ``None``."""
+        return self._user_model
+
+    # ------------------------------------------------------------------
+    # Authentication — the single domain-error → HTTP translation point
+    # ------------------------------------------------------------------
+
+    async def authenticate(self, request: Request, *, required: bool = True) -> Any:
+        """Authenticate *request* and return the user.
+
+        Semantics (uniform across all strategies):
+
+        * credentials **absent** → ``None`` if ``required=False``, else 401;
+        * credentials **present but invalid** (expired, bad signature,
+          user gone from DB) → 401 always, even when ``required=False`` —
+          a client sending broken credentials is a client bug and silently
+          downgrading it to anonymous would mask it.
+        """
+        try:
+            auth_user = await self._strategy.authenticate(request)
+        except ForgeAPIAuthError as exc:
+            _log.debug(
+                "Guard '%s': 401 (%s) on %s %s",
+                self.name, exc.code, request.method, request.url.path,
+            )
+            raise self._unauthorized(str(exc), code=exc.code)
+
+        if auth_user is None:
+            if not required:
+                return None
+            _log.debug(
+                "Guard '%s': 401 — no credentials on %s %s",
+                self.name, request.method, request.url.path,
+            )
+            raise self._unauthorized("Not authenticated", code="missing_credentials")
+
+        if self._user_model is None:
+            return auth_user
+
+        db_user = await self._user_model.get_or_none(id=auth_user.id)
+        if db_user is None:
+            _log.debug(
+                "Guard '%s': token valid but user id=%s not in DB",
+                self.name, auth_user.id,
+            )
+            raise self._unauthorized("User not found.", code="user_not_found")
+
+        _log.debug("Guard '%s': authenticated user id=%s", self.name, auth_user.id)
+        return db_user
+
     # ------------------------------------------------------------------
     # FastAPI dependencies
     # ------------------------------------------------------------------
@@ -86,7 +142,8 @@ class Guard:
     def optional_user(self) -> Any:
         """Return an ``Annotated`` dependency — optional authenticated user.
 
-        Returns ``None`` instead of raising 401 when credentials are absent.
+        Returns ``None`` when credentials are absent.  Present-but-invalid
+        credentials still raise 401 (see :meth:`authenticate`).
 
         Example::
 
@@ -103,71 +160,102 @@ class Guard:
         return self._optional_dep
 
     # ------------------------------------------------------------------
-    # Token helpers
+    # Token / session helpers — dispatched via capability protocols
     # ------------------------------------------------------------------
 
     def token(self, user: Any) -> str:
-        """Create an access token for *user*.
+        """Create an access token (or signed session value) for *user*.
 
-        Works with JWT and Cookie strategies.
-        Pass the DB model instance or :class:`~forgeapi.auth.models.AuthUser`.
+        Works with any strategy implementing
+        :class:`~forgeapi.auth.contracts.TokenIssuer` or
+        :class:`~forgeapi.auth.contracts.SessionIssuer`.
 
         Example::
 
             token = guard("api").token(user)
         """
-        from .strategies.jwt import JWTStrategy
-        from .strategies.cookie import CookieStrategy
-
         payload = self._build_payload(user)
-
-        if isinstance(self._strategy, JWTStrategy):
+        if isinstance(self._strategy, TokenIssuer):
             return self._strategy.create_access_token(payload)
-        if isinstance(self._strategy, CookieStrategy):
+        if isinstance(self._strategy, SessionIssuer):
             return self._strategy.create_session(payload)
-
         raise NotImplementedError(
-            f"token() is not supported for {type(self._strategy).__name__}."
+            f"token() is not supported for {type(self._strategy).__name__} — "
+            "the strategy implements neither TokenIssuer nor SessionIssuer."
         )
 
     def refresh_token(self, user: Any) -> str:
-        """Create a refresh token for *user* (JWT only).
+        """Create a refresh token for *user* (``RefreshCapable`` strategies).
 
         Example::
 
             refresh = guard("api").refresh_token(user)
         """
-        from .strategies.jwt import JWTStrategy
-        if not isinstance(self._strategy, JWTStrategy):
+        if not isinstance(self._strategy, RefreshCapable):
             raise NotImplementedError(
-                f"refresh_token() requires JWTStrategy, got {type(self._strategy).__name__}."
+                f"refresh_token() is not supported for {type(self._strategy).__name__} — "
+                "the strategy does not implement RefreshCapable."
             )
         return self._strategy.create_refresh_token(self._build_payload(user))
 
     def decode(self, token: str, *, expected_type: str | None = None) -> dict:
-        """Decode and verify a token issued by this guard (JWT only).
+        """Decode and verify a token issued by this guard (``TokenIssuer`` strategies).
 
         Example::
 
             payload = guard("api").decode(token)
             payload = guard("api").decode(token, expected_type="refresh")
         """
-        from .strategies.jwt import JWTStrategy
-        if not isinstance(self._strategy, JWTStrategy):
+        if not isinstance(self._strategy, TokenIssuer):
             raise NotImplementedError(
-                f"decode() requires JWTStrategy, got {type(self._strategy).__name__}."
+                f"decode() is not supported for {type(self._strategy).__name__} — "
+                "the strategy does not implement TokenIssuer."
             )
         return self._strategy.decode(token, expected_type=expected_type)
+
+    def set_cookie(self, response, data: dict) -> None:
+        """Sign *data* and write a session cookie on *response* (``SessionIssuer`` strategies).
+
+        Example::
+
+            guard("web").set_cookie(response, {"sub": str(user.id)})
+        """
+        if not isinstance(self._strategy, SessionIssuer):
+            raise NotImplementedError(
+                f"set_cookie() is not supported for {type(self._strategy).__name__} — "
+                "the strategy does not implement SessionIssuer."
+            )
+        self._strategy.set_cookie(response, data)
+
+    def delete_cookie(self, response) -> None:
+        """Remove the session cookie from *response* (``SessionIssuer`` strategies).
+
+        Example::
+
+            guard("web").delete_cookie(response)
+        """
+        if not isinstance(self._strategy, SessionIssuer):
+            raise NotImplementedError(
+                f"delete_cookie() is not supported for {type(self._strategy).__name__} — "
+                "the strategy does not implement SessionIssuer."
+            )
+        self._strategy.delete_cookie(response)
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
+    def _unauthorized(self, detail: str, *, code: str) -> HTTPException:
+        headers = {}
+        if self._strategy.challenge:
+            headers["WWW-Authenticate"] = f'{self._strategy.challenge} error="{code}"'
+        return HTTPException(status_code=401, detail=detail, headers=headers or None)
+
     def _build_dep(self, *, required: bool) -> Any:
         _guard = self
 
         async def _resolve(request: Request):
-            return await _guard._authenticate(request, required=required)
+            return await _guard.authenticate(request, required=required)
 
         model = self._user_model
         if model is None:
@@ -178,40 +266,27 @@ class Guard:
             return Annotated[model, Depends(_resolve)]
         return Annotated[Optional[model], Depends(_resolve)]
 
-    async def _authenticate(self, request: Request, *, required: bool) -> Any:
-        auth_user = await self._strategy.authenticate(request)
-
-        if auth_user is None:
-            if required:
-                _log.debug(
-                    "Guard '%s': 401 — no credentials on %s %s",
-                    self.name, request.method, request.url.path,
-                )
-                raise HTTPException(
-                    status_code=401,
-                    detail="Not authenticated",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return None
-
-        if self._user_model is None:
-            return auth_user
-
-        db_user = await self._user_model.get_or_none(id=auth_user.id)
-        if db_user is None:
-            _log.debug(
-                "Guard '%s': token valid but user id=%s not in DB",
-                self.name, auth_user.id,
-            )
-            if required:
-                raise HTTPException(status_code=401, detail="User not found.")
-            return None
-
-        _log.debug("Guard '%s': authenticated user id=%s", self.name, auth_user.id)
-        return db_user
-
     def _build_payload(self, user: Any) -> dict:
+        """Build token claims for *user*.
+
+        A model can control its claims by defining ``auth_claims() -> dict``
+        (``"sub"`` is filled from ``user.id`` when omitted)::
+
+            class User(ModelMixin, Model):
+                def auth_claims(self) -> dict:
+                    return {"username": self.username, "role": self.role}
+
+        Without the hook: ``sub`` from ``user.id`` plus the first present
+        attribute of ``username`` / ``email`` / ``name``.
+        """
         from .models import AuthUser
+
+        claims_hook = getattr(user, "auth_claims", None)
+        if callable(claims_hook):
+            payload = dict(claims_hook())
+            payload.setdefault("sub", str(getattr(user, "id", "")))
+            return payload
+
         if isinstance(user, AuthUser):
             payload: dict = {"sub": str(user.id)}
             if user.username:

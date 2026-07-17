@@ -5,6 +5,9 @@ __all__ = [
     "ForgeAPIAuthError",
     "TokenExpiredError",
     "TokenInvalidError",
+    "SessionExpiredError",
+    "SessionInvalidError",
+    "UserNotFoundError",
 ]
 
 
@@ -32,12 +35,43 @@ class ForgeAPIImportError(ForgeAPIError, ImportError):
 
 
 class ForgeAPIAuthError(ForgeAPIError):
-    """Base exception for authentication failures raised by auth strategies."""
+    """Base exception for authentication failures raised by auth strategies.
+
+    Strategies raise these domain exceptions; :class:`~forgeapi.auth.guard.Guard`
+    is the single place that translates them to HTTP 401 responses.
+    ``code`` is a machine-readable identifier exposed in the
+    ``WWW-Authenticate`` challenge.
+    """
+
+    status_code: int = 401
+    code: str = "auth_error"
 
 
 class TokenExpiredError(ForgeAPIAuthError):
-    """Raised when a JWT token has expired."""
+    """Raised when a token has expired."""
+
+    code = "token_expired"
 
 
 class TokenInvalidError(ForgeAPIAuthError):
-    """Raised when a JWT token has an invalid signature, type, or structure."""
+    """Raised when a token has an invalid signature, type, or structure."""
+
+    code = "token_invalid"
+
+
+class SessionExpiredError(ForgeAPIAuthError):
+    """Raised when a session cookie has expired."""
+
+    code = "session_expired"
+
+
+class SessionInvalidError(ForgeAPIAuthError):
+    """Raised when a session cookie is malformed or its signature does not match."""
+
+    code = "session_invalid"
+
+
+class UserNotFoundError(ForgeAPIAuthError):
+    """Raised when credentials are valid but the user no longer exists in the DB."""
+
+    code = "user_not_found"

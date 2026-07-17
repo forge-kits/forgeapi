@@ -263,7 +263,7 @@ def _ensure_init(directory: Path) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def run(model_name: str, extra_args: list[str] | None = None, config_path: str = "forgeapi.toml") -> None:
+def run(model_name: str, extra_args: list[str] | None = None, config_path: str = "") -> None:
     import typer
     from forgeapi.config import load_config
 

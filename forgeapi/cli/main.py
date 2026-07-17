@@ -74,8 +74,8 @@ Scaffolds a new ForgeAPI project. Asks for:
 
 Creates:
   <project-name>/
-    main.py  forgeapi.toml  .env  pyproject.toml
-    app/  models/  controllers/  schemas/  events/  listeners/
+    main.py  .env
+    config/  app/  models/  controllers/  schemas/  events/  listeners/
 """
 
 _HELP_MAKE = """\

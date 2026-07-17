@@ -11,7 +11,7 @@ except ImportError:
         hint="pip install forge-kits[auth]",
     )
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from .base import AuthStrategy
@@ -56,7 +56,34 @@ class JWTStrategy(AuthStrategy):
         payload = strategy.decode(access)   # {"sub": "user_42", "username": "alice", ...}
     """
 
+    challenge = "Bearer"
+
     _RESERVED_CLAIMS: frozenset = frozenset({"sub", "username", "exp", "iat", "type"})
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "JWTStrategy":
+        """Build from a guard config dict.
+
+        Recognised keys: ``secret`` (raw value), ``secret_env`` (env var name,
+        default ``JWT_SECRET``), ``algorithm``, ``access_ttl`` (minutes),
+        ``refresh_ttl`` (days).
+        """
+        env_name = cfg.get("secret_env", "JWT_SECRET")
+        secret = cfg.get("secret") or os.getenv(env_name, "")
+        if not secret:
+            raise ForgeAPIConfigError(
+                "JWT secret is not set.",
+                hint=(
+                    f"Set the {env_name} environment variable, "
+                    "or add 'secret' to the guard config."
+                ),
+            )
+        return cls(
+            secret_key=secret,
+            algorithm=cfg.get("algorithm", "HS256"),
+            access_token_expire_minutes=cfg.get("access_ttl", 30),
+            refresh_token_expire_days=cfg.get("refresh_ttl", 7),
+        )
 
     def __init__(
         self,
@@ -180,18 +207,17 @@ class JWTStrategy(AuthStrategy):
         Returns:
             :class:`~forgeapi.auth.models.AuthUser` if a valid Bearer token
             is present, ``None`` otherwise (no token in header).
+
+        Raises:
+            :class:`~forgeapi.exceptions.TokenExpiredError`: If the token is expired.
+            :class:`~forgeapi.exceptions.TokenInvalidError`: If the token is invalid.
         """
         credentials: Optional[HTTPAuthorizationCredentials] = await self._bearer(request)
         if not credentials:
             _log.debug("JWT auth: no Bearer token in request")
             return None
 
-        try:
-            payload = self.decode(credentials.credentials, expected_type="access")
-        except TokenExpiredError:
-            raise HTTPException(status_code=401, detail="Token has expired")
-        except TokenInvalidError as exc:
-            raise HTTPException(status_code=401, detail=str(exc))
+        payload = self.decode(credentials.credentials, expected_type="access")
 
         _log.debug("JWT auth OK: user_id=%s", payload.get("sub"))
         return AuthUser(

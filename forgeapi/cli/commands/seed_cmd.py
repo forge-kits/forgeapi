@@ -88,7 +88,7 @@ async def _execute_from_init(seeds_dir: Path) -> None:
         await _run_seeder(cls, name)
 
 
-def run(names: list[str], config_path: str = "forgeapi.toml") -> None:
+def run(names: list[str], config_path: str = "") -> None:
     import typer
     from forgeapi.config import load_config
 
@@ -145,7 +145,7 @@ def run(names: list[str], config_path: str = "forgeapi.toml") -> None:
     typer.echo("Done.")
 
 
-def make(name: str, config_path: str = "forgeapi.toml") -> None:
+def make(name: str, config_path: str = "") -> None:
     """Generate a seeder file."""
     import typer
     from pathlib import Path

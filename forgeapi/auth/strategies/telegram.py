@@ -1,12 +1,14 @@
 import hashlib
 import hmac
 import json
+import os
 import time
 from typing import List, Optional, Union
 from urllib.parse import parse_qsl, unquote
 
 from fastapi import Request
 
+from forgeapi.exceptions import TokenExpiredError, TokenInvalidError
 from forgeapi.logging import log
 from .base import AuthStrategy
 from ..models import AuthUser, TelegramUser
@@ -30,8 +32,9 @@ class TelegramStrategy(AuthStrategy):
             data is considered expired.  Defaults to ``86400`` (24 hours).
 
     Raises:
-        :class:`fastapi.HTTPException` 401: If the signature is invalid, the
-            ``hash`` field is missing, or the data has expired.
+        :class:`~forgeapi.exceptions.TokenExpiredError`: If the data has expired.
+        :class:`~forgeapi.exceptions.TokenInvalidError`: If the signature is
+            invalid or the ``hash`` field is missing.
 
     Example::
 
@@ -43,13 +46,46 @@ class TelegramStrategy(AuthStrategy):
 
     FastAPI usage::
 
-        auth = AuthBackend(strategy=TelegramStrategy(bot_token="123:ABC"))
-        CurrentUser = auth.current_user()
+        from forgeapi.auth import auth, Guard
+
+        auth.register("api", Guard("api", TelegramStrategy(bot_token="123:ABC")))
+        CurrentUser = auth.guard("api").current_user()
 
         @app.get("/me")
         async def me(user: CurrentUser):
             return {"tg_id": user.id, "username": user.username}
     """
+
+    challenge = None  # Telegram initData has no standard WWW-Authenticate scheme
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "TelegramStrategy":
+        """Build from a guard config dict.
+
+        Recognised keys: ``bot_token`` (str or list), ``bot_token_env``
+        (env var name, default ``BOT_TOKEN``, comma-separated for multiple
+        bots), ``max_age`` (seconds), ``debug``.
+        """
+        from forgeapi.exceptions import ForgeAPIConfigError
+
+        token: Union[str, List[str], None] = cfg.get("bot_token")
+        if not token:
+            env_name = cfg.get("bot_token_env", "BOT_TOKEN")
+            raw = os.getenv(env_name, "")
+            token = [t.strip() for t in raw.split(",") if t.strip()]
+            if not token:
+                raise ForgeAPIConfigError(
+                    "Telegram bot token is not set.",
+                    hint=(
+                        f"Set the {env_name} environment variable, "
+                        "or add 'bot_token' to the guard config."
+                    ),
+                )
+        return cls(
+            bot_token=token,
+            max_age_seconds=cfg.get("max_age", 86400),
+            debug=cfg.get("debug", False),
+        )
 
     def __init__(self, bot_token: Union[str, List[str]], max_age_seconds: Optional[int] = 86400, debug: bool = False) -> None:
         tokens = [bot_token] if isinstance(bot_token, str) else list(bot_token)
@@ -81,8 +117,10 @@ class TelegramStrategy(AuthStrategy):
             user fields.
 
         Raises:
-            :class:`fastapi.HTTPException` 401: On missing hash, expired data,
-                or invalid signature.
+            :class:`~forgeapi.exceptions.TokenExpiredError`: If ``auth_date``
+                is older than ``max_age_seconds``.
+            :class:`~forgeapi.exceptions.TokenInvalidError`: On missing hash,
+                invalid signature, or malformed fields.
 
         Example::
 
@@ -90,8 +128,6 @@ class TelegramStrategy(AuthStrategy):
             user = strategy.validate_init_data(raw)
             # TelegramUser(id=123, username="alice", ...)
         """
-        from fastapi import HTTPException
-
         # parse_qsl handles URL-decoding of values internally; do NOT double-unquote
         # the outer string — it would cause + → space and %25 → % mismatches in
         # the signature check when field values contain encoded characters.
@@ -100,13 +136,13 @@ class TelegramStrategy(AuthStrategy):
         received_hash = params.pop("hash", None)
         if not received_hash:
             _log.warning("Telegram auth rejected: missing 'hash' field in init data")
-            raise HTTPException(status_code=401, detail="Missing hash in Telegram init data")
+            raise TokenInvalidError("Missing hash in Telegram init data")
 
         try:
             auth_date = int(params.get("auth_date", 0))
         except ValueError:
             _log.warning("Telegram auth rejected: invalid auth_date value: %r", params.get("auth_date"))
-            raise HTTPException(status_code=401, detail="Invalid auth_date in Telegram init data")
+            raise TokenInvalidError("Invalid auth_date in Telegram init data")
         age = time.time() - auth_date
         if self._debug:
             _log.debug("Telegram DEBUG: skipping auth_date expiry check (age=%.0f s)", age)
@@ -115,7 +151,7 @@ class TelegramStrategy(AuthStrategy):
                 "Telegram auth rejected: init data expired (age=%.0f s, max=%s s)",
                 age, self._max_age,
             )
-            raise HTTPException(status_code=401, detail="Telegram init data has expired")
+            raise TokenExpiredError("Telegram init data has expired")
 
         data_check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
         results = [
@@ -131,7 +167,7 @@ class TelegramStrategy(AuthStrategy):
                 "Telegram auth rejected: HMAC signature mismatch (tried %d token(s))",
                 self._token_count,
             )
-            raise HTTPException(status_code=401, detail="Telegram init data signature is invalid")
+            raise TokenInvalidError("Telegram init data signature is invalid")
 
         user_raw = params.get("user", "") or ""
         # The user field value may itself be URL-encoded JSON (e.g. when init_data
@@ -142,12 +178,12 @@ class TelegramStrategy(AuthStrategy):
             user_data = json.loads(user_raw or "{}")
         except (json.JSONDecodeError, ValueError):
             _log.warning("Telegram auth rejected: malformed user JSON field: %r", user_raw[:200] if user_raw else user_raw)
-            raise HTTPException(status_code=401, detail="Malformed user field in Telegram init data")
+            raise TokenInvalidError("Malformed user field in Telegram init data")
 
         tg_id = user_data.get("id", 0)
         if not tg_id:
             _log.warning("Telegram auth rejected: no user id in init data (bot update or missing user field)")
-            raise HTTPException(status_code=401, detail="No user in Telegram init data")
+            raise TokenInvalidError("No user in Telegram init data")
         _log.debug("Telegram auth OK: user_id=%s username=%s", tg_id, user_data.get("username"))
 
         return TelegramUser(

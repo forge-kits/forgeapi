@@ -65,7 +65,7 @@
 17. [Settings](#17-settings)
 18. [Seeders](#18-seeders)
 19. [CLI reference](#19-cli-reference)
-20. [forgeapi.toml reference](#20-forgeapitoml-reference)
+20. [Configuration reference (config/)](#20-configuration-reference-config)
 21. [Telescope](#21-telescope)
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
@@ -125,17 +125,21 @@ After `forgeapi init my-project`:
 
 ```
 my-project/
-  main.py                    # entry point — FastAPI app + Core(...)
-  forgeapi.toml              # project config
-  pyproject.toml             # dependencies — pip install -e .
+  main.py                    # entry point — FastAPI app + Core(app)
   .env                       # secrets (JWT_SECRET, DB_* etc.)
+  config/                    # Laravel-style config directory (see §20)
+    project.py               # name, debug, extra providers
+    structure.py             # directory layout + base_prefix
+    http.py                  # cors, rate_limit, request_id, access_log, middleware
+    auth.py                  # named guards (jwt / cookie / telegram)
+    pagination.py            # default_limit, max_limit
+    database.py              # TORTOISE_ORM dict lives here
   app/
-    config.py                # TORTOISE_ORM dict
     controllers/             # *_controller.py files, auto-loaded by Core
     schemas/                 # Pydantic schemas
     events/                  # Event subclasses
     listeners/               # @listen(...) handlers
-    policies/                # Policy classes (gate.discover)
+    policies/                # Policy classes, auto-discovered
   database/
     models/                  # Tortoise models
     migrations/              # migration files (tortoise CLI)
@@ -148,19 +152,11 @@ my-project/
 from fastapi import FastAPI
 from forgeapi import Core
 from tortoise.contrib.fastapi import register_tortoise
-from app.config import TORTOISE_ORM
+from config.database import TORTOISE_ORM
 
 app = FastAPI()
 
-core = Core(
-    app,
-    auth=True,
-    cors=["*"],
-    rate_limit=60,
-    pagination=20,
-    request_id=True,
-    events=True,
-)
+core = Core(app)   # everything is wired from config/
 
 register_tortoise(app, config=TORTOISE_ORM, generate_schemas=False, add_exception_handlers=True)
 ```
@@ -169,50 +165,56 @@ register_tortoise(app, config=TORTOISE_ORM, generate_schemas=False, add_exceptio
 
 ## 3. Core
 
-`Core` wires up all modules in one place.
+**`Core(app)` takes only the app.** Everything else is config-driven —
+convention over configuration. `Core` is a thin orchestrator: each module
+ships a `Provider` with a `register()` phase (module wiring) and a `boot()`
+phase (user-code discovery); `Core` collects them, runs all `register()`s,
+then all `boot()`s.
 
 ```python
 from forgeapi import Core
 
-core = Core(
-    app,
-    auth=True,           # auth strategy from forgeapi.toml, or "jwt"/"cookie"/"telegram"
-    cors=["*"],          # CORS origins
-    rate_limit=60,       # requests per minute per IP
-    pagination=20,       # default page size
-    request_id=True,     # inject X-Request-ID header
-    events=True,         # auto-load listeners from listeners_dir
-    permissions=True,    # auto-detect PermissionsMixin model in models_dir
-    logging=True,        # access log per request (default True)
-    controllers=True,    # auto-discover *_controller.py files (default True)
-    debug=False,         # relaxes security checks — never use in production
-)
+core = Core(app)
 ```
 
-### Options
+### What boots when
 
-| Argument | Type | Default | Description |
-|---|---|---|---|
-| `auth` | `bool \| str` | `False` | `True` = strategy from toml; `"jwt"` / `"cookie"` / `"telegram"` = override |
-| `cors` | `bool \| list[str]` | `False` | `True` = allow all; list = specific origins |
-| `rate_limit` | `bool \| int` | `False` | `True` = 60 req/min; int = custom limit per IP |
-| `pagination` | `bool \| int` | `False` | `True` = limits from toml; int = default_limit |
-| `request_id` | `bool` | `False` | Injects `X-Request-ID` header into every response |
-| `events` | `bool` | `False` | Auto-loads all `*.py` files from `listeners_dir` |
-| `permissions` | `bool \| Type \| None` | `None` | `True` = auto-detect; pass model class = explicit; `None` = disabled |
-| `logging` | `bool` | `True` | Logs method + path + status + duration for every request |
-| `controllers` | `bool` | `True` | Auto-imports `*_controller.py` (recursive) and registers routers |
-| `middleware` | `list \| None` | `None` | List of middleware classes or `(cls, kwargs)` tuples to register |
-| `debug` | `bool` | `False` | Debug mode — enables Telescope. **Never use in production.** |
-| `config_path` | `str` | `"forgeapi.toml"` | Path to the TOML config file |
+| Module | Activated by |
+|---|---|
+| Middleware stack | `config/http.py` (`cors`, `rate_limit`, `request_id`, `access_log`, `middleware`) |
+| Auth guards | `config/auth.py` exists |
+| Controllers | `controllers_dir` exists — all `*_controller.py` imported recursively |
+| Event listeners | `listeners_dir` exists — all files imported |
+| Policies | `policies_dir` exists — all `*_policy.py` imported |
+| Permissions | a model in `models_dir` inherits `PermissionsMixin` (no config needed) |
+| Telescope | `"debug": True` in `config/project.py` — **never in production** |
+| Pagination, Cache | always configured (from their sections or defaults) |
+| Custom providers | `"providers"` list in `config/project.py` |
 
-`Core` also auto-configures `Cache` from the `[cache]` section in `forgeapi.toml` on startup.
+`Core(app)` with no config files never raises — zero-config is a supported
+starting point.
+
+### Custom providers
+
+```python
+# config/project.py
+config = {"providers": ["app.providers.MetricsProvider"]}
+```
+
+```python
+from forgeapi import Provider
+
+class MetricsProvider(Provider):
+    def register(self) -> None: ...   # module wiring — must not import user code
+    def boot(self) -> None: ...       # runs after all register()s
+```
 
 ### Accessing after setup
 
 ```python
 core.auth       # → Auth facade | None
-core.config     # → KitConfig (parsed forgeapi.toml)
+core.config     # → KitConfig (validated config/ sections)
+core.providers  # → list of active Provider instances
 ```
 
 ### Including routers manually
@@ -225,10 +227,13 @@ core.include_router(admin_router, prefix="/admin")   # prefix: /api/v1/admin
 ### Debug mode
 
 ```python
-core = Core(app, auth="telegram", debug=True)
+# config/project.py
+from forgeapi import env
+config = {"debug": env("APP_DEBUG", False)}
 ```
 
-All debug activity is logged as `WARNING`. **Never use `debug=True` in production.**
+Debug mode enables Telescope; all debug activity is logged as `WARNING`.
+**Never enable in production.**
 
 ---
 
@@ -248,34 +253,56 @@ Every exception includes a `hint` field with a fix suggestion.
 
 ```python
 try:
-    core = Core(app, auth=True)
+    core = Core(app)
 except ForgeAPIConfigError as e:
     print(e.hint)
 ```
+
+Auth has its own domain-exception hierarchy (`ForgeAPIAuthError` subclasses:
+`TokenExpiredError`, `TokenInvalidError`, `SessionExpiredError`,
+`SessionInvalidError`, `UserNotFoundError`). Strategies raise only these —
+`Guard.authenticate` is the single point translating them to HTTP 401 (see §5).
 
 ---
 
 ## 5. Auth
 
-Auth is based on **Guards**. A Guard combines a **strategy** (how to verify credentials) with an optional **user_model** (which Tortoise model to load from the DB).
+Auth is based on **Guards**. A Guard combines a **strategy** (how to verify credentials) with an optional **user model** (which Tortoise model to load from the DB).
 
-### Step 1 — configure strategy in forgeapi.toml
-
-```toml
-[auth]
-strategy           = "jwt"      # jwt | cookie | telegram
-jwt_secret_env     = "JWT_SECRET"
-access_ttl_minutes = 30
-refresh_ttl_days   = 7
+```
+Auth (facade)   — guard registry + strategy factories, pure delegation
+ └─ Guard       — the only layer that speaks HTTP (401) and touches the DB
+     └─ AuthStrategy — pure domain: extract/verify credentials, issue tokens
 ```
 
-### Step 2 — enable in Core
+### Step 1 — define guards in config/auth.py
+
+Auth boots automatically when `config/auth.py` exists — nothing to pass to `Core`.
 
 ```python
-core = Core(app, auth=True)
+# config/auth.py
+from forgeapi import env
+
+config = {
+    "default": "api",
+    "guards": {
+        "api": {
+            "strategy": "jwt",              # jwt | cookie | telegram | custom
+            "secret": env("JWT_SECRET"),
+            "access_ttl": 30,               # minutes
+            "refresh_ttl": 7,               # days
+            "model": "database.models.user.User",   # optional — load user from DB
+        },
+    },
+}
 ```
 
-### Step 3 — protect routes
+`strategy` picks the credential mechanism; the remaining keys are passed to
+the strategy's `from_config()` (see per-strategy tables below). `model` is a
+dotted path to a Tortoise model — when set, `CurrentUser` resolves to a real
+DB instance (and a valid token whose user is gone from the DB is a 401).
+
+### Step 2 — protect routes
 
 ```python
 from forgeapi.auth import CurrentUser, OptionalUser
@@ -291,14 +318,40 @@ async def feed(self, user: OptionalUser):
     return await public_feed()
 ```
 
+### Error semantics (uniform across strategies)
+
+- credentials **absent** → 401 for `CurrentUser`, `None` for `OptionalUser`
+- credentials **present but invalid** (expired / bad signature / user gone
+  from the DB) → **401 always**, even for `OptionalUser`
+- every 401 carries `WWW-Authenticate: Bearer error="<code>"` with a
+  machine-readable code: `token_expired`, `token_invalid`, `session_expired`,
+  `session_invalid`, `user_not_found`, `missing_credentials`
+
 ### What the user object contains
+
+With `"model"` configured, the dependency returns your **Tortoise model
+instance** loaded from the DB — all its fields and methods are available.
+
+Without `"model"`, it returns a lightweight `AuthUser` built from the token
+payload:
 
 | Field | Type | Description |
 |---|---|---|
-| `user.id` | `str` | JWT `sub` claim — cast with `int(user.id)` for DB queries |
+| `user.id` | `str \| int` | JWT `sub` claim — cast with `int(user.id)` for DB queries |
 | `user.username` | `str \| None` | From token payload |
 | `user.auth_method` | `str` | `"jwt"` / `"cookie"` / `"telegram"` |
 | `user.extra` | `dict` | Any extra claims (`role`, `email`, etc.) |
+
+### Token claims — auth_claims()
+
+Define `auth_claims()` on the user model to control what goes into tokens
+(`sub` is auto-filled from `user.id`):
+
+```python
+class User(ModelMixin, Model):
+    def auth_claims(self) -> dict:
+        return {"username": self.username, "role": self.role}
+```
 
 ### Auth facade — issuing tokens
 
@@ -306,17 +359,23 @@ async def feed(self, user: OptionalUser):
 from forgeapi.auth import auth
 
 access  = auth.token(user)           # access token — takes DB model instance
-refresh = auth.refresh_token(user)   # refresh token — JWT only, takes DB model instance
+refresh = auth.refresh_token(user)   # refresh token — RefreshCapable strategies (jwt)
 
 # Decode
 payload = auth.decode(token, expected_type="access")  # raises TokenExpiredError | TokenInvalidError
 
-# Cookie strategy only
+# SessionIssuer strategies (cookie) only
 auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
 auth.delete_cookie(response)
 ```
 
-`auth.token(user)` and `auth.refresh_token(user)` accept any model instance — they extract `id`, `username`/`email`/`name` automatically via `_build_payload`.
+`auth.token(user)` accepts any model instance — `sub` is auto-filled from
+`user.id`, the rest comes from the model's `auth_claims()` hook (see above).
+
+Capabilities are protocols (`forgeapi.auth.contracts`): `TokenIssuer`,
+`RefreshCapable`, `SessionIssuer`. The facade dispatches on
+`isinstance(strategy, Protocol)` — a custom strategy that implements a
+protocol gets `token()` / `decode()` / cookie helpers for free.
 
 ### Login endpoint pattern
 
@@ -344,63 +403,102 @@ async def refresh(self, payload: RefreshPayload) -> dict:
 
 ### Multiple guards
 
+Define several named guards in `config/auth.py`; each gets its own strategy,
+secret, and user model:
+
 ```python
+# config/auth.py
+config = {
+    "default": "api",
+    "guards": {
+        "api":   {"strategy": "jwt", "secret": env("JWT_SECRET"),
+                  "model": "database.models.user.User"},
+        "admin": {"strategy": "jwt", "secret": env("ADMIN_JWT_SECRET"),
+                  "model": "database.models.admin.Admin"},
+    },
+}
+```
+
+```python
+from forgeapi.auth import guard
+
+CurrentAdmin = guard("admin").current_user()   # dependency bound to the admin guard
+
+@route.get("/admin/stats")
+async def stats(self, admin: CurrentAdmin): ...
+
+token = guard("admin").token(admin)            # per-guard token operations
+```
+
+Manual registration remains as an escape hatch:
+
+```python
+from forgeapi.auth import auth
 from forgeapi.auth.guard import Guard
-from forgeapi.auth.facade import auth
 from forgeapi.auth.strategies import JWTStrategy
 
-core = Core(app, auth=False)
-
-auth.register("api", Guard(name="api", strategy=JWTStrategy(secret_key="user-secret"), user_model=User))
-auth.register("admin", Guard(name="admin", strategy=JWTStrategy(secret_key="admin-secret"), user_model=Admin))
+auth.register("api", Guard(name="api", strategy=JWTStrategy(secret_key="..."), user_model=User))
 auth.set_default("api")
 ```
 
+### Custom strategies — auth.extend()
+
+```python
+from forgeapi.auth import auth
+from forgeapi.auth.strategies.base import AuthStrategy
+
+class ApiKeyStrategy(AuthStrategy):
+    @classmethod
+    def from_config(cls, cfg: dict) -> "ApiKeyStrategy": ...
+
+auth.extend("apikey", ApiKeyStrategy)
+# now usable in config/auth.py: {"strategy": "apikey", ...}
+```
+
+Strategies raise **only** `ForgeAPIAuthError` subclasses — never
+`HTTPException`, never touch the DB. That structural rule is what keeps all
+strategies behaviourally identical at the edges.
+
 ### JWT strategy
 
-Reads `Authorization: Bearer <token>`.
+Reads `Authorization: Bearer <token>`. Implements `TokenIssuer` + `RefreshCapable`.
 
-```toml
-[auth]
-strategy           = "jwt"
-jwt_secret_env     = "JWT_SECRET"
-access_ttl_minutes = 30
-refresh_ttl_days   = 7
-```
+| Config key | Default | Description |
+|---|---|---|
+| `secret` | — | Signing secret (use `env("JWT_SECRET")`) |
+| `secret_env` | `"JWT_SECRET"` | Env var name to read when `secret` is not set |
+| `algorithm` | `"HS256"` | JWT algorithm |
+| `access_ttl` | `30` | Access token TTL, minutes |
+| `refresh_ttl` | `7` | Refresh token TTL, days |
 
 ### Cookie strategy
 
-Stores a signed JSON session in an `HttpOnly` cookie. Secret from `COOKIE_SECRET` env var.
+Stores a signed JSON session in an `HttpOnly` cookie (HMAC). Implements `SessionIssuer`.
 
-```toml
-[auth]
-strategy        = "cookie"
-cookie_name     = "session"
-cookie_httponly = true
-cookie_secure   = false    # true in production (HTTPS)
-```
+| Config key | Default | Description |
+|---|---|---|
+| `secret` | — | HMAC secret (use `env("COOKIE_SECRET")`) |
+| `secret_env` | `"COOKIE_SECRET"` | Env var name to read when `secret` is not set |
+| `cookie_name` | `"session"` | Cookie name |
+| `max_age` | `3600` | Session lifetime, seconds |
+| `httponly` | `True` | `HttpOnly` flag |
+| `secure` | `True` | Set `False` only for local HTTP development |
+| `samesite` | `"lax"` | SameSite policy |
 
 ```python
-from forgeapi.auth.strategies import CookieStrategy
-strategy = CookieStrategy()
-
-strategy.set_cookie(response, {"sub": str(user.id)})
-strategy.delete_cookie(response)
+auth.set_cookie(response, {"sub": str(user.id)})
+auth.delete_cookie(response)
 ```
 
 ### Telegram strategy
 
-Validates `initData` from Telegram Mini App. No login endpoint needed.
+Validates `initData` from a Telegram Mini App. No login endpoint needed.
 
-```toml
-[auth]
-strategy = "telegram"
-```
-
-```bash
-BOT_TOKEN=123456:ABC-your-token
-BOT_TOKEN=123456:ABC-one,789012:DEF-two   # multiple bots, comma-separated
-```
+| Config key | Default | Description |
+|---|---|---|
+| `bot_token` | — | Bot token, or a list of tokens (use `env("BOT_TOKEN")`) |
+| `bot_token_env` | `"BOT_TOKEN"` | Env var name to read when `bot_token` is not set |
+| `max_age` | `86400` | Max `initData` age, seconds |
 
 Client sends `window.Telegram.WebApp.initData` via `X-Telegram-Init-Data` header or `Authorization: tma <initData>`.
 
@@ -484,15 +582,15 @@ Query params: `?cursor=<token>&per_page=20`.
 
 ### Configuration
 
-```toml
-[pagination]
-default_limit = 20
-max_limit     = 100
+```python
+# config/pagination.py
+config = {
+    "default_limit": 20,
+    "max_limit": 100,
+}
 ```
 
-```python
-Core(app, pagination=20)   # default_limit=20
-```
+Always configured by `Core` — defaults apply when the file is absent.
 
 ---
 
@@ -561,7 +659,7 @@ async def update_inventory(event: OrderCreated) -> None:
     await Inventory.decrease(order_id=event.order_id)
 ```
 
-Multiple listeners run **in parallel** via `asyncio.gather`. `Core(app, events=True)` imports all files in `listeners_dir` automatically.
+Multiple listeners run **in parallel** via `asyncio.gather`. `Core(app)` imports all files in `listeners_dir` automatically when the directory exists.
 
 ### Dispatching
 
@@ -1069,12 +1167,9 @@ TORTOISE_ORM = {
 }
 ```
 
-**3. Register in Core:**
-
-```python
-core = Core(app, auth=True, permissions=True)    # auto-detect
-core = Core(app, auth=True, permissions=User)    # explicit
-```
+**3. Nothing to register** — `Core(app)` scans `models_dir` and activates
+permissions automatically when it finds the single `PermissionsMixin`
+subclass (silently skips when there is none).
 
 **4. Run migrations:**
 
@@ -1141,7 +1236,7 @@ users = await (await User.without_role("admin"))
 
 Async key-value cache. Two drivers: **memory** (default, no dependencies) and **redis** (persistent, shared across workers).
 
-`Core` auto-configures `Cache` from `forgeapi.toml` on startup.
+`Core` auto-configures `Cache` from `config/cache.py` on startup (memory driver by default).
 
 ```python
 from forgeapi import Cache
@@ -1216,12 +1311,14 @@ async def popular(self, request: Request):
 
 ### Cache configuration
 
-```toml
-[cache]
-driver    = "memory"                    # "memory" | "redis"
-prefix    = ""                          # key prefix, e.g. "myapp:"
-ttl       = null                        # default TTL in seconds (null = no expiry)
-redis_url = "redis://localhost:6379/0"  # used when driver = "redis"
+```python
+# config/cache.py
+config = {
+    "driver": "memory",                        # "memory" | "redis"
+    "prefix": "",                              # key prefix, e.g. "myapp:"
+    "ttl": None,                               # default TTL in seconds (None = no expiry)
+    "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
+}
 ```
 
 Programmatic setup (without Core):
@@ -1392,8 +1489,22 @@ class TimingMiddleware(Middleware):
         response = await call_next(request)
         response.headers["X-Process-Time"] = f"{time.perf_counter() - start:.3f}s"
         return response
+```
 
-core = Core(app, middleware=[TimingMiddleware])
+Register via config (primary path) or `core.use()` (manual escape hatch):
+
+```python
+# config/http.py
+from app.middleware import TimingMiddleware, TenantMiddleware
+config = {
+    "middleware": [
+        TimingMiddleware,
+        (TenantMiddleware, {"default_tenant": "acme"}),   # (cls, kwargs) tuple
+    ],
+}
+```
+
+```python
 core.use(TimingMiddleware)
 core.use(TenantMiddleware, default_tenant="acme")
 ```
@@ -1440,35 +1551,25 @@ class ActiveUserGuard(Guard):
 
 ### Built-in middleware
 
-| Argument | Default | Description |
+All configured in `config/http.py`:
+
+```python
+# config/http.py
+config = {
+    "cors": ["*"],        # True → all origins; list → specific; False → off
+    "rate_limit": 60,     # req/min per IP; True → 60; False → off
+    "request_id": True,   # inject X-Request-ID header
+    "access_log": True,   # log method/path/status/duration per request
+    "middleware": [],     # custom classes or (cls, kwargs) tuples
+}
+```
+
+| Key | Default | Description |
 |---|---|---|
-| `cors` | `False` | `["*"]` or list of origins |
-| `rate_limit` | `False` | `True` = 60 req/min; int = custom limit |
-| `request_id` | `False` | Injects `X-Request-ID` header |
-| `logging` | `True` | Logs method, path, status, duration |
-
-#### CORS
-
-```python
-Core(app, cors=["*"])
-Core(app, cors=["https://example.com", "https://app.example.com"])
-```
-
-#### Rate limiting
-
-Sliding window per IP. Returns `429` with `Retry-After` header.
-
-```python
-Core(app, rate_limit=True)   # 60 req/min
-Core(app, rate_limit=200)
-```
-
-#### Request ID
-
-```python
-Core(app, request_id=True)
-# Access via: request.state.request_id
-```
+| `cors` | `False` | `True` = allow all; list = specific origins |
+| `rate_limit` | `False` | Sliding window per IP — returns `429` with `Retry-After` |
+| `request_id` | `False` | Injects `X-Request-ID` header; access via `request.state.request_id` |
+| `access_log` | `True` | Logs method, path, status, duration |
 
 ---
 
@@ -1602,52 +1703,132 @@ forgeapi models    # list all Tortoise model classes, tables, and fields
 
 ---
 
-## 20. forgeapi.toml reference
+## 20. Configuration reference (config/)
 
-```toml
-[project]
-name    = "my-app"
-version = "0.1.0"
+The only config format is a **`config/` directory of Python dict files**
+(Laravel-style). Each `config/<section>.py` defines a module-level
+`config = {...}`; the filename is the section name. All sections are
+optional — `Core(app)` works with no config files at all.
+(`forgeapi.toml` is no longer supported — `load_config` raises with a
+migration hint.)
 
-[structure]
-models_dir      = "database/models"
-controllers_dir = "app/controllers"
-schemas_dir     = "app/schemas"
-events_dir      = "app/events"
-listeners_dir   = "app/listeners"
-seeds_dir       = "database/seeds"
-base_prefix     = "/api/v1"
+### env() helper
 
-[auth]
-strategy           = "jwt"          # jwt | cookie | telegram
-jwt_secret_env     = "JWT_SECRET"   # name of env var holding the secret
-access_ttl_minutes = 30
-refresh_ttl_days   = 7
-cookie_name        = "session"      # cookie strategy only
-cookie_httponly    = true
-cookie_secure      = false          # true in production (HTTPS)
+```python
+from forgeapi import env
 
-[pagination]
-default_limit = 20
-max_limit     = 100
-
-[cache]
-driver    = "memory"                    # "memory" | "redis"
-prefix    = ""                          # key prefix applied to all keys
-ttl       = null                        # default TTL in seconds (null = no expiry)
-redis_url = "redis://localhost:6379/0"  # used when driver = "redis"
+env("APP_DEBUG", False)   # reads env var; casts "true"/"false"/"null"
+env("JWT_SECRET")         # → str | None
 ```
 
-All fields are optional — `Core` works without a config file using the defaults above.
+### Known sections
+
+```python
+# config/project.py
+from forgeapi import env
+config = {
+    "name": "my-app",
+    "version": "0.1.0",
+    "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "providers": [],                    # extra Provider classes / dotted paths
+}
+
+# config/structure.py
+config = {
+    "models_dir": "database/models",
+    "controllers_dir": "app/controllers",
+    "schemas_dir": "app/schemas",
+    "events_dir": "app/events",
+    "listeners_dir": "app/listeners",
+    "policies_dir": "app/policies",
+    "seeds_dir": "database/seeds",
+    "base_prefix": "/api/v1",
+}
+
+# config/http.py
+config = {
+    "cors": ["*"],
+    "rate_limit": 60,
+    "request_id": True,
+    "access_log": True,
+    "middleware": [],
+}
+
+# config/auth.py — see §5 for guard keys
+config = {
+    "default": "api",
+    "guards": {
+        "api": {"strategy": "jwt", "secret": env("JWT_SECRET"),
+                "model": "database.models.user.User"},
+    },
+}
+
+# config/pagination.py
+config = {"default_limit": 20, "max_limit": 100}
+
+# config/cache.py
+config = {"driver": "memory", "prefix": "", "ttl": None,
+          "redis_url": "redis://localhost:6379/0"}
+```
+
+### config/database.py
+
+The `TORTOISE_ORM` dict lives here — that's all the file needs. The loader
+derives the importable dotted path (`config.database.TORTOISE_ORM`) for the
+tortoise CLI from the file location (`config/` is a namespace package):
+
+```python
+# config/database.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TORTOISE_ORM = {
+    "connections": {
+        "default": os.getenv("DATABASE_URL", "sqlite://./db.sqlite3"),
+    },
+    "apps": {
+        "models": {
+            "models": ["database.models", "forgeapi.permissions.models"],
+            "default_connection": "default",
+            "migrations": "database.migrations",
+        }
+    },
+}
+```
+
+An explicit `config = {"tortoise_orm": "app.settings.TORTOISE_ORM"}` is only
+needed when the dict lives somewhere non-standard.
+
+### Custom sections
+
+Any extra file becomes a section, reachable with dot access:
+
+```python
+# config/services.py
+config = {"stripe": {"key": env("STRIPE_KEY")}}
+```
+
+```python
+core.config.get("services.stripe.key", default="")
+core.config.get("auth.guards.api.strategy")
+```
+
+Known sections are validated by Pydantic models; misconfiguration raises
+`ForgeAPIConfigError` with a hint. Feature enablement is decided by section
+**presence** — e.g. auth boots only when the project provides `config/auth.py`.
 
 ---
 
 ## 21. Telescope
 
-Debug-only request inspector activated by `Core(debug=True)`. **Never use in production.**
+Debug-only request inspector activated by `"debug": True` in `config/project.py`. **Never use in production.**
 
 ```python
-core = Core(app, debug=True)
+# config/project.py
+from forgeapi import env
+config = {"debug": env("APP_DEBUG", False)}
 ```
 
 Captures per request: SQL queries, log output, dispatched events, custom jobs. Up to **200** entries in a circular buffer.

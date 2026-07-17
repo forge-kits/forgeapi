@@ -1,4 +1,3 @@
-import pytest
 from forgeapi.settings.base import BaseAppSettings
 
 

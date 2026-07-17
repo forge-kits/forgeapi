@@ -7,8 +7,9 @@ import os
 import time
 from typing import Optional
 
-from fastapi import HTTPException, Request, Response
+from fastapi import Request, Response
 
+from forgeapi.exceptions import SessionExpiredError, SessionInvalidError
 from forgeapi.logging import log
 from .base import AuthStrategy
 from ..models import AuthUser
@@ -52,6 +53,37 @@ class CookieStrategy(AuthStrategy):
             strategy.delete_cookie(response)
             return {"ok": True}
     """
+
+    challenge = None  # cookie sessions have no standard WWW-Authenticate scheme
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "CookieStrategy":
+        """Build from a guard config dict.
+
+        Recognised keys: ``secret`` (raw value), ``secret_env`` (env var name,
+        default ``COOKIE_SECRET``), ``cookie_name``, ``max_age`` (seconds),
+        ``httponly``, ``secure``, ``samesite``.
+        """
+        from forgeapi.exceptions import ForgeAPIConfigError
+
+        env_name = cfg.get("secret_env", "COOKIE_SECRET")
+        secret = cfg.get("secret") or os.getenv(env_name, "")
+        if not secret:
+            raise ForgeAPIConfigError(
+                "Cookie secret is not set.",
+                hint=(
+                    f"Set the {env_name} environment variable, "
+                    "or add 'secret' to the guard config."
+                ),
+            )
+        return cls(
+            secret_key=secret,
+            cookie_name=cfg.get("cookie_name", "session"),
+            max_age=cfg.get("max_age", 3600),
+            httponly=cfg.get("httponly", True),
+            secure=cfg.get("secure", True),
+            samesite=cfg.get("samesite", "lax"),
+        )
 
     def __init__(
         self,
@@ -158,8 +190,9 @@ class CookieStrategy(AuthStrategy):
             if the cookie is absent.
 
         Raises:
-            :class:`fastapi.HTTPException` 401: If the cookie is present but
-                the signature does not match or the payload is malformed.
+            :class:`~forgeapi.exceptions.SessionExpiredError`: If the session expired.
+            :class:`~forgeapi.exceptions.SessionInvalidError`: If the cookie is
+                malformed or its signature does not match.
         """
         raw = request.cookies.get(self._cookie_name)
         if not raw:
@@ -169,7 +202,7 @@ class CookieStrategy(AuthStrategy):
         data = self._verify(raw)
         if data.get("exp", 0) <= time.time():
             _log.warning("Cookie auth rejected: session expired (sub=%s)", data.get("sub"))
-            raise HTTPException(status_code=401, detail="Session has expired")
+            raise SessionExpiredError("Session has expired")
         _log.debug("Cookie auth OK: user_id=%s", data.get("sub"))
         return AuthUser(
             id=data.get("sub"),
@@ -187,14 +220,14 @@ class CookieStrategy(AuthStrategy):
             payload, sig = cookie_value.rsplit(".", 1)
         except ValueError:
             _log.warning("Cookie auth rejected: malformed cookie value")
-            raise HTTPException(status_code=401, detail="Malformed session cookie")
+            raise SessionInvalidError("Malformed session cookie")
 
         if not hmac.compare_digest(self._sign(payload), sig):
             _log.warning("Cookie auth rejected: signature mismatch")
-            raise HTTPException(status_code=401, detail="Session cookie signature mismatch")
+            raise SessionInvalidError("Session cookie signature mismatch")
 
         try:
             return json.loads(base64.urlsafe_b64decode(payload + "==").decode())
         except (json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
             _log.warning("Cookie auth rejected: invalid session payload: %s", exc)
-            raise HTTPException(status_code=401, detail="Invalid session")
+            raise SessionInvalidError("Invalid session")

@@ -145,7 +145,7 @@ async def _truncate_all(config: dict) -> list[str]:
     return tables
 
 
-def run(config_path: str = "forgeapi.toml", force: bool = False) -> None:
+def run(config_path: str = "", force: bool = False) -> None:
     cfg = load_config(config_path)
     orm_path = cfg.database.tortoise_orm
 

@@ -7,8 +7,9 @@ from .models import AuthUser
 
 
 # ---------------------------------------------------------------------------
-# These resolve through the default guard of the global ``auth`` facade.
-# They are the recommended shorthand for single-guard applications.
+# Shorthand dependencies for single-guard applications.  Pure proxies to the
+# default guard of the global ``auth`` facade — no logic of their own, so
+# behaviour is always identical to guard("...").current_user().
 #
 # For multi-guard apps, use guard("name").current_user() instead:
 #
@@ -19,15 +20,12 @@ from .models import AuthUser
 
 async def _resolve_current(request: Request) -> AuthUser:
     from .facade import auth
-    return await auth._get(None)._authenticate(request, required=True)
+    return await auth.guard().authenticate(request, required=True)
 
 
 async def _resolve_optional(request: Request) -> Optional[AuthUser]:
     from .facade import auth
-    try:
-        return await auth._get(None)._authenticate(request, required=False)
-    except Exception:
-        return None
+    return await auth.guard().authenticate(request, required=False)
 
 
 CurrentUser = Annotated[AuthUser, Depends(_resolve_current)]
@@ -49,7 +47,9 @@ For a specific guard or a DB model result, use :func:`~forgeapi.auth.guard`::
 OptionalUser = Annotated[Optional[AuthUser], Depends(_resolve_optional)]
 """Optional authenticated user from the default guard.
 
-Returns ``None`` instead of raising 401::
+Returns ``None`` when credentials are absent.  Present-but-invalid
+credentials (expired token, bad signature) still raise 401 — a client
+sending broken credentials is a client bug, not an anonymous visitor::
 
     from forgeapi.auth import OptionalUser
 

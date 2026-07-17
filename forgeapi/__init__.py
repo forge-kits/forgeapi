@@ -1,5 +1,6 @@
 from .kit import Core
-from .config import KitConfig, load_config
+from .foundation import Provider
+from .config import KitConfig, load_config, env
 from .exceptions import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 from .settings import BaseAppSettings
 from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
@@ -15,8 +16,10 @@ from .cache import Cache
 __all__ = [
     # Facade
     "Core",
+    "Provider",
     "KitConfig",
     "load_config",
+    "env",
     # Exceptions
     "ForgeAPIError",
     "ForgeAPIConfigError",
@@ -70,15 +73,12 @@ def __getattr__(name: str):
 
     if name in _auth_exports:
         try:
-            from .auth import (  # noqa: F401
-                AuthBackend, CurrentUser, OptionalUser,
-                JWTStrategy, CookieStrategy, TelegramStrategy,
-            )
+            from . import auth as _auth_module
         except ImportError:
             raise ImportError(
                 f"'{name}' requires PyJWT. Install it: pip install forge-kits[auth]"
             )
-        return locals()[name]
+        return getattr(_auth_module, name)
 
     if name in _db_exports:
         try:
