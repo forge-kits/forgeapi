@@ -1,10 +1,10 @@
 from .kit import Core
 from .foundation import Provider
-from .config import KitConfig, load_config, env
+from .config import KitConfig, load_config, config_from_dict, env, StorageConfig
 from .exceptions import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 from .settings import BaseAppSettings
 from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
-from .database import ModelMixin
+from .database import ModelMixin, scope, ModelObserver
 from .events import Event, EventBus, listen, RedisBus
 from .controllers import Controller, route
 from .middleware import Middleware, Guard
@@ -12,13 +12,18 @@ from .logging import Log
 from .policies import Policy, gate
 from .support import Number, Str, Time
 from .cache import Cache
+from .storage import Storage, ImageProcessor
+from .scheduling import Scheduler
 
 __all__ = [
-    # Facade
+    # Core
     "Core",
     "Provider",
+    # Config
     "KitConfig",
+    "StorageConfig",
     "load_config",
+    "config_from_dict",
     "env",
     # Exceptions
     "ForgeAPIError",
@@ -32,6 +37,8 @@ __all__ = [
     "BaseUpdateSchema",
     # Database
     "ModelMixin",
+    "scope",
+    "ModelObserver",
     # Events
     "Event",
     "EventBus",
@@ -54,12 +61,17 @@ __all__ = [
     "Time",
     # Cache
     "Cache",
+    # Storage
+    "Storage",
+    "ImageProcessor",
+    # Scheduling
+    "Scheduler",
 ]
 
 
 def __getattr__(name: str):
     _auth_exports = {
-        "auth", "Auth", "guard", "Guard",
+        "auth", "Auth", "guard",
         "CurrentUser", "OptionalUser",
         "AuthUser", "TelegramUser",
         "JWTStrategy", "CookieStrategy", "TelegramStrategy",

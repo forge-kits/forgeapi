@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tortoise.manager import Manager
 from tortoise.queryset import QuerySet
@@ -11,6 +11,25 @@ if TYPE_CHECKING:
 
 
 class ForgeQuerySet(QuerySet):
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        model_class = self._model
+        for cls in model_class.__mro__:
+            scopes = cls.__dict__.get("_scopes", {})
+            if name in scopes:
+                fn = scopes[name]
+
+                def _caller(*args: Any, _fn: Any = fn, **kwargs: Any) -> Any:
+                    return _fn(self, *args, **kwargs)
+
+                _caller.__name__ = name
+                return _caller
+        raise AttributeError(
+            f"'{type(self).__name__}' object has no attribute '{name}'. "
+            f"To use '{name}' as a scope, decorate it with @scope on {model_class.__name__}."
+        )
     async def paginate(self, request: "Request", schema: type | None = None):
         from forgeapi.pagination.response import PaginatedResponse, PaginationMeta, PaginationLinks
         from forgeapi.pagination.paginator import Paginator

@@ -42,36 +42,45 @@
    - [generate:schema](#generateschema)
 10. [Policies](#10-policies)
 11. [ModelMixin](#11-modelmixin)
-12. [Permissions](#12-permissions)
+12. [Query Scopes](#12-query-scopes)
+13. [Model Observers](#13-model-observers)
+14. [Permissions](#14-permissions)
     - [Setup](#setup)
     - [PermissionsMixin](#permissionsmixin)
     - [Dependencies](#dependencies)
     - [Role and Permission models](#role-and-permission-models)
-13. [Cache](#13-cache)
+15. [Cache](#15-cache)
     - [Basic operations](#basic-operations)
     - [Common patterns](#common-patterns)
     - [Drivers](#drivers)
     - [Configuration](#cache-configuration)
-14. [Support](#14-support)
+16. [Storage](#16-storage)
+    - [Configuration](#storage-configuration)
+    - [Basic operations](#storage-basic-operations)
+    - [Multiple disks](#multiple-disks)
+    - [S3 / S3-compatible](#s3--s3-compatible)
+    - [ImageProcessor](#imageprocessor)
+17. [Support](#17-support)
     - [Number](#number)
     - [Str](#str)
     - [Time](#time)
-15. [Logger](#15-logger)
-16. [Middleware](#16-middleware)
+18. [Logger](#18-logger)
+19. [Middleware](#19-middleware)
     - [CORS](#cors)
     - [Rate limiting](#rate-limiting)
     - [Request ID](#request-id)
     - [Access logging](#access-logging)
-17. [Settings](#17-settings)
-18. [Seeders](#18-seeders)
-19. [CLI reference](#19-cli-reference)
-20. [Configuration reference (config/)](#20-configuration-reference-config)
-21. [Telescope](#21-telescope)
+20. [Settings](#20-settings)
+21. [Seeders](#21-seeders)
+22. [Scheduler](#22-scheduler)
+23. [CLI reference](#23-cli-reference)
+24. [Configuration reference (config/)](#24-configuration-reference-config)
+25. [Telescope](#25-telescope)
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
     - [Recording jobs](#recording-jobs)
-22. [MCP Server](#22-mcp-server)
+26. [MCP Server](#26-mcp-server)
     - [Install](#install)
     - [Global setup for Claude Code](#global-setup-for-claude-code)
     - [Per-project setup](#per-project-setup)
@@ -99,12 +108,15 @@ pip install forge-kits
 | `full-aiosqlite` | auth + aiosqlite | SQLite + JWT |
 | `full-aiomysql` | auth + aiomysql | MySQL + JWT |
 | `full` | auth + all three drivers | everything |
+| `s3` | `boto3` | S3 / MinIO / Cloudflare R2 storage driver |
+| `images` | `Pillow` | ImageProcessor helper |
 | `mcp` | `mcp` | forge-kits MCP server for AI-assisted development |
 
 ```bash
 pip install forge-kits[full-asyncpg]   # PostgreSQL + JWT
 pip install forge-kits[mcp]            # MCP server
 pip install forge-kits[redis]          # Redis cache / events
+pip install forge-kits[s3,images]      # S3 storage + image processing
 ```
 
 ```bash
@@ -127,13 +139,14 @@ After `forgeapi init my-project`:
 my-project/
   main.py                    # entry point — FastAPI app + Core(app)
   .env                       # secrets (JWT_SECRET, DB_* etc.)
-  config/                    # Laravel-style config directory (see §20)
+  config/                    # Laravel-style config directory (see §24)
     project.py               # name, debug, extra providers
     structure.py             # directory layout + base_prefix
     http.py                  # cors, rate_limit, request_id, access_log, middleware
     auth.py                  # named guards (jwt / cookie / telegram)
     pagination.py            # default_limit, max_limit
     database.py              # TORTOISE_ORM dict lives here
+    storage.py               # driver, root, base_url (or S3 config)
   app/
     controllers/             # *_controller.py files, auto-loaded by Core
     schemas/                 # Pydantic schemas
@@ -183,6 +196,7 @@ core = Core(app)
 |---|---|
 | Middleware stack | `config/http.py` (`cors`, `rate_limit`, `request_id`, `access_log`, `middleware`) |
 | Auth guards | `config/auth.py` exists |
+| Storage | `config/storage.py` exists — configures the `Storage` facade |
 | Controllers | `controllers_dir` exists — all `*_controller.py` imported recursively |
 | Event listeners | `listeners_dir` exists — all files imported |
 | Policies | `policies_dir` exists — all `*_policy.py` imported |
@@ -1033,8 +1047,9 @@ gate.discover("app/policies")   # imports all *_policy.py files
 `ModelMixin` adds ORM shortcuts and enables `.paginate()` on every QuerySet. Mix it alongside `tortoise.Model`:
 
 ```python
-from tortoise import fields, Model
+from tortoise import Model, fields
 from forgeapi import ModelMixin
+from forgeapi.database import scope
 
 class Post(ModelMixin, Model):
     id           = fields.IntField(pk=True)
@@ -1048,14 +1063,17 @@ class Post(ModelMixin, Model):
     class Meta:
         table = "posts"
 
-    @classmethod
-    def published(cls):
-        return cls.filter(is_published=True)
+    @scope
+    def published(qs):
+        return qs.filter(is_published=True)
 
-    @classmethod
-    def by_author(cls, author_id: int):
-        return cls.filter(author_id=author_id)
+    @scope
+    def by_author(qs, author_id: int):
+        return qs.filter(author_id=author_id)
 ```
+
+Use `@scope` (not `@classmethod`) for reusable filters — see §12 for details.
+`Post.observe(PostObserver)` registers lifecycle hooks — see §13.
 
 ### Methods
 
@@ -1119,7 +1137,104 @@ await post.update_from(payload)
 
 ---
 
-## 12. Permissions
+## 12. Query Scopes
+
+Laravel-style query scopes — reusable, chainable filters defined on the model.
+
+```python
+from tortoise import Model, fields
+from forgeapi.database import ModelMixin, scope
+
+class Post(ModelMixin, Model):
+    title = fields.CharField(max_length=255)
+    is_published = fields.BooleanField(default=False)
+    author_id = fields.IntField()
+
+    @scope
+    def published(qs):
+        return qs.filter(is_published=True)
+
+    @scope
+    def by_author(qs, author_id: int):
+        return qs.filter(author_id=author_id)
+```
+
+### Using scopes
+
+Call scopes directly on the queryset — they chain like regular filters:
+
+```python
+# class-level (creates a fresh queryset)
+posts = await Post.published()
+posts = await Post.by_author(42)
+
+# chaining
+posts = await Post.published().order_by("-created_at").limit(20)
+posts = await Post.all().published().by_author(42)
+```
+
+The `@scope` decorator registers the method in `_scopes` on the model class and
+makes it available on any queryset of that model via `__getattr__`.  No base
+queryset class change required.
+
+---
+
+## 13. Model Observers
+
+Lifecycle hooks fired by Tortoise signals — audit logs, cache invalidation,
+notifications — without scattering the logic across controllers.
+
+```python
+from forgeapi.database import ModelObserver
+
+class PostObserver(ModelObserver):
+    async def creating(self, instance, **kw): ...   # before first save
+    async def created(self, instance, **kw): ...    # after first save
+    async def updating(self, instance, **kw): ...   # before update save
+    async def updated(self, instance, **kw): ...    # after update save
+    async def saving(self, instance, **kw): ...     # before any save
+    async def saved(self, instance, **kw): ...      # after any save
+    async def deleting(self, instance, **kw): ...   # before delete
+    async def deleted(self, instance, **kw): ...    # after delete
+```
+
+Override only the hooks you need — `ModelObserver` provides empty defaults for
+all of them.
+
+### Registering
+
+```python
+# class-based (instantiated automatically)
+Post.observe(PostObserver)
+
+# instance-based (useful for inline/test observers)
+class _Audit(ModelObserver):
+    async def created(self, instance, **kw):
+        await AuditLog.create(action="post.created", target_id=instance.id)
+
+Post.observe(_Audit())
+```
+
+### Example — cache invalidation
+
+```python
+class PostObserver(ModelObserver):
+    async def saved(self, instance, **kw):
+        await Cache.forget(f"post:{instance.id}")
+        await Cache.forget("posts:index")
+
+    async def deleted(self, instance, **kw):
+        await Cache.forget(f"post:{instance.id}")
+
+Post.observe(PostObserver)
+```
+
+Register observers at startup (e.g. in `main.py` or a custom Provider's
+`boot()`) — before any requests arrive.
+
+---
+
+## 14. Permissions
 
 Spatie-style roles and permissions using polymorphic pivot tables.
 
@@ -1232,7 +1347,7 @@ users = await (await User.without_role("admin"))
 
 ---
 
-## 13. Cache
+## 15. Cache
 
 Async key-value cache. Two drivers: **memory** (default, no dependencies) and **redis** (persistent, shared across workers).
 
@@ -1331,7 +1446,130 @@ Cache.configure(driver="redis", prefix="myapp:", ttl=3600, redis_url="redis://lo
 
 ---
 
-## 14. Support
+## 16. Storage
+
+File storage abstraction with Local and S3-compatible drivers. Configured via
+`config/storage.py` — the `Storage` facade boots automatically when the file
+exists.
+
+### Storage configuration
+
+```python
+# config/storage.py
+from forgeapi import env
+
+config = {
+    "driver": "local",        # "local" | "s3"
+    "root": "storage/app",    # local: filesystem root
+    "base_url": "/storage",   # local: public URL prefix
+}
+```
+
+Install the storage extras when needed:
+
+```bash
+pip install forge-kits[s3]       # S3 / MinIO / Cloudflare R2
+pip install forge-kits[images]   # ImageProcessor (Pillow)
+```
+
+### Storage basic operations
+
+```python
+from forgeapi import Storage
+
+# write
+path = await Storage.put("avatars/user-1.jpg", image_bytes)
+
+# read
+data: bytes | None = await Storage.get("avatars/user-1.jpg")
+
+# check / delete
+exists: bool = await Storage.exists("avatars/user-1.jpg")
+await Storage.delete("avatars/user-1.jpg")
+
+# list
+files: list[str] = await Storage.list("avatars/")
+
+# public URL
+url: str = Storage.url("avatars/user-1.jpg")   # "/storage/avatars/user-1.jpg"
+```
+
+`put()` returns the stored path. `get()` returns `None` when the file is
+missing. All file I/O is non-blocking (`asyncio.to_thread`).
+
+### Multiple disks
+
+```python
+from forgeapi.storage import LocalDriver, S3Driver
+
+Storage.add_disk("public", LocalDriver(root="public/", base_url="/public"))
+Storage.add_disk("backups", S3Driver(bucket="my-backups", region="eu-central-1",
+                                     access_key="...", secret_key="..."))
+
+# switch disk
+await Storage.disk("backups").put("dump.sql.gz", data)
+url = Storage.disk("public").url("logo.png")
+```
+
+### S3 / S3-compatible
+
+```python
+# config/storage.py
+from forgeapi import env
+
+config = {
+    "driver": "s3",
+    "bucket": "my-bucket",
+    "region": "eu-central-1",
+    "access_key": env("AWS_ACCESS_KEY_ID"),
+    "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+    # MinIO / Cloudflare R2:
+    # "endpoint_url": env("S3_ENDPOINT_URL"),
+    # "acl": "public-read",
+}
+```
+
+`endpoint_url` makes it work with MinIO, Cloudflare R2, or any S3-compatible
+service — same API, different endpoint.
+
+### ImageProcessor
+
+Fluent image pipeline built on Pillow. Install: `pip install forge-kits[images]`
+
+```python
+from forgeapi import ImageProcessor
+
+# from raw bytes
+pipeline = ImageProcessor.process(raw_bytes)
+
+# from FastAPI UploadFile
+pipeline = await ImageProcessor.from_upload(upload_file)
+
+# transform
+pipeline = (
+    pipeline
+    .resize(800, 600)           # fit into 800×600 (preserves ratio)
+    .resize(800, 600, crop=True)# crop-fill to exact dimensions
+    .thumbnail(256)             # shrink to 256px max side
+    .quality(85)                # JPEG quality
+    .convert("WEBP")            # format conversion
+    .grayscale()                # desaturate
+)
+
+# get bytes
+data: bytes = pipeline.to_bytes()
+
+# store directly to Storage (returns stored path)
+path = await pipeline.store("avatars/user-1", extension="webp")
+path = await pipeline.store(directory="thumbs", extension="jpg")
+path = await pipeline.store("hero.jpg", disk="public")
+```
+
+Pillow is imported lazily — `ImportError` with a clear hint if not installed.
+
+---
+
+## 17. Support
 
 Utility helpers for formatting numbers, strings, and datetimes.
 
@@ -1431,7 +1669,7 @@ Time.end_of_day(dt)                   # 23:59:59.999999
 
 ---
 
-## 15. Logger
+## 18. Logger
 
 forge-kits includes a structured logger so you don't need to call `logging.getLogger(__name__)` everywhere.
 
@@ -1472,7 +1710,7 @@ auth_log.debug("Token decoded", user_id=42)
 
 ---
 
-## 16. Middleware
+## 19. Middleware
 
 Two extension points: **global middleware** wraps every request, **guards** scope to a route or controller.
 
@@ -1573,7 +1811,7 @@ config = {
 
 ---
 
-## 17. Settings
+## 20. Settings
 
 `BaseAppSettings` wraps `pydantic-settings` with `.env` file loading:
 
@@ -1598,7 +1836,7 @@ Settings(database_url='postgresql://...', jwt_secret='***', debug=True)
 
 ---
 
-## 18. Seeders
+## 21. Seeders
 
 Seeders populate the database with initial or test data.
 
@@ -1631,7 +1869,83 @@ forgeapi db:seed User Post    # run in order
 
 ---
 
-## 19. CLI reference
+## 22. Scheduler
+
+Code-based task scheduler — define recurring jobs in Python, run a background
+worker in the FastAPI lifespan. No database or external queue required.
+
+```bash
+pip install forge-kits   # Scheduler is included in the base package
+```
+
+### Defining jobs
+
+```python
+from forgeapi import Scheduler
+
+scheduler = Scheduler()
+
+scheduler.call(send_daily_report).daily_at("09:00")
+scheduler.call(cleanup_temp_files).every(30)          # every 30 minutes
+scheduler.call(weekly_backup).weekly_on("sunday", at="03:00")
+scheduler.call(sync_rates).hourly()
+scheduler.call(health_ping).every_minute()
+```
+
+All callables — sync or async — are accepted:
+
+```python
+async def send_daily_report():
+    users = await User.filter(newsletter=True).all()
+    ...
+
+scheduler.call(send_daily_report).daily_at("07:00").name("newsletter")
+```
+
+### Timing methods
+
+| Method | When it runs |
+|---|---|
+| `.every_minute()` | Every minute |
+| `.every(n)` | Every *n* minutes |
+| `.hourly()` | Every hour |
+| `.every_hours(n)` | Every *n* hours |
+| `.daily()` | Daily at midnight |
+| `.daily_at("HH:MM")` | Daily at the given time |
+| `.weekly()` | Every Monday at midnight |
+| `.weekly_on("day", at="HH:MM")` | Named weekday at the given time |
+
+`.name("label")` overrides the display label in logs (defaults to function name).
+
+### FastAPI lifespan integration
+
+```python
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from forgeapi import Core, Scheduler
+
+scheduler = Scheduler()
+scheduler.call(cleanup).every(15)
+scheduler.call(report).daily_at("08:00")
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(scheduler.run())
+    yield
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+app = FastAPI(lifespan=lifespan)
+core = Core(app)
+```
+
+`scheduler.run()` loops indefinitely, sleeping until the next due job.
+Cancelling the task on shutdown ensures a clean exit.
+
+---
+
+## 23. CLI reference
 
 ```bash
 forgeapi --help
@@ -1703,7 +2017,7 @@ forgeapi models    # list all Tortoise model classes, tables, and fields
 
 ---
 
-## 20. Configuration reference (config/)
+## 24. Configuration reference (config/)
 
 The only config format is a **`config/` directory of Python dict files**
 (Laravel-style). Each `config/<section>.py` defines a module-level
@@ -1769,6 +2083,20 @@ config = {"default_limit": 20, "max_limit": 100}
 # config/cache.py
 config = {"driver": "memory", "prefix": "", "ttl": None,
           "redis_url": "redis://localhost:6379/0"}
+
+# config/storage.py
+config = {
+    "driver": "local",        # "local" | "s3"
+    "root": "storage/app",    # local: filesystem root
+    "base_url": "/storage",   # local: public URL prefix
+    # S3 / MinIO / R2:
+    # "bucket": "my-bucket",
+    # "region": "us-east-1",
+    # "access_key": env("AWS_ACCESS_KEY_ID"),
+    # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+    # "endpoint_url": "",     # MinIO / R2 endpoint
+    # "acl": "public-read",
+}
 ```
 
 ### config/database.py
@@ -1821,7 +2149,7 @@ Known sections are validated by Pydantic models; misconfiguration raises
 
 ---
 
-## 21. Telescope
+## 25. Telescope
 
 Debug-only request inspector activated by `"debug": True` in `config/project.py`. **Never use in production.**
 
@@ -1876,7 +2204,7 @@ No-op when called outside a Telescope request context.
 
 ---
 
-## 22. MCP Server
+## 26. MCP Server
 
 forge-kits ships an MCP server that gives AI assistants (Claude Code, Cursor, etc.) direct access to API docs, code generation tools, and project structure scanning — without reading source files.
 
@@ -2009,6 +2337,10 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 | `config` | forgeapi.toml full reference |
 | `models` | ModelMixin, Tortoise field types, relationships |
 | `cache` | Cache facade, drivers, remember/pull/increment |
+| `storage` | Storage facade, LocalDriver, S3Driver, ImageProcessor |
+| `scheduler` | Scheduler, ScheduledJob, timing methods, lifespan integration |
+| `scopes` | @scope decorator, queryset chaining |
+| `observers` | ModelObserver, lifecycle hooks |
 | `support` | Number, Str, Time helpers |
 | `tortoise` | Basic CRUD, filter, order, async gather |
 | `tortoise_advanced` | Q objects, prefetch_related, transactions, raw SQL |
@@ -2025,6 +2357,9 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 | `pagination` | QuerySet .paginate() with filters |
 | `guard` | API key, active-user, admin guards |
 | `cache` | remember, pull, counters in a controller |
+| `storage` | upload, resize, store, S3 config |
+| `observer` | audit log, cache invalidation on model events |
+| `scheduler` | lifespan task worker with daily/weekly jobs |
 
 #### generate_controller
 

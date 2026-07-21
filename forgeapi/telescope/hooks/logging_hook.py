@@ -6,6 +6,7 @@ from ..context import get_current
 from ..store import LogRecord
 
 _INSTALLED = False
+_formatter = logging.Formatter()
 
 
 class DebugLogHandler(logging.Handler):
@@ -26,7 +27,7 @@ class DebugLogHandler(logging.Handler):
             level=record.levelname,
             logger=record.name,
             message=self.format(record),
-            time=self.formatTime(record),
+            time=_formatter.formatTime(record),
         ))
 
 

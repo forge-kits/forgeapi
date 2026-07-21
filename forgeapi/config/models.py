@@ -109,6 +109,34 @@ class CacheConfig(BaseModel):
     redis_url: str = "redis://localhost:6379/0"
 
 
+class StorageConfig(BaseModel):
+    """The ``storage`` config section (``config/storage.py``)::
+
+        config = {
+            "driver": "local",        # "local" | "s3"
+            "root": "storage/app",    # local: filesystem root
+            "base_url": "/storage",   # local: public URL prefix
+            # S3 / MinIO / Cloudflare R2:
+            # "bucket": "my-bucket",
+            # "region": "us-east-1",
+            # "access_key": env("AWS_ACCESS_KEY_ID"),
+            # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+            # "endpoint_url": "",     # MinIO: "http://localhost:9000"
+            # "acl": "",
+        }
+    """
+
+    driver: str = "local"
+    root: str = "storage/app"
+    base_url: str = "/storage"
+    bucket: str = ""
+    region: str = "us-east-1"
+    access_key: str = ""
+    secret_key: str = ""
+    endpoint_url: str = ""
+    acl: str = ""
+
+
 class KitConfig(BaseModel):
     """Validated application config.
 
@@ -126,6 +154,7 @@ class KitConfig(BaseModel):
     pagination: PaginationConfig = PaginationConfig()
     database: DatabaseConfig = DatabaseConfig()
     cache: CacheConfig = CacheConfig()
+    storage: StorageConfig = StorageConfig()
 
     # section names the user actually provided (vs. pure defaults) —
     # feature enablement is decided by presence, e.g. auth boots only

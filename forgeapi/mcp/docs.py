@@ -67,6 +67,40 @@ await post.update_from_dict(payload.model_dump(exclude_none=True)).save()
 await Post.filter(author_id=1).update(is_active=False); await post.delete()
 ```
 
+## Storage | ImageProcessor
+```python
+from forgeapi import Storage, ImageProcessor
+path = await Storage.put("files/doc.pdf", data)
+data = await Storage.get("files/doc.pdf")   # bytes | None
+url  = Storage.url("files/doc.pdf")
+# Image upload + resize
+path = await (await ImageProcessor.from_upload(file)).resize(256, 256, crop=True).store("avatars/1", extension="webp")
+```
+
+## Scheduler
+```python
+from forgeapi import Scheduler
+scheduler = Scheduler()
+scheduler.call(cleanup).every(30)          # every 30 min
+scheduler.call(report).daily_at("09:00")
+scheduler.call(backup).weekly_on("sunday", at="03:00")
+# in lifespan: task = asyncio.create_task(scheduler.run())
+```
+
+## Query Scopes | Observers
+```python
+from forgeapi.database import scope, ModelObserver
+class Post(ModelMixin, Model):       # ALWAYS inherit both ModelMixin AND Model
+    @scope
+    def published(qs): return qs.filter(is_published=True)
+
+posts = await Post.all().published().order_by("-created_at")
+
+class PostObserver(ModelObserver):
+    async def saved(self, instance, **kw): await Cache.forget(f"post:{instance.id}")
+Post.observe(PostObserver)
+```
+
 ## CLI
 ```bash
 forgeapi make:controller Post && forgeapi make:model Post
@@ -139,69 +173,91 @@ forgeapi generate:schema Post --payload --response
 
 Import: `from forgeapi import Core`
 
-## Constructor signature
+## Constructor
+
 ```python
-Core(
-    app: FastAPI,
-    *,
-    auth: bool | str = False,        # False | True | "jwt" | "cookie" | "telegram"
-    cors: bool | list[str] = False,  # False | True | ["https://example.com"]
-    rate_limit: bool | int = False,  # False | True (=60) | int (req/min)
-    pagination: bool | int = False,  # False | True | int (default_limit)
-    request_id: bool = False,        # inject X-Request-ID header
-    events: bool = False,            # auto-load listeners from listeners_dir
-    access_log: bool = True,         # log every request
-    controllers: bool = True,        # auto-discover *_controller.py
-    permissions: bool | type | None = None,  # True=auto-detect, or pass User model
-    middleware: list | None = None,  # [(MiddlewareClass, {kwargs}), ...]
-    debug: bool = False,             # Telescope UI at /_forge/telescope/requests
-    config_path: str = "forgeapi.toml",
-)
+Core(app: FastAPI, *, config: KitConfig | None = None)
 ```
 
-## Full main.py pattern
+**One argument.** Everything is config-driven — what runs depends on which
+files exist in `config/`. `forgeapi.toml` is no longer supported.
+
+## Minimal main.py
+
 ```python
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from forgeapi import Core
 from tortoise.contrib.fastapi import register_tortoise
-from app.config import TORTOISE_ORM
+from config.database import TORTOISE_ORM
 
-@asynccontextmanager
-async def lifespan(app):
-    yield
+app = FastAPI()
+core = Core(app)   # all wiring from config/
 
-app = FastAPI(lifespan=lifespan)
-
-core = Core(
-    app,
-    auth="jwt",
-    cors=["*"],
-    rate_limit=60,
-    pagination=20,
-    request_id=True,
-    events=True,
-    permissions=True,
-)
-
-register_tortoise(
-    app,
-    config=TORTOISE_ORM,
-    generate_schemas=False,
-    add_exception_handlers=True,
-)
+register_tortoise(app, config=TORTOISE_ORM, generate_schemas=False, add_exception_handlers=True)
 ```
 
-## Notes
-- `controllers=True` is the default; auto-discovers every `*_controller.py` in
-  `structure.controllers_dir` (recursive). Routes are prefixed with `base_prefix`.
-- `auth=True` reads `strategy` from forgeapi.toml `[auth]` section.
-- `permissions=True` scans `models_dir` for the first `PermissionsMixin` subclass.
-  Use `permissions=User` to pass the model explicitly.
-- `Core.use(MiddlewareClass, **kwargs)` adds middleware after construction.
-- `Core.include_router(router, prefix="")` prepends `base_prefix`.
-- `core.auth` — the `Auth` facade instance, or `None`.
-- `core.config` — the loaded `KitConfig`.
+## What boots when
+
+| Module | Activated by |
+|---|---|
+| Middleware | `config/http.py` — cors, rate_limit, request_id, access_log |
+| Auth guards | `config/auth.py` exists |
+| Storage | `config/storage.py` exists |
+| Controllers | `controllers_dir` exists — all `*_controller.py` auto-imported |
+| Event listeners | `listeners_dir` exists |
+| Policies | `policies_dir` exists |
+| Permissions | any model inherits `PermissionsMixin` — auto-detected |
+| Telescope | `"debug": True` in `config/project.py` |
+| Pagination, Cache | always configured (defaults or from their sections) |
+| Custom providers | `"providers"` list in `config/project.py` |
+
+## config/ directory
+
+Each `config/<section>.py` defines `config = {...}`. Section name = filename.
+All sections are optional. Unknown sections become custom config accessible via
+`core.config.get("section.key")`.
+
+```python
+# config/project.py
+from forgeapi import env
+config = {"name": "My App", "debug": env("APP_DEBUG", False), "providers": []}
+
+# config/http.py
+config = {"cors": ["*"], "rate_limit": 60, "request_id": True, "access_log": True}
+
+# config/auth.py
+config = {"default": "api", "guards": {
+    "api": {"strategy": "jwt", "secret": env("JWT_SECRET")}
+}}
+
+# config/storage.py
+config = {"driver": "local", "root": "storage/app", "base_url": "/storage"}
+
+# config/database.py — TORTOISE_ORM lives here (no config dict needed)
+TORTOISE_ORM = {"connections": {...}, "apps": {...}}
+```
+
+## Custom providers
+
+```python
+from forgeapi import Provider
+
+class MetricsProvider(Provider):
+    def register(self) -> None: ...   # wiring — no user imports here
+    def boot(self) -> None: ...       # discovery — runs after all register()s
+```
+
+Register in `config/project.py`: `config = {"providers": [MetricsProvider]}`
+
+## Post-setup API
+
+```python
+core.auth       # Auth facade | None (None when config/auth.py absent)
+core.config     # KitConfig — access any section
+core.providers  # list of active Provider instances
+core.use(MiddlewareClass, **kwargs)          # add middleware after boot
+core.include_router(router, prefix="/")     # prepends base_prefix
+```
 
 ## Running the dev server
 
@@ -1062,6 +1118,265 @@ rows = await conn.execute_query_dict(
 ```
 """,
 
+"storage": """\
+# forge-kits: Storage
+
+Import: `from forgeapi import Storage`
+Install extras: `pip install forge-kits[s3]` (S3) / `pip install forge-kits[images]` (Pillow)
+
+## Configuration (config/storage.py)
+```python
+from forgeapi import env
+
+config = {
+    "driver": "local",        # "local" | "s3"
+    "root": "storage/app",    # local: filesystem root
+    "base_url": "/storage",   # local: public URL prefix
+    # S3 / MinIO / Cloudflare R2:
+    # "bucket": "my-bucket",
+    # "region": "us-east-1",
+    # "access_key": env("AWS_ACCESS_KEY_ID"),
+    # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+    # "endpoint_url": "",
+}
+```
+
+## Basic operations
+```python
+path  = await Storage.put("avatars/user-1.jpg", image_bytes)   # → stored path
+data  = await Storage.get("avatars/user-1.jpg")                 # → bytes | None
+ok    = await Storage.exists("avatars/user-1.jpg")              # → bool
+await Storage.delete("avatars/user-1.jpg")
+files = await Storage.list("avatars/")                          # → list[str]
+url   = Storage.url("avatars/user-1.jpg")                       # → "/storage/avatars/..."
+```
+
+## Multiple disks
+```python
+from forgeapi.storage import LocalDriver, S3Driver
+
+Storage.add_disk("public", LocalDriver(root="public/", base_url="/public"))
+Storage.add_disk("backups", S3Driver(bucket="my-backups", region="eu-central-1",
+                                     access_key="...", secret_key="..."))
+
+await Storage.disk("backups").put("dump.sql.gz", data)
+url = Storage.disk("public").url("logo.png")
+```
+
+## ImageProcessor (Pillow)
+```python
+from forgeapi import ImageProcessor
+
+# from bytes or FastAPI UploadFile
+pipeline = ImageProcessor.process(raw_bytes)
+pipeline = await ImageProcessor.from_upload(upload_file)
+
+# transform (fluent, returns self)
+pipeline.resize(800, 600)            # fit (preserves ratio)
+pipeline.resize(800, 600, crop=True) # crop-fill to exact size
+pipeline.thumbnail(256)              # shrink to 256px max side
+pipeline.quality(85)                 # JPEG quality
+pipeline.convert("WEBP")             # format conversion
+pipeline.grayscale()                 # desaturate
+
+# output
+data: bytes = pipeline.to_bytes()
+
+# store directly (returns stored path)
+path = await pipeline.store("avatars/user-1", extension="webp")
+path = await pipeline.store(directory="thumbs", extension="jpg")
+path = await pipeline.store("hero.jpg", disk="public")
+```
+
+## Upload + resize pattern (controller)
+```python
+@route.post("/avatar", status_code=201)
+async def upload_avatar(self, file: UploadFile, user: CurrentUser) -> dict:
+    path = await (await ImageProcessor.from_upload(file)) \\
+        .resize(256, 256, crop=True) \\
+        .store(f"avatars/{user.id}", extension="webp")
+    return {"url": Storage.url(path)}
+```
+""",
+
+"scheduler": """\
+# forge-kits: Scheduler
+
+Import: `from forgeapi import Scheduler`
+
+## Setup
+```python
+from forgeapi import Scheduler
+
+scheduler = Scheduler()
+scheduler.call(send_report).daily_at("09:00")
+scheduler.call(cleanup).every(30)                        # every 30 min
+scheduler.call(backup).weekly_on("sunday", at="03:00")
+scheduler.call(sync).hourly()
+scheduler.call(ping).every_minute()
+```
+
+## Timing methods
+| Method | When |
+|---|---|
+| `.every_minute()` | Every minute |
+| `.every(n)` | Every n minutes |
+| `.hourly()` | Every hour |
+| `.every_hours(n)` | Every n hours |
+| `.daily()` | Daily at midnight |
+| `.daily_at("HH:MM")` | Daily at given time |
+| `.weekly()` | Monday midnight |
+| `.weekly_on("day", at="HH:MM")` | Named weekday at given time |
+| `.name("label")` | Override log label |
+
+Days for weekly_on: monday, tuesday, wednesday, thursday, friday, saturday, sunday
+
+## Async callables
+Both sync and async are accepted:
+```python
+async def send_report():
+    users = await User.filter(newsletter=True)
+    ...
+
+scheduler.call(send_report).daily_at("07:00").name("newsletter")
+```
+
+## FastAPI lifespan
+```python
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from forgeapi import Core, Scheduler
+
+scheduler = Scheduler()
+scheduler.call(cleanup).every(15)
+scheduler.call(report).daily_at("08:00")
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(scheduler.run())
+    yield
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+app = FastAPI(lifespan=lifespan)
+core = Core(app)
+```
+
+`scheduler.run()` loops indefinitely; cancel on shutdown for clean exit.
+On job failure the error is logged and next_run advances to avoid tight retry loops.
+""",
+
+"scopes": """\
+# forge-kits: Query Scopes
+
+Import: `from forgeapi.database import scope`
+
+## Define
+```python
+from tortoise import Model, fields
+from forgeapi import ModelMixin
+from forgeapi.database import scope
+
+class Post(ModelMixin, Model):
+    is_published = fields.BooleanField(default=False)
+    author_id    = fields.IntField()
+
+    @scope
+    def published(qs):
+        return qs.filter(is_published=True)
+
+    @scope
+    def by_author(qs, author_id: int):
+        return qs.filter(author_id=author_id)
+```
+
+IMPORTANT: `@scope` functions receive the queryset as first arg (not `cls`/`self`).
+The model must inherit both `ModelMixin` AND `Model` — `class Post(ModelMixin, Model)`.
+
+## Use
+```python
+# class-level call → fresh queryset
+posts = await Post.published()
+posts = await Post.by_author(42)
+
+# chain on any queryset
+posts = await Post.all().published().by_author(42).order_by("-created_at").limit(20)
+posts = await Post.filter(is_active=True).published()
+```
+
+## How it works
+`@scope` registers the function in `model._scopes`. `ForgeQuerySet.__getattr__`
+looks it up and injects the queryset as the first argument. Works through
+inheritance — subclass scopes are found via `__mro__` traversal.
+""",
+
+"observers": """\
+# forge-kits: Model Observers
+
+Import: `from forgeapi.database import ModelObserver`
+
+## Define
+```python
+from forgeapi.database import ModelObserver
+
+class PostObserver(ModelObserver):
+    async def creating(self, instance, **kw): ...   # before first save
+    async def created(self, instance, **kw): ...    # after first save
+    async def updating(self, instance, **kw): ...   # before update save
+    async def updated(self, instance, **kw): ...    # after update save
+    async def saving(self, instance, **kw): ...     # before any save (create OR update)
+    async def saved(self, instance, **kw): ...      # after any save
+    async def deleting(self, instance, **kw): ...   # before delete
+    async def deleted(self, instance, **kw): ...    # after delete
+```
+
+Override only the hooks you need. All methods are optional.
+
+## Register
+```python
+# class — auto-instantiated
+Post.observe(PostObserver)
+
+# instance
+Post.observe(PostObserver())
+```
+
+Register at startup — before first request (e.g. in main.py or a Provider's `boot()`).
+
+## Cache invalidation example
+```python
+from forgeapi import Cache
+from forgeapi.database import ModelObserver
+
+class PostObserver(ModelObserver):
+    async def saved(self, instance, **kw):
+        await Cache.forget(f"post:{instance.id}")
+        await Cache.forget("posts:index")
+
+    async def deleted(self, instance, **kw):
+        await Cache.forget(f"post:{instance.id}")
+
+Post.observe(PostObserver)
+```
+
+## Audit log example
+```python
+class PostObserver(ModelObserver):
+    async def created(self, instance, **kw):
+        await AuditLog.create(model="Post", action="created", record_id=instance.id)
+
+    async def deleted(self, instance, **kw):
+        await AuditLog.create(model="Post", action="deleted", record_id=instance.id)
+```
+
+## How it works
+Uses Tortoise ORM signals (`pre_save`, `post_save`, `pre_delete`, `post_delete`).
+`creating`/`updating` are derived from `pre_save` using `instance._saved_in_db`.
+Partial observers (only some hooks defined) are handled — only relevant signals
+are registered.
+""",
+
 }
 
 
@@ -1077,8 +1392,8 @@ def get_docs(topic: str) -> str:
 
     Topics (lightest → heaviest):
       cheatsheet, workflow, pagination, config, schemas, middleware,
-      core, cli, auth, permissions, policies, cache, support,
-      controllers, events, tortoise, tortoise_advanced, models
+      core, cli, auth, permissions, policies, cache, storage, scheduler,
+      scopes, observers, support, controllers, events, tortoise, tortoise_advanced, models
 
     Args:
         topic: One of the topic names listed above (case-insensitive).

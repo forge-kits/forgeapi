@@ -38,6 +38,22 @@ config = {
 }
 '''
 
+_CONFIG_STORAGE_TEMPLATE = '''\
+from forgeapi import env
+
+config = {
+    "driver": "local",        # "local" | "s3"
+    "root": "storage/app",    # local: filesystem root
+    "base_url": "/storage",   # local: public URL prefix
+    # S3 / MinIO / Cloudflare R2:
+    # "bucket": "my-bucket",
+    # "region": "us-east-1",
+    # "access_key": env("AWS_ACCESS_KEY_ID"),
+    # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+    # "endpoint_url": "",     # MinIO / R2 endpoint
+}
+'''
+
 _CONFIG_AUTH_TEMPLATES = {
     "jwt": '''\
 from forgeapi import env
@@ -213,12 +229,26 @@ _ENV_VARS = {
 }
 
 _MAIN_TEMPLATE = """\
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from forgeapi import Core
 from tortoise.contrib.fastapi import register_tortoise
 from config.database import TORTOISE_ORM
 
-app = FastAPI()
+# Optional: uncomment to enable task scheduling
+# from forgeapi import Scheduler
+# scheduler = Scheduler()
+# scheduler.call(lambda: print("tick")).hourly()
+
+@asynccontextmanager
+async def lifespan(app):
+    # Optional: uncomment to start the scheduler
+    # task = asyncio.create_task(scheduler.run())
+    yield
+    # task.cancel()
+
+app = FastAPI(lifespan=lifespan)
 
 core = Core(app)   # everything is wired from config/
 
@@ -299,6 +329,7 @@ def run(name: str) -> None:
     _write(root / "config/http.py", _CONFIG_HTTP_TEMPLATE, name, typer)
     _write(root / "config/auth.py", _CONFIG_AUTH_TEMPLATES[strategy], name, typer)
     _write(root / "config/pagination.py", _CONFIG_PAGINATION_TEMPLATE, name, typer)
+    _write(root / "config/storage.py", _CONFIG_STORAGE_TEMPLATE, name, typer)
     _write(
         root / "config/database.py",
         _CONFIG_DATABASE_TEMPLATES[driver].format(name=name),

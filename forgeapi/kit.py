@@ -23,6 +23,7 @@ class Core:
 
     * middleware stack        — ``config/http.py`` (cors, rate_limit, ...)
     * auth guards             — boot when ``config/auth.py`` exists
+    * storage                 — boot when ``config/storage.py`` exists
     * Telescope               — ``"debug": True`` in ``config/project.py``
     * permissions             — boot when a model in ``models_dir`` inherits ``PermissionsMixin``
     * controllers / listeners / policies — boot when their directory exists
@@ -36,11 +37,13 @@ class Core:
 
     Args:
         app: The FastAPI application to configure.
+        config: Optional pre-built :class:`~forgeapi.config.KitConfig`.
+                When omitted, ``load_config()`` reads from ``config/``.
     """
 
-    def __init__(self, app: FastAPI) -> None:
+    def __init__(self, app: FastAPI, *, config: "KitConfig | None" = None) -> None:
         self._app = app
-        self._cfg: KitConfig = load_config()
+        self._cfg: KitConfig = config or load_config()
         self._debug = self._cfg.project.debug
 
         if self._cfg.project.name:
@@ -78,6 +81,10 @@ class Core:
 
         from .cache.provider import CacheProvider
         add(CacheProvider(app, cfg))
+
+        if cfg.provided("storage"):
+            from .storage.provider import StorageProvider
+            add(StorageProvider(app, cfg))
 
         from .events.provider import EventProvider
         add(EventProvider(app, cfg))

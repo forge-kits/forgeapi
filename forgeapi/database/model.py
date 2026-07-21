@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 if TYPE_CHECKING:
     from pydantic import BaseModel as PydanticModel
+    from .observer import ModelObserver
 
 
 class ModelMixin:
@@ -77,6 +78,24 @@ class ModelMixin:
     # ------------------------------------------------------------------
     # Instance methods
     # ------------------------------------------------------------------
+
+    @classmethod
+    def observe(cls, observer: "ModelObserver | type[ModelObserver]") -> None:
+        """Register an observer for this model's lifecycle events.
+
+        Accepts either a class (auto-instantiated) or an instance::
+
+            Post.observe(PostObserver)    # class — instantiated automatically
+            Post.observe(PostObserver())  # or pass an instance directly
+
+        Args:
+            observer: A :class:`~forgeapi.database.observer.ModelObserver`
+                subclass or instance. Only the methods you define are called.
+        """
+        from .observer import _register_observer, ModelObserver as _Base
+        if isinstance(observer, type) and issubclass(observer, _Base):
+            observer = observer()
+        _register_observer(cls, observer)
 
     async def update_from(self, payload: "PydanticModel", **extra: Any) -> "ModelMixin":
         """Update this instance from a Pydantic schema and save.

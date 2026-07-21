@@ -28,6 +28,8 @@ full-aiosqlite = ["forge-kits[auth,aiosqlite]"]
 full-aiomysql = ["forge-kits[auth,aiomysql]"]
 full          = ["forge-kits[auth,asyncpg,aiosqlite,aiomysql]"]
 mcp           = ["mcp>=1.0"]
+s3            = ["boto3>=1.26"]
+images        = ["Pillow>=10.0"]
 
 [project.scripts]
 forgeapi     = "forgeapi.cli.main:app"
