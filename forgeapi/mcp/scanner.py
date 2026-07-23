@@ -312,7 +312,7 @@ def scan_project(path: str = ".") -> str:
     }
     struct      = {**defaults, **raw.get("structure", {})}
     proj        = raw.get("project", {})
-    auth        = {**{"strategy": "jwt"}, **raw.get("auth", {})}
+    auth        = {**{"strategy": "cookie"}, **raw.get("auth", {})}
     base_prefix = struct["base_prefix"]
 
     sections: list[str] = [
@@ -387,7 +387,7 @@ def project_info(path: str = ".") -> str:
     }
     struct = {**defaults, **raw.get("structure", {})}
     proj   = raw.get("project", {})
-    auth   = {**{"strategy": "jwt", "jwt_secret_env": "JWT_SECRET", "access_ttl_minutes": 30}, **raw.get("auth", {})}
+    auth   = {**{"strategy": "cookie"}, **raw.get("auth", {})}
     pag    = {**{"default_limit": 20, "max_limit": 100}, **raw.get("pagination", {})}
 
     lines = [
@@ -404,9 +404,7 @@ def project_info(path: str = ".") -> str:
 
     lines += [
         "", "## Auth",
-        f"  strategy           = {auth['strategy']!r}",
-        f"  jwt_secret_env     = {auth['jwt_secret_env']!r}",
-        f"  access_ttl_minutes = {auth['access_ttl_minutes']}",
+        f"  strategy = {auth['strategy']!r}",
         "", "## Pagination",
         f"  default_limit = {pag['default_limit']}",
         f"  max_limit     = {pag['max_limit']}",

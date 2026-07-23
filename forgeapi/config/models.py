@@ -44,6 +44,7 @@ class StructureConfig(BaseModel):
     policies_dir: str = "app/policies"
     seeds_dir: str = "database/seeds"
     base_prefix: str = "/api/v1"
+    schedule_file: str = "schedule.py"
 
 
 class AuthConfig(BaseModel):
@@ -52,14 +53,14 @@ class AuthConfig(BaseModel):
         config = {
             "default": "api",
             "guards": {
-                "api":   {"strategy": "jwt", "secret": env("JWT_SECRET"),
+                "api":   {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
                           "model": "database.models.user.User"},
-                "admin": {"strategy": "jwt", "secret": env("ADMIN_JWT_SECRET"),
+                "admin": {"strategy": "cookie", "secret": env("ADMIN_COOKIE_SECRET"),
                           "model": "database.models.admin.Admin"},
             },
         }
 
-    Guard dict keys: ``strategy`` (jwt | cookie | telegram | custom name
+    Guard dict keys: ``strategy`` (cookie | telegram | custom name
     registered via ``auth.extend()``), optional ``model`` (dotted path to the
     user model), plus the strategy's ``from_config`` keys.
     """

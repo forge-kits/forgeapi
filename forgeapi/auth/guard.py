@@ -5,7 +5,7 @@ from fastapi import Depends, HTTPException, Request
 from forgeapi.exceptions import ForgeAPIAuthError
 from forgeapi.logging import log
 
-from .contracts import RefreshCapable, SessionIssuer, TokenIssuer
+from .contracts import SessionIssuer
 
 if TYPE_CHECKING:
     from .strategies.base import AuthStrategy
@@ -16,23 +16,23 @@ _log = log.channel("auth.guard")
 class Guard:
     """Named authentication context — strategy + optional DB model.
 
-    Each guard has its own strategy (JWT, Cookie, Telegram, custom) and
+    Each guard has its own strategy (Cookie, Telegram, custom) and
     optionally resolves the authenticated token to a real DB model instance.
 
     The guard is the **only** layer that speaks HTTP: strategies raise
     :class:`~forgeapi.exceptions.ForgeAPIAuthError` subclasses, and
     :meth:`authenticate` translates them to 401 responses with a uniform
-    shape.  Capabilities (tokens, sessions) are dispatched via the protocols
+    shape.  Capabilities (sessions) are dispatched via the protocols
     in :mod:`forgeapi.auth.contracts`, so custom strategies that implement
     them work automatically.
 
     Configure in code::
 
         from forgeapi.auth import auth, Guard
-        from forgeapi.auth.strategies import JWTStrategy
+        from forgeapi.auth.strategies import CookieStrategy
 
-        api_guard = Guard("api", JWTStrategy(secret_key="..."), user_model=User)
-        auth.register("api", api_guard)
+        api_guard = Guard("web", CookieStrategy(secret="..."), user_model=User)
+        auth.register("web", api_guard)
 
     Usage in controllers::
 
@@ -164,54 +164,19 @@ class Guard:
     # ------------------------------------------------------------------
 
     def token(self, user: Any) -> str:
-        """Create an access token (or signed session value) for *user*.
-
-        Works with any strategy implementing
-        :class:`~forgeapi.auth.contracts.TokenIssuer` or
-        :class:`~forgeapi.auth.contracts.SessionIssuer`.
+        """Create a signed session value for *user* (``SessionIssuer`` strategies).
 
         Example::
 
-            token = guard("api").token(user)
+            token = guard("web").token(user)
         """
         payload = self._build_payload(user)
-        if isinstance(self._strategy, TokenIssuer):
-            return self._strategy.create_access_token(payload)
         if isinstance(self._strategy, SessionIssuer):
             return self._strategy.create_session(payload)
         raise NotImplementedError(
             f"token() is not supported for {type(self._strategy).__name__} — "
-            "the strategy implements neither TokenIssuer nor SessionIssuer."
+            "the strategy does not implement SessionIssuer."
         )
-
-    def refresh_token(self, user: Any) -> str:
-        """Create a refresh token for *user* (``RefreshCapable`` strategies).
-
-        Example::
-
-            refresh = guard("api").refresh_token(user)
-        """
-        if not isinstance(self._strategy, RefreshCapable):
-            raise NotImplementedError(
-                f"refresh_token() is not supported for {type(self._strategy).__name__} — "
-                "the strategy does not implement RefreshCapable."
-            )
-        return self._strategy.create_refresh_token(self._build_payload(user))
-
-    def decode(self, token: str, *, expected_type: str | None = None) -> dict:
-        """Decode and verify a token issued by this guard (``TokenIssuer`` strategies).
-
-        Example::
-
-            payload = guard("api").decode(token)
-            payload = guard("api").decode(token, expected_type="refresh")
-        """
-        if not isinstance(self._strategy, TokenIssuer):
-            raise NotImplementedError(
-                f"decode() is not supported for {type(self._strategy).__name__} — "
-                "the strategy does not implement TokenIssuer."
-            )
-        return self._strategy.decode(token, expected_type=expected_type)
 
     def set_cookie(self, response, data: dict) -> None:
         """Sign *data* and write a session cookie on *response* (``SessionIssuer`` strategies).
@@ -267,7 +232,7 @@ class Guard:
         return Annotated[Optional[model], Depends(_resolve)]
 
     def _build_payload(self, user: Any) -> dict:
-        """Build token claims for *user*.
+        """Build session claims for *user*.
 
         A model can control its claims by defining ``auth_claims() -> dict``
         (``"sub"`` is filled from ``user.id`` when omitted)::

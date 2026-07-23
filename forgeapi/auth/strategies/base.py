@@ -18,12 +18,12 @@ class AuthStrategy(ABC):
       :class:`~forgeapi.auth.guard.Guard` translates domain errors to HTTP.
     * Never touch the database or user models — the guard resolves users.
     * Declare extra capabilities by implementing the protocols in
-      :mod:`forgeapi.auth.contracts` (``TokenIssuer``, ``SessionIssuer``, ...).
+      :mod:`forgeapi.auth.contracts` (``SessionIssuer``, ...).
     """
 
     #: ``WWW-Authenticate`` challenge scheme sent with 401 responses,
     #: or ``None`` to omit the header (e.g. cookie sessions).
-    challenge: Optional[str] = "Bearer"
+    challenge: Optional[str] = None
 
     @abstractmethod
     async def authenticate(self, request: Request) -> Optional[AuthUser]:

@@ -184,84 +184,6 @@ async def main():
 asyncio.run(main())
 ''',
 
-"jwt_auth": '''\
-# JWT auth — login, refresh, protected route
-
-# database/models/user.py
-import hashlib
-from tortoise import fields, Model
-from forgeapi import ModelMixin
-
-class User(ModelMixin, Model):
-    id         = fields.IntField(pk=True)
-    email      = fields.CharField(max_length=255, unique=True)
-    password   = fields.CharField(max_length=255)
-    username   = fields.CharField(max_length=100)
-    is_active  = fields.BooleanField(default=True)
-    created_at = fields.DatetimeField(auto_now_add=True)
-    updated_at = fields.DatetimeField(auto_now=True)
-
-    class Meta:
-        table = "users"
-
-    def set_password(self, raw: str) -> None:
-        self.password = hashlib.sha256(raw.encode()).hexdigest()
-
-    def verify_password(self, raw: str) -> bool:
-        return self.password == hashlib.sha256(raw.encode()).hexdigest()
-
-
-# app/controllers/auth_controller.py
-from fastapi import HTTPException
-from forgeapi.controllers import Controller, route
-from forgeapi.auth import CurrentUser, auth
-from forgeapi.exceptions import TokenExpiredError, TokenInvalidError
-from database.models.user import User
-
-
-class AuthController(Controller):
-    prefix = "/auth"
-    tags   = ["auth"]
-
-    @route.post("/register", status_code=201)
-    async def register(self, payload: RegisterPayload) -> dict:
-        if await User.filter(email=payload.email).exists():
-            raise HTTPException(422, "Email already registered")
-        user = User(email=payload.email, username=payload.username)
-        user.set_password(payload.password)
-        await user.save()
-        access  = auth.token(user)
-        refresh = auth.refresh_token(user)
-        return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
-
-    @route.post("/login")
-    async def login(self, payload: LoginPayload) -> dict:
-        user = await User.get_or_none(email=payload.email)
-        if not user or not user.verify_password(payload.password):
-            raise HTTPException(401, "Invalid credentials")
-        if not user.is_active:
-            raise HTTPException(403, "Account disabled")
-        access  = auth.token(user)
-        refresh = auth.refresh_token(user)
-        return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
-
-    @route.post("/refresh")
-    async def refresh(self, payload: RefreshPayload) -> dict:
-        try:
-            data = auth.decode(payload.refresh_token, expected_type="refresh")
-        except TokenExpiredError:
-            raise HTTPException(401, "Refresh token expired")
-        except TokenInvalidError:
-            raise HTTPException(401, "Invalid refresh token")
-        user = await User.find_or_fail(int(data["sub"]))
-        return {"access_token": auth.token(user), "token_type": "bearer"}
-
-    @route.get("/me")
-    async def me(self, user: CurrentUser) -> dict:
-        db_user = await User.find_or_fail(int(user.id))
-        return {"id": db_user.id, "email": db_user.email, "username": db_user.username}
-''',
-
 "rbac": '''\
 # Full RBAC — model, seeder, protected routes
 
@@ -388,6 +310,85 @@ class AdminController(Controller):
     guards = [ActiveUserGuard()]
 ''',
 
+"scheduler": '''\
+# DB-backed scheduler — schedule.py + CLI + lifespan
+
+# config/database.py — add forgeapi.scheduling to models list
+TORTOISE_ORM = {
+    "connections": {"default": {"engine": "tortoise.backends.asyncpg", "credentials": {...}}},
+    "apps": {
+        "models": {
+            "models": [
+                "database.models",
+                "forgeapi.scheduling",          # ← required: creates the jobs table
+                "forgeapi.permissions.models",
+            ],
+            "default_connection": "default",
+        }
+    },
+}
+
+
+# schedule.py — project root (created by forgeapi init)
+from forgeapi import Scheduler
+from database.models.post import Post
+from app.services.mailer import send_digest
+
+scheduler = Scheduler()
+
+
+async def daily_digest():
+    users = await User.filter(newsletter=True, is_active=True).all()
+    for user in users:
+        await send_digest(user)
+
+async def cleanup_drafts():
+    from datetime import datetime, timedelta
+    cutoff = datetime.now() - timedelta(days=30)
+    deleted, _ = await Post.filter(is_published=False, created_at__lt=cutoff).delete()
+    print(f"Cleaned up {deleted} stale drafts")
+
+def health_ping():
+    import httpx
+    httpx.get("https://hc-ping.com/your-uuid", timeout=5)
+
+
+scheduler.call(daily_digest).daily_at("08:00").name("daily-digest")
+scheduler.call(cleanup_drafts).weekly_on("sunday", at="03:00").name("cleanup-drafts")
+scheduler.call(health_ping).every(5).name("health-ping")
+
+
+# main.py — in-process runner (alternative to CLI)
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from forgeapi import Core
+from tortoise.contrib.fastapi import register_tortoise
+from config.database import TORTOISE_ORM
+from schedule import scheduler   # the schedule.py above
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(scheduler.run())
+    yield
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+app = FastAPI(lifespan=lifespan)
+core = Core(app)
+register_tortoise(app, config=TORTOISE_ORM, generate_schemas=False, add_exception_handlers=True)
+
+
+# CLI usage (no lifespan needed — standalone process)
+# forgeapi schedule:work               # dev: infinite loop
+# forgeapi schedule:run                # cron: run due tasks once
+# forgeapi schedule:run daily-digest   # run specific task immediately
+# forgeapi schedule:list               # show all tasks + next/last run + status
+
+# crontab for production:
+# * * * * * cd /app && forgeapi schedule:run >> /var/log/scheduler.log 2>&1
+''',
+
 "cache": '''\
 # Cache — common patterns
 
@@ -446,8 +447,8 @@ class PostController(Controller):
 def get_example(pattern: str) -> str:
     """Return a complete working code example for a forge-kits pattern.
 
-    Patterns: crud_controller, redis_event, stream_event, jwt_auth, rbac,
-              pagination, guard, cache
+    Patterns: crud_controller, broadcasting_pubsub, broadcasting_stream,
+              rbac, pagination, guard, cache, scheduler
 
     Args:
         pattern: One of the pattern names listed above (case-insensitive,

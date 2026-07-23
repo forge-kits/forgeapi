@@ -25,13 +25,13 @@ class AuthProvider(Provider):
                 "config/auth.py exists but defines no guards.",
                 hint=(
                     'Add at least one guard: config = {"default": "api", '
-                    '"guards": {"api": {"strategy": "jwt", "secret": env("JWT_SECRET")}}}'
+                    '"guards": {"api": {"strategy": "cookie", "secret": env("COOKIE_SECRET")}}}'
                 ),
             )
 
         for name, guard_cfg in guards.items():
             guard_cfg = dict(guard_cfg)
-            strategy_name = guard_cfg.pop("strategy", "jwt")
+            strategy_name = guard_cfg.pop("strategy", "cookie")
             model = guard_cfg.pop("model", None)
             if isinstance(model, str):
                 model = import_string(model)

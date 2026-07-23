@@ -24,9 +24,7 @@ class Auth:
 
     Shortcuts (use the default guard)::
 
-        token   = auth.token(user)
-        refresh = auth.refresh_token(user)
-        payload = auth.decode(token)
+        token = auth.token(user)
 
     Specific guard::
 
@@ -57,10 +55,10 @@ class Auth:
         Called automatically by ``Core``. Call manually when not using ``Core``::
 
             from forgeapi.auth import auth, Guard
-            from forgeapi.auth.strategies import JWTStrategy
+            from forgeapi.auth.strategies import CookieStrategy
 
-            g = Guard("api", JWTStrategy(secret_key="s3cr3t"), user_model=User)
-            auth.register("api", g)
+            g = Guard("web", CookieStrategy(secret="s3cr3t"), user_model=User)
+            auth.register("web", g)
 
         Args:
             name:  Unique guard name (e.g. ``"api"``, ``"admin"``).
@@ -75,7 +73,7 @@ class Auth:
         )
 
     def set_default(self, name: str) -> None:
-        """Set which guard :meth:`token`, :meth:`decode`, etc. use by default.
+        """Set which guard :meth:`token`, etc. use by default.
 
         Called automatically by ``Core``.
 
@@ -137,12 +135,12 @@ class Auth:
     def create_strategy(self, name: str, cfg: dict | None = None) -> "AuthStrategy":
         """Instantiate a strategy by name from a config dict.
 
-        Resolves built-in strategies (``jwt``, ``cookie``, ``telegram``) and
+        Resolves built-in strategies (``cookie``, ``telegram``) and
         anything registered via :meth:`extend`.
 
         Example::
 
-            strategy = auth.create_strategy("jwt", {"secret": "s3cr3t"})
+            strategy = auth.create_strategy("cookie", {"secret": "s3cr3t"})
         """
         factory = self._factories.get(name) or self._builtin_strategy(name)
         return factory.from_config(cfg or {})
@@ -150,9 +148,6 @@ class Auth:
     @staticmethod
     def _builtin_strategy(name: str):
         # imported lazily — strategies may require optional dependencies
-        if name == "jwt":
-            from .strategies.jwt import JWTStrategy
-            return JWTStrategy
         if name == "cookie":
             from .strategies.cookie import CookieStrategy
             return CookieStrategy
@@ -163,7 +158,7 @@ class Auth:
         raise ForgeAPIConfigError(
             f"Unknown auth strategy '{name}'.",
             hint=(
-                "Valid values: jwt, cookie, telegram, or a custom strategy "
+                "Valid values: cookie, telegram, or a custom strategy "
                 "registered via auth.extend()."
             ),
         )
@@ -173,7 +168,7 @@ class Auth:
     # ------------------------------------------------------------------
 
     def token(self, user, *, guard: str | None = None) -> str:
-        """Create an access token for *user*.
+        """Create a session token for *user*.
 
         Args:
             user:  DB model instance or :class:`~forgeapi.auth.models.AuthUser`.
@@ -185,30 +180,6 @@ class Auth:
             token = auth.token(admin_user, guard="admin")
         """
         return self.guard(guard).token(user)
-
-    def refresh_token(self, user, *, guard: str | None = None) -> str:
-        """Create a refresh token for *user* (``RefreshCapable`` strategies).
-
-        Example::
-
-            refresh = auth.refresh_token(user)
-        """
-        return self.guard(guard).refresh_token(user)
-
-    def decode(self, token: str, *, guard: str | None = None, expected_type: str | None = None) -> dict:
-        """Decode and verify a token (``TokenIssuer`` strategies).
-
-        Args:
-            token:         Raw token string.
-            guard:         Guard name override.
-            expected_type: ``"access"`` or ``"refresh"`` — validates the ``type`` claim.
-
-        Example::
-
-            payload = auth.decode(token)
-            payload = auth.decode(token, expected_type="refresh")
-        """
-        return self.guard(guard).decode(token, expected_type=expected_type)
 
     def set_cookie(self, response, data: dict, *, guard: str | None = None) -> None:
         """Sign ``data`` and write a session cookie (``SessionIssuer`` strategies).

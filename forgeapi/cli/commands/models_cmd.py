@@ -4,67 +4,77 @@ import importlib
 import sys
 from pathlib import Path
 
+from forgeapi.cli.base import Command
 
-def run(config_path: str = "") -> None:
-    import typer
-    from forgeapi.config import load_config
 
-    cfg = load_config(config_path)
-    st = cfg.structure
+class ModelsCommand(Command):
+    name = "models"
+    help_text = """\
+Usage: forgeapi models
 
-    cwd = str(Path.cwd())
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
+Lists all Tortoise model classes found in models_dir, their table names
+and field names.
+"""
 
-    models_dir = Path(st.models_dir)
-    if not models_dir.exists():
-        typer.echo(f"Models directory not found: {models_dir}")
-        return
+    def handle(self, cmd: str, args: list[str]) -> None:
+        import typer
+        from forgeapi.config import load_config
 
-    try:
-        from tortoise.models import Model as TortoiseModel
-    except ImportError:
-        typer.echo("Error: tortoise-orm not installed.", err=True)
-        raise typer.Exit(code=1)
+        cfg = load_config()
+        st = cfg.structure
 
-    found: list[tuple[str, str, list[str]]] = []
+        cwd = str(Path.cwd())
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
 
-    for f in sorted(models_dir.glob("*.py")):
-        if f.name.startswith("_"):
-            continue
-        try:
-            rel = f.relative_to(Path.cwd())
-        except ValueError:
-            rel = f
-        module_path = rel.with_suffix("").as_posix().replace("/", ".")
+        models_dir = Path(st.models_dir)
+        if not models_dir.exists():
+            typer.echo(f"Models directory not found: {models_dir}")
+            return
 
         try:
-            mod = importlib.import_module(module_path)
-        except Exception as exc:
-            typer.echo(f"  warning  {module_path}: {exc}", err=True)
-            continue
+            from tortoise.models import Model as TortoiseModel
+        except ImportError:
+            self.abort("tortoise-orm not installed.")
 
-        for attr_name, obj in vars(mod).items():
-            if (
-                isinstance(obj, type)
-                and issubclass(obj, TortoiseModel)
-                and obj is not TortoiseModel
-                and obj.__module__ == mod.__name__
-                and not getattr(getattr(obj, "Meta", None), "abstract", False)
-            ):
-                table = getattr(getattr(obj, "Meta", None), "table", attr_name.lower() + "s")
-                fields = list(obj._meta.fields_map.keys()) if hasattr(obj, "_meta") else []
-                found.append((attr_name, table, fields))
+        found: list[tuple[str, str, list[str]]] = []
 
-    if not found:
-        typer.echo("No models found.")
-        return
+        for f in sorted(models_dir.glob("*.py")):
+            if f.name.startswith("_"):
+                continue
+            try:
+                rel = f.relative_to(Path.cwd())
+            except ValueError:
+                rel = f
+            module_path = rel.with_suffix("").as_posix().replace("/", ".")
 
-    typer.echo("")
-    for name, table, fields in found:
-        typer.echo(f"  {name}  (table: {table})")
-        for field in fields:
-            typer.echo(f"    - {field}")
+            try:
+                mod = importlib.import_module(module_path)
+            except Exception as exc:
+                typer.echo(f"  warning  {module_path}: {exc}", err=True)
+                continue
+
+            for attr_name, obj in vars(mod).items():
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, TortoiseModel)
+                    and obj is not TortoiseModel
+                    and obj.__module__ == mod.__name__
+                    and not getattr(getattr(obj, "Meta", None), "abstract", False)
+                ):
+                    table = getattr(getattr(obj, "Meta", None), "table", attr_name.lower() + "s")
+                    fields = list(obj._meta.fields_map.keys()) if hasattr(obj, "_meta") else []
+                    found.append((attr_name, table, fields))
+
+        if not found:
+            typer.echo("No models found.")
+            return
+
         typer.echo("")
-    typer.echo(f"  {len(found)} model(s) total")
-    typer.echo("")
+        for name, table, fields in found:
+            typer.echo(f"  {name}  (table: {table})")
+            for field in fields:
+                typer.echo(f"    - {field}")
+            typer.echo("")
+        typer.echo(f"  {len(found)} model(s) total")
+        typer.echo("")

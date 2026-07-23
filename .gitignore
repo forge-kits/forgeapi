@@ -7,3 +7,5 @@ backend
 docker-compose.yml
 db_data
 tests/
+nuxt-api
+nuxt-telescope

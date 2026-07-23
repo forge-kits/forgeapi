@@ -13,7 +13,8 @@ from .policies import Policy, gate
 from .support import Number, Str, Time
 from .cache import Cache
 from .storage import Storage, ImageProcessor
-from .scheduling import Scheduler
+from .scheduling import Scheduler, ScheduledTask
+from .queue import Job, dispatch
 
 __all__ = [
     # Core
@@ -63,6 +64,10 @@ __all__ = [
     "ImageProcessor",
     # Scheduling
     "Scheduler",
+    "ScheduledTask",
+    # Queue
+    "Job",
+    "dispatch",
 ]
 
 
@@ -71,7 +76,7 @@ def __getattr__(name: str):
         "auth", "Auth", "guard",
         "CurrentUser", "OptionalUser",
         "AuthUser", "TelegramUser",
-        "JWTStrategy", "CookieStrategy", "TelegramStrategy",
+        "CookieStrategy", "TelegramStrategy",
     }
     _db_exports = {
         "Paginator", "Pagination",
@@ -85,7 +90,7 @@ def __getattr__(name: str):
             from . import auth as _auth_module
         except ImportError:
             raise ImportError(
-                f"'{name}' requires PyJWT. Install it: pip install forge-kits[auth]"
+                f"'{name}' requires auth dependencies. Install them: pip install forge-kits[auth]"
             )
         return getattr(_auth_module, name)
 

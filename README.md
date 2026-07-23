@@ -1786,25 +1786,54 @@ forgeapi db:seed User Post    # run in order
 
 ## 22. Scheduler
 
-Code-based task scheduler — define recurring jobs in Python, run a background
-worker in the FastAPI lifespan. No database or external queue required.
+DB-backed task scheduler — Laravel-style. Jobs are defined in code (`schedule.py`);
+state (next run time, last status, errors) is persisted in the `jobs` table via Tortoise.
+No external queue or APScheduler dependency required.
 
 ```bash
 pip install forge-kits   # Scheduler is included in the base package
 ```
 
-### Defining jobs
+### Setup
+
+Add `forgeapi.scheduling` to the models list in `config/database.py` so Tortoise
+creates the `jobs` table automatically:
 
 ```python
+# config/database.py
+TORTOISE_ORM = {
+    "connections": {...},
+    "apps": {
+        "models": {
+            "models": [
+                "database.models",
+                "forgeapi.scheduling",        # ← add this
+                "forgeapi.permissions.models",
+            ],
+            ...
+        }
+    },
+}
+```
+
+If you use the CLI (`schedule:work` / `schedule:run`), the table is created
+automatically via `generate_schemas(safe=True)` — no manual migration step needed.
+
+### schedule.py
+
+`forgeapi init` creates a `schedule.py` at the project root. Define all jobs there:
+
+```python
+# schedule.py
 from forgeapi import Scheduler
 
 scheduler = Scheduler()
 
-scheduler.call(send_daily_report).daily_at("09:00")
-scheduler.call(cleanup_temp_files).every(30)          # every 30 minutes
-scheduler.call(weekly_backup).weekly_on("sunday", at="03:00")
-scheduler.call(sync_rates).hourly()
-scheduler.call(health_ping).every_minute()
+scheduler.call(send_daily_report).daily_at("09:00").name("newsletter")
+scheduler.call(cleanup_temp_files).every(30).name("cleanup")
+scheduler.call(weekly_backup).weekly_on("sunday", at="03:00").name("backup")
+scheduler.call(sync_rates).hourly().name("sync-rates")
+scheduler.call(health_ping).every_minute().name("health")
 ```
 
 All callables — sync or async — are accepted:
@@ -1813,8 +1842,6 @@ All callables — sync or async — are accepted:
 async def send_daily_report():
     users = await User.filter(newsletter=True).all()
     ...
-
-scheduler.call(send_daily_report).daily_at("07:00").name("newsletter")
 ```
 
 ### Timing methods
@@ -1830,19 +1857,42 @@ scheduler.call(send_daily_report).daily_at("07:00").name("newsletter")
 | `.weekly()` | Every Monday at midnight |
 | `.weekly_on("day", at="HH:MM")` | Named weekday at the given time |
 
-`.name("label")` overrides the display label in logs (defaults to function name).
+`.name("label")` sets the unique key used in the DB and in CLI commands.
+Defaults to the function name.
+
+### Running via CLI
+
+```bash
+# Run due tasks once — use from cron (every minute)
+forgeapi schedule:run
+
+# Run a specific task manually, regardless of schedule
+forgeapi schedule:run newsletter
+
+# Start infinite dev loop — checks for due tasks, sleeps until next run
+forgeapi schedule:work
+
+# Show all registered tasks and their DB state
+forgeapi schedule:list
+```
+
+`schedule:work` is the recommended dev runner. For production, add a cron job:
+
+```cron
+* * * * * cd /path/to/project && forgeapi schedule:run >> /var/log/scheduler.log 2>&1
+```
 
 ### FastAPI lifespan integration
 
+If you prefer to run the scheduler in-process instead of a separate process:
+
 ```python
+# main.py
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from forgeapi import Core, Scheduler
-
-scheduler = Scheduler()
-scheduler.call(cleanup).every(15)
-scheduler.call(report).daily_at("08:00")
+from forgeapi import Core
+from schedule import scheduler   # your schedule.py
 
 @asynccontextmanager
 async def lifespan(app):
@@ -1855,8 +1905,23 @@ app = FastAPI(lifespan=lifespan)
 core = Core(app)
 ```
 
-`scheduler.run()` loops indefinitely, sleeping until the next due job.
-Cancelling the task on shutdown ensures a clean exit.
+`scheduler.run()` calls `sync()` on startup (upserts all jobs to DB), then loops
+indefinitely — sleeping until the soonest scheduled task, then calling `run_due()`.
+
+### ScheduledTask model
+
+The `jobs` table columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `name` | `VARCHAR(255)` unique | Job name (`.name("label")`) |
+| `schedule_type` | `VARCHAR(20)` | `"interval"` / `"daily"` / `"weekly"` |
+| `schedule_config` | `JSON` | Schedule parameters (e.g. `{"minutes": 30}`) |
+| `is_enabled` | `BOOLEAN` | Toggle without removing from code |
+| `next_run_at` | `DATETIME` | When the job will next run |
+| `last_run_at` | `DATETIME` | When it last ran |
+| `last_status` | `VARCHAR(20)` | `"success"` / `"failed"` |
+| `last_error` | `TEXT` | Exception message on failure |
 
 ---
 
@@ -1921,6 +1986,15 @@ forgeapi runserver --reload
 forgeapi runserver --port 9000 --host 0.0.0.0 --reload
 ```
 
+### Scheduler
+
+```bash
+forgeapi schedule:run             # run all due tasks once (use from cron)
+forgeapi schedule:run <name>      # run a specific task manually
+forgeapi schedule:work            # start infinite dev loop
+forgeapi schedule:list            # show all tasks and their DB state
+```
+
 ### Inspection
 
 ```bash
@@ -1969,6 +2043,7 @@ config = {
     "policies_dir": "app/policies",
     "seeds_dir": "database/seeds",
     "base_prefix": "/api/v1",
+    "schedule_file": "schedule.py",   # path to schedule.py; used by schedule:* CLI commands
 }
 
 # config/http.py

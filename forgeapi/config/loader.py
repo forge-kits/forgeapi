@@ -20,7 +20,7 @@ def load_config(path: str = "") -> KitConfig:
         config = {
             "default": "api",
             "guards": {
-                "api": {"strategy": "jwt", "secret": env("JWT_SECRET")},
+                "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET")},
             },
         }
 

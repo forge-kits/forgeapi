@@ -81,13 +81,17 @@ url  = Storage.url("files/doc.pdf")
 path = await (await ImageProcessor.from_upload(file)).resize(256, 256, crop=True).store("avatars/1", extension="webp")
 ```
 
-## Scheduler
+## Scheduler (schedule.py)
 ```python
+# schedule.py — define in project root
 from forgeapi import Scheduler
 scheduler = Scheduler()
-scheduler.call(cleanup).every(30)          # every 30 min
-scheduler.call(report).daily_at("09:00")
-scheduler.call(backup).weekly_on("sunday", at="03:00")
+scheduler.call(cleanup).every(30).name("cleanup")       # every 30 min
+scheduler.call(report).daily_at("09:00").name("report")
+scheduler.call(backup).weekly_on("sunday", at="03:00").name("backup")
+# forgeapi schedule:work   — dev loop
+# forgeapi schedule:run    — run due tasks once (cron)
+# forgeapi schedule:list   — show all tasks + DB state
 # in lifespan: task = asyncio.create_task(scheduler.run())
 ```
 
@@ -127,6 +131,7 @@ forgeapi runserver --reload        # NOT uvicorn directly
 | DB: apply migrations | `forgeapi db:migrate` | `aerich upgrade` |
 | Generate controller | `forgeapi make:controller Post` | writing files manually |
 | Generate model | `forgeapi make:model Post` | writing files manually |
+| Run scheduled tasks | `forgeapi schedule:work` (dev) / `forgeapi schedule:run` (cron) | calling scheduler directly |
 
 ## DO NOT install or reference aerich
 
@@ -227,7 +232,7 @@ config = {"cors": ["*"], "rate_limit": 60, "request_id": True, "access_log": Tru
 
 # config/auth.py
 config = {"default": "api", "guards": {
-    "api": {"strategy": "jwt", "secret": env("JWT_SECRET")}
+    "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET")}
 }}
 
 # config/storage.py
@@ -423,7 +428,6 @@ Both projects use same `namespace`, handlers receive plain `dict` — no shared 
 
 ## Quick setup via Core
 ```python
-Core(app, auth="jwt")       # reads JWT_SECRET env var, 30min access TTL
 Core(app, auth="cookie")    # cookie-based session
 Core(app, auth="telegram")  # Telegram mini-app auth (BOT_TOKEN env var)
 ```
@@ -443,47 +447,38 @@ async def feed(self, user: OptionalUser) -> dict:
 ```
 
 ## AuthUser fields
-- `user.id: str` — JWT `sub` claim; use `int(user.id)` for DB queries
+- `user.id: str` — session `sub` claim; use `int(user.id)` for DB queries
 - `user.username: str | None`
-- `user.extra: dict` — any non-standard JWT claims
-- `user.auth_method: str` — "jwt" | "cookie" | "telegram"
+- `user.extra: dict` — any non-standard session claims
+- `user.auth_method: str` — "cookie" | "telegram"
 
-## Token operations
+## Session operations
 ```python
 from forgeapi.auth import auth
 
-access  = auth.token(user)
-refresh = auth.refresh_token(user)
-payload = auth.decode(token, expected_type="access")  # raises TokenExpiredError | TokenInvalidError
+token = auth.token(user)  # returns signed session value
 
-auth.set_cookie(response, {"sub": str(user.id)})  # cookie strategy
-auth.delete_cookie(response)
+auth.set_cookie(response, {"sub": str(user.id)})  # write session cookie
+auth.delete_cookie(response)                        # clear session cookie
 ```
 
-## Login / Register endpoint pattern (JWT)
+## Login / Register endpoint pattern (cookie)
 ```python
 @route.post("/login")
-async def login(self, payload: LoginPayload) -> dict:
+async def login(self, payload: LoginPayload, response: Response) -> dict:
     user = await User.get_or_none(email=payload.email)
     if not user or not user.verify_password(payload.password):
         raise HTTPException(401, "Invalid credentials")
-    access  = auth.token(user)
-    refresh = auth.refresh_token(user)
-    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+    auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+    return {"message": "Logged in"}
 
-@route.post("/refresh")
-async def refresh(self, payload: RefreshPayload) -> dict:
-    try:
-        data = auth.decode(payload.refresh_token, expected_type="refresh")
-    except (TokenExpiredError, TokenInvalidError) as e:
-        raise HTTPException(401, str(e))
-    user = await User.find_or_fail(int(data["sub"]))
-    return {"access_token": auth.token(user), "token_type": "bearer"}
+@route.post("/logout")
+async def logout(self, response: Response) -> dict:
+    auth.delete_cookie(response)
+    return {"message": "Logged out"}
 ```
 
 ## Exceptions
-- `forgeapi.exceptions.TokenExpiredError`
-- `forgeapi.exceptions.TokenInvalidError`
 - `forgeapi.exceptions.ForgeAPIConfigError`
 """,
 
@@ -871,6 +866,14 @@ forgeapi routers    # list all routes
 forgeapi models     # list all models
 ```
 
+## Scheduler
+```bash
+forgeapi schedule:run             # run due tasks once (use from cron)
+forgeapi schedule:run <name>      # run specific task manually
+forgeapi schedule:work            # infinite dev loop
+forgeapi schedule:list            # show all tasks + DB state
+```
+
 ## Dev server (NEVER use uvicorn directly)
 ```bash
 forgeapi runserver
@@ -897,10 +900,7 @@ seeds_dir       = "database/seeds"
 base_prefix     = "/api/v1"
 
 [auth]
-strategy           = "jwt"
-jwt_secret_env     = "JWT_SECRET"
-access_ttl_minutes = 30
-refresh_ttl_days   = 7
+strategy = "cookie"
 
 [pagination]
 default_limit = 20
@@ -1172,21 +1172,33 @@ async def upload_avatar(self, file: UploadFile, user: CurrentUser) -> dict:
 """,
 
 "scheduler": """\
-# forge-kits: Scheduler
+# forge-kits: Scheduler (DB-backed)
 
-Import: `from forgeapi import Scheduler`
+State (next_run_at, last_run_at, status, errors) is persisted in the `jobs`
+table via Tortoise. Jobs are defined in code; the DB tracks their lifecycle.
 
-## Setup
+## Tortoise setup
+Add `forgeapi.scheduling` to `config/database.py` models list:
+```python
+"models": ["database.models", "forgeapi.scheduling", "forgeapi.permissions.models"]
+```
+The CLI creates the table automatically with `generate_schemas(safe=True)`.
+
+## schedule.py
+Define all jobs in `schedule.py` at the project root (created by `forgeapi init`):
 ```python
 from forgeapi import Scheduler
 
 scheduler = Scheduler()
-scheduler.call(send_report).daily_at("09:00")
-scheduler.call(cleanup).every(30)                        # every 30 min
-scheduler.call(backup).weekly_on("sunday", at="03:00")
-scheduler.call(sync).hourly()
-scheduler.call(ping).every_minute()
+
+scheduler.call(send_report).daily_at("09:00").name("newsletter")
+scheduler.call(cleanup).every(30).name("cleanup")          # every 30 min
+scheduler.call(backup).weekly_on("sunday", at="03:00").name("backup")
+scheduler.call(sync).hourly().name("sync-rates")
+scheduler.call(ping).every_minute().name("health")
 ```
+
+`.name("label")` sets the unique key in the DB and in CLI commands.
 
 ## Timing methods
 | Method | When |
@@ -1199,30 +1211,28 @@ scheduler.call(ping).every_minute()
 | `.daily_at("HH:MM")` | Daily at given time |
 | `.weekly()` | Monday midnight |
 | `.weekly_on("day", at="HH:MM")` | Named weekday at given time |
-| `.name("label")` | Override log label |
 
 Days for weekly_on: monday, tuesday, wednesday, thursday, friday, saturday, sunday
 
-## Async callables
-Both sync and async are accepted:
-```python
-async def send_report():
-    users = await User.filter(newsletter=True)
-    ...
+Both sync and async callables are accepted.
 
-scheduler.call(send_report).daily_at("07:00").name("newsletter")
+## CLI commands
+```bash
+forgeapi schedule:work            # dev: infinite loop, sleeps until next job
+forgeapi schedule:run             # cron: run all due tasks once
+forgeapi schedule:run newsletter  # run a specific task by name immediately
+forgeapi schedule:list            # show all tasks + next/last run + status
 ```
 
-## FastAPI lifespan
+For production use a cron job calling `schedule:run` every minute:
+```cron
+* * * * * cd /app && forgeapi schedule:run >> /var/log/scheduler.log 2>&1
+```
+
+## FastAPI lifespan (in-process)
 ```python
 import asyncio
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from forgeapi import Core, Scheduler
-
-scheduler = Scheduler()
-scheduler.call(cleanup).every(15)
-scheduler.call(report).daily_at("08:00")
+from schedule import scheduler   # your schedule.py
 
 @asynccontextmanager
 async def lifespan(app):
@@ -1230,13 +1240,14 @@ async def lifespan(app):
     yield
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
-
-app = FastAPI(lifespan=lifespan)
-core = Core(app)
 ```
 
-`scheduler.run()` loops indefinitely; cancel on shutdown for clean exit.
-On job failure the error is logged and next_run advances to avoid tight retry loops.
+`scheduler.run()` calls `sync()` on startup (upserts all jobs to DB), then
+loops indefinitely — sleeping until the soonest task, then calling `run_due()`.
+
+## ScheduledTask model fields
+name, schedule_type, schedule_config, is_enabled, next_run_at, last_run_at,
+last_status ("success"/"failed"), last_error. Table: `jobs`.
 """,
 
 "scopes": """\

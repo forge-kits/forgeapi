@@ -1,50 +1,89 @@
+from __future__ import annotations
+
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from forgeapi.cli.base import Command
+
 
 _DB_SUBCOMMANDS = ("init", "makemigrations", "migrate", "downgrade", "history", "heads", "sqlmigrate")
 
 
-def _find_tortoise_bin() -> str | None:
-    # Prefer the binary next to the current Python interpreter (respects venvs).
-    # On Windows scripts live in Scripts\ and carry a .exe suffix.
-    candidates = ["tortoise", "tortoise.exe"]
-    scripts_dir = Path(sys.executable).parent
-    for name in candidates:
-        path = scripts_dir / name
-        if path.exists():
-            return str(path)
+class DbCommand(Command):
+    name = "db"
+    help_text = """\
+Usage: forgeapi db:<subcommand>
 
-    # Fall back to PATH lookup (handles global installs and unusual venv layouts).
-    found = shutil.which("tortoise")
-    return found
+Migration and seed commands.
 
+  db:init              Init tortoise migration config
+  db:makemigrations    Generate migration from model changes
+  db:migrate           Apply pending migrations
+  db:downgrade         Revert the last migration
+  db:history           Show migration history
+  db:seed              Run all seeders
+  db:seed <Name>       Run specific seeder(s) by name
+  db:fresh             TRUNCATE all tables (asks for confirmation)
+  db:fresh --force     DROP all tables including structure (irreversible)
 
-def run(subcmd: str, extra_args: list[str], config_path: str = "") -> None:
-    import typer
-    from forgeapi.config import load_config
+Options for db:makemigrations:
+  -n <name>   Migration name
 
-    if subcmd not in _DB_SUBCOMMANDS:
-        typer.echo(f"Error: unknown db command 'db:{subcmd}'.", err=True)
-        typer.echo(f"  Available: {', '.join(f'db:{s}' for s in _DB_SUBCOMMANDS)}", err=True)
-        raise typer.Exit(code=1)
+Examples:
+  forgeapi db:init
+  forgeapi db:makemigrations -n add_email
+  forgeapi db:migrate
+  forgeapi db:seed
+  forgeapi db:seed User Post
+"""
 
-    cfg = load_config(config_path)
-    orm_path = cfg.database.tortoise_orm
+    def handle(self, cmd: str, args: list[str]) -> None:
+        import typer
+        from forgeapi.config import load_config
 
-    tortoise_bin = _find_tortoise_bin()
-    if tortoise_bin is None:
-        typer.echo("Error: tortoise binary not found. Install tortoise-orm.", err=True)
-        raise typer.Exit(code=1)
+        subcmd = cmd.split(":", 1)[1]
 
-    cmd = [tortoise_bin, "-c", orm_path, subcmd] + extra_args
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    try:
-        result = subprocess.run(cmd, env=env)
-    except OSError as exc:
-        typer.echo(f"Error: failed to run tortoise binary: {exc}", err=True)
-        raise typer.Exit(code=1)
-    sys.exit(result.returncode)
+        if subcmd == "seed":
+            from .seed_cmd import SeedCommand
+            names = [a for a in args if not a.startswith("-")]
+            SeedCommand().handle("db:seed", names)
+            return
+
+        if subcmd == "fresh":
+            from .fresh_cmd import FreshCommand
+            FreshCommand().handle("db:fresh", args)
+            return
+
+        if subcmd not in _DB_SUBCOMMANDS:
+            self.abort(
+                f"unknown db command 'db:{subcmd}'.\n"
+                f"  Available: {', '.join(f'db:{s}' for s in _DB_SUBCOMMANDS)}"
+            )
+
+        cfg = load_config()
+        orm_path = cfg.database.tortoise_orm
+
+        tortoise_bin = self._find_tortoise_bin()
+        if tortoise_bin is None:
+            self.abort("tortoise binary not found. Install tortoise-orm.")
+
+        command = [tortoise_bin, "-c", orm_path, subcmd] + args
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        try:
+            result = subprocess.run(command, env=env)
+        except OSError as exc:
+            self.abort(f"failed to run tortoise binary: {exc}")
+        sys.exit(result.returncode)
+
+    @staticmethod
+    def _find_tortoise_bin() -> str | None:
+        candidates = ["tortoise", "tortoise.exe"]
+        scripts_dir = Path(sys.executable).parent
+        for name in candidates:
+            path = scripts_dir / name
+            if path.exists():
+                return str(path)
+        return shutil.which("tortoise")

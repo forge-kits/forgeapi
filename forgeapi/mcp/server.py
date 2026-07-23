@@ -33,7 +33,7 @@ RULES — must follow for every forge-kits project:
 Start every session: call scan_project('.') then get_docs('cheatsheet').
 For advanced topics call get_docs with: workflow, core, controllers, events,
 auth, permissions, policies, schemas, middleware, cli, config, models,
-cache, support, tortoise, tortoise_advanced.
+cache, storage, scheduler, scopes, observers, support, tortoise, tortoise_advanced.
 """,
 )
 
