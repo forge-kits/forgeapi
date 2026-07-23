@@ -39,7 +39,7 @@ class PostController(Controller):
         if not await Post.filter(id=id, author_id=int(user.id)).delete(): raise HTTPException(404)
 ```
 
-## Schemas | Auth | Event
+## Schemas | Auth | Broadcasting
 ```python
 class PostResponse(BaseSchema): title: str          # + id/created_at/updated_at inherited
 class PostCreate(BaseCreateSchema): title: str
@@ -48,13 +48,17 @@ class PostUpdate(BaseUpdateSchema): title: str | None = None  # auto-optional
 user: CurrentUser   # 401 if missing  |  user: OptionalUser  # None if missing
 access = auth.token(user)
 
-class OrderShipped(Event):
-    background = True
-    def __init__(self, order_id: int) -> None: self.order_id = order_id
+# app/events/__init__.py
+from forgeapi import BroadcastManager
+broadcast = BroadcastManager(driver="redis", url="redis://localhost:6379",
+                              namespace="myapp", mode="stream", maxlen=1000)
 
-@listen(OrderShipped)
-async def handle(event: OrderShipped) -> None: ...
-await OrderShipped(order_id=1).dispatch()
+# app/listeners/order_listener.py
+@broadcast.on("order:created")
+async def handle_order(data: dict) -> None: ...
+
+# emit from controller:
+await broadcast.emit("order:created", {"order_id": 1})
 ```
 
 ## Common queries
@@ -104,7 +108,6 @@ Post.observe(PostObserver)
 ## CLI
 ```bash
 forgeapi make:controller Post && forgeapi make:model Post
-forgeapi make:event OrderShipped   # → event + listener files
 forgeapi generate:schema Post --payload --response
 forgeapi db:makemigrations && forgeapi db:migrate
 forgeapi runserver --reload        # NOT uvicorn directly
@@ -124,7 +127,6 @@ forgeapi runserver --reload        # NOT uvicorn directly
 | DB: apply migrations | `forgeapi db:migrate` | `aerich upgrade` |
 | Generate controller | `forgeapi make:controller Post` | writing files manually |
 | Generate model | `forgeapi make:model Post` | writing files manually |
-| Generate event | `forgeapi make:event OrderShipped` | writing files manually |
 
 ## DO NOT install or reference aerich
 
@@ -161,8 +163,6 @@ forgeapi runserver --reload     # start dev server
 forgeapi make:controller Post         # app/controllers/post_controller.py
 forgeapi make:controller AdminUser    # app/controllers/admin/user_controller.py
 forgeapi make:model Post              # database/models/post.py
-forgeapi make:event OrderShipped      # app/events/order_shipped_event.py
-forgeapi make:listener OrderShipped   # app/listeners/order_shipped_listener.py
 forgeapi make:seed User               # database/seeds/user_seeder.py
 forgeapi generate:schema Post --payload --response
 ```
@@ -361,86 +361,61 @@ result = await Post.all().order_by("-created_at").paginate(request, PostResponse
 """,
 
 "events": """\
-# forge-kits: Events & EventBus
+# forge-kits: BroadcastManager
 
-## Base Event class
+## Setup
 ```python
-from forgeapi import Event
+from forgeapi import BroadcastManager
 
-class MyEvent(Event):
-    background: ClassVar[bool] = False    # True = asyncio.create_task (fire-and-forget)
-    redis: ClassVar[bool] = False         # True = publish to Redis
-    redis_type: ClassVar[str] = "pubsub" # "pubsub" | "stream"
-    namespace: ClassVar[str] = "forgeapi:events"  # stream key prefix
-    ttl: ClassVar[int | None] = None     # dedup window in seconds (pubsub only)
-
-    def __init__(self, field1: int, field2: str) -> None:
-        self.field1 = field1
-        self.field2 = field2
+broadcast = BroadcastManager(
+    driver="redis",
+    url="redis://localhost:6379",
+    namespace="shop",
+    mode="stream",   # "pubsub" | "stream"
+    maxlen=1000,     # stream only: keep last N messages
+)
 ```
 
-## Listener via decorator
+## Register handler
 ```python
-from forgeapi import listen
-
-@listen(MyEvent)
-async def handle_my_event(event: MyEvent) -> None:
-    await do_something(event.field1)
+@broadcast.on("order:created")
+async def handle(data: dict) -> None:
+    await notify(data["id"])
 ```
 
-## Dispatch
+## Emit
 ```python
-await MyEvent(field1=1, field2="hello").dispatch()
+await broadcast.emit("order:created", {"id": 42, "total": 99.0})
 ```
 
-## Redis pub/sub (fan-out across workers)
-```python
-class OrderShipped(Event):
-    background = True; redis = True; redis_type = "pubsub"; ttl = 300
-    def __init__(self, order_id: int) -> None: self.order_id = order_id
-```
-Lifespan:
+## Lifespan (stream)
 ```python
 @asynccontextmanager
 async def lifespan(app):
-    bus = EventBus.get_instance()
-    await bus.redis_connect("redis://localhost:6379")
-    task = asyncio.create_task(bus.start_redis_subscriber())
+    await broadcast.connect(group="backend", consumer="worker-1")
     yield
-    task.cancel(); await bus.redis_disconnect()
+    await broadcast.disconnect()
 ```
 
-## Redis Streams (persistent, consumer groups)
+## Lifespan (pubsub)
 ```python
-class OrderEvent(Event):
-    background = True; redis = True; redis_type = "stream"; namespace = "shop"
-    def __init__(self, order_id: int, total: float) -> None:
-        self.order_id = order_id; self.total = total
+@asynccontextmanager
+async def lifespan(app):
+    await broadcast.connect()
+    yield
+    await broadcast.disconnect()
 ```
 
-## RedisBus (cross-project, no shared Python classes)
-```python
-from forgeapi import RedisBus
-bus = RedisBus("redis://localhost:6379", namespace="shop")
+## Mode comparison
+| | pubsub | stream |
+|---|---|---|
+| Persistence | No | Yes (Redis Streams) |
+| Offline workers | Miss messages | Catch up on reconnect |
+| Consumer groups | No | Yes — each group gets all messages |
+| Horizontal scaling | No | Yes — consumers share load within group |
 
-@bus.on("order:created")
-async def handle(data: dict) -> None: await notify(data["id"])
-
-await bus.emit("order:created", {"id": 1, "total": 99.0})
-```
-
-## Decision guide
-- Local listeners: `redis=False` (default)
-- Same-codebase multi-worker fan-out: `redis=True, redis_type="pubsub"`
-- Cross-service or survives restart: `redis=True, redis_type="stream"`
-- Cross-project no shared code: `RedisBus`
-
-## Testing
-```python
-@pytest.fixture(autouse=True)
-def reset_bus():
-    EventBus.reset(); yield; EventBus.reset()
-```
+## Cross-project
+Both projects use same `namespace`, handlers receive plain `dict` — no shared classes needed.
 """,
 
 "auth": """\
@@ -875,8 +850,6 @@ forgeapi init <project-name>
 ```bash
 forgeapi make:controller <Name>
 forgeapi make:model <Name>
-forgeapi make:event <Name>
-forgeapi make:listener <Name>
 forgeapi make:seed <Name>
 forgeapi generate:schema Post --payload --response
 ```
@@ -919,7 +892,6 @@ description = "My FastAPI service"
 models_dir      = "database/models"
 controllers_dir = "app/controllers"
 schemas_dir     = "app/schemas"
-events_dir      = "app/events"
 listeners_dir   = "app/listeners"
 seeds_dir       = "database/seeds"
 base_prefix     = "/api/v1"

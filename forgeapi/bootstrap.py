@@ -42,9 +42,21 @@ class Core:
     """
 
     def __init__(self, app: FastAPI, *, config: "KitConfig | None" = None) -> None:
+        import logging as _logging
+
         self._app = app
         self._cfg: KitConfig = config or load_config()
         self._debug = self._cfg.project.debug
+
+        if self._debug:
+            _logging.getLogger("forgeapi").setLevel(_logging.DEBUG)
+            if not _logging.root.handlers:
+                _logging.basicConfig(
+                    level=_logging.DEBUG,
+                    format="%(levelname)s  %(name)s  %(message)s",
+                )
+        else:
+            _logging.getLogger("forgeapi").setLevel(_logging.WARNING)
 
         if self._cfg.project.name:
             self._app.title = self._cfg.project.name
@@ -86,8 +98,8 @@ class Core:
             from .storage.provider import StorageProvider
             add(StorageProvider(app, cfg))
 
-        from .events.provider import EventProvider
-        add(EventProvider(app, cfg))
+        from .broadcasting.provider import BroadcastProvider
+        add(BroadcastProvider(app, cfg))
 
         from .policies.provider import PolicyProvider
         add(PolicyProvider(app, cfg))

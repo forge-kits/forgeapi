@@ -40,7 +40,6 @@ class StructureConfig(BaseModel):
     models_dir: str = "database/models"
     controllers_dir: str = "app/controllers"
     schemas_dir: str = "app/schemas"
-    events_dir: str = "app/events"
     listeners_dir: str = "app/listeners"
     policies_dir: str = "app/policies"
     seeds_dir: str = "database/seeds"

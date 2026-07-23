@@ -24,8 +24,6 @@ Commands:
   forgeapi make:controller <Name>   [-m] [-s]
   forgeapi make:model <Name>        [-c] [-s]
   forgeapi make:schema <Name>       [-m] [-c]
-  forgeapi make:event <Name>
-  forgeapi make:listener <Name>
   forgeapi generate:schema <ModelName> --payload [--crud/-cru/-cu/-d]
   forgeapi generate:schema <ModelName> --response
   forgeapi make:seed <Name>
@@ -51,8 +49,6 @@ Examples:
   forgeapi make:controller User --ms
   forgeapi make:model Post -cs
   forgeapi make:schema Order --mc
-  forgeapi make:event UserRegistered
-  forgeapi make:listener UserRegistered
   forgeapi generate:schema User --payload
   forgeapi generate:schema User --response
   forgeapi generate:schema User --payload --response -crud
@@ -70,12 +66,11 @@ Usage: forgeapi init <project-name>
 Scaffolds a new ForgeAPI project. Asks for:
   auth strategy  (jwt / cookie / telegram)
   DB driver      (asyncpg / aiosqlite / aiomysql)
-  welcome boilerplate (User + Post + events, optional)
 
 Creates:
   <project-name>/
     main.py  .env
-    config/  app/  models/  controllers/  schemas/  events/  listeners/
+    config/  app/  database/
 """
 
 _HELP_MAKE = """\
@@ -84,8 +79,6 @@ make: commands
   make:controller <Name>   Generate controller  (-m -s)
   make:model <Name>        Generate model       (-c -s)
   make:schema <Name>       Generate stub schemas (-m -c)
-  make:event <Name>        Generate Event subclass
-  make:listener <Name>     Generate @listen handler
 
 Namespace controllers — each CamelCase word becomes a path segment:
   AdminUser      → controllers/admin/user_controller.py   /admin/users
@@ -151,25 +144,6 @@ Examples:
   forgeapi make:schema Post --mc
 """
 
-_HELP_MAKE_EVENT = """\
-Usage: forgeapi make:event <Name>
-
-Generates an Event subclass in events_dir.
-
-Example:
-  forgeapi make:event UserRegistered
-  # → app/events/user_registered_event.py
-"""
-
-_HELP_MAKE_LISTENER = """\
-Usage: forgeapi make:listener <Name>
-
-Generates a @listen handler in listeners_dir.
-
-Example:
-  forgeapi make:listener UserRegistered
-  # → app/listeners/user_registered_listener.py
-"""
 
 _HELP_GENERATE_SCHEMA = """\
 Usage: forgeapi generate:schema <Name> --payload [crud] | --response
@@ -278,7 +252,7 @@ Lists all Tortoise model classes found in models_dir, their table names
 and field names.
 """
 
-_MAKE_KINDS = ("controller", "model", "schema", "event", "listener", "seed")
+_MAKE_KINDS = ("controller", "model", "schema", "seed")
 
 
 @app.command(
@@ -324,8 +298,6 @@ def main(ctx: typer.Context) -> None:
                 "controller": _HELP_MAKE_CONTROLLER,
                 "model":      _HELP_MAKE_MODEL,
                 "schema":     _HELP_MAKE_SCHEMA,
-                "event":      _HELP_MAKE_EVENT,
-                "listener":   _HELP_MAKE_LISTENER,
                 "seed":       _HELP_MAKE_SEED,
             }
             typer.echo(_make_help.get(kind, _HELP_MAKE))

@@ -1,7 +1,0 @@
-from forgeapi import listen
-from {{ events_module }}.{{ module_name }}_event import {{ class_name }}Event
-
-
-@listen({{ class_name }}Event)
-async def handle_{{ module_name }}(event: {{ class_name }}Event) -> None:
-    pass

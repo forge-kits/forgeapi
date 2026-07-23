@@ -78,93 +78,110 @@ class PostController(Controller):
         await post.delete()
 ''',
 
-"redis_event": '''\
-# Redis pub/sub event — fan-out to all running workers
+"broadcasting_pubsub": '''\
+# BroadcastManager — pub/sub mode (fire-and-forget, fan-out to all running workers)
 
-# app/events/order_shipped_event.py
-from forgeapi import Event
+# app/events/__init__.py
+from forgeapi import BroadcastManager
 
-class OrderShipped(Event):
-    background = True
-    redis      = True
-    redis_type = "pubsub"
-    ttl        = 300  # dedup: only one worker processes per event_id
-
-    def __init__(self, order_id: int, customer_email: str) -> None:
-        self.order_id       = order_id
-        self.customer_email = customer_email
+broadcast = BroadcastManager(
+    driver="redis",
+    url="redis://localhost:6379",
+    namespace="myapp",
+    mode="pubsub",   # all connected workers receive every message
+)
 
 
-# app/listeners/order_shipped_listener.py
-from forgeapi import listen
-from app.events.order_shipped_event import OrderShipped
+# app/listeners/order_listener.py
+from app.events import broadcast
 
-@listen(OrderShipped)
-async def send_confirmation_email(event: OrderShipped) -> None:
-    await email_service.send(event.customer_email, f"Order {event.order_id} shipped!")
+@broadcast.on("order:shipped")
+async def send_confirmation(data: dict) -> None:
+    await email_service.send(data["email"], f"Order {data['order_id']} shipped!")
 
 
-# main.py — lifespan setup
-import asyncio
+# main.py
+import app.listeners  # noqa: F401 — registers @broadcast.on handlers
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from forgeapi import Core, EventBus
+from forgeapi import Core
+from app.events import broadcast
 
 @asynccontextmanager
 async def lifespan(app):
-    bus = EventBus.get_instance()
-    await bus.redis_connect("redis://localhost:6379")
-    task = asyncio.create_task(bus.start_redis_subscriber())
+    await broadcast.connect()
     yield
-    task.cancel()
-    await bus.redis_disconnect()
+    await broadcast.disconnect()
 
 app = FastAPI(lifespan=lifespan)
-Core(app, auth="jwt", events=True)
+Core(app)
 
-# Dispatch from a controller:
-await OrderShipped(order_id=42, customer_email="alice@example.com").dispatch()
+# Emit from a controller:
+await broadcast.emit("order:shipped", {"order_id": 42, "email": "alice@example.com"})
 ''',
 
-"stream_event": '''\
-# Redis Streams event — persistent, survives worker restart
+"broadcasting_stream": '''\
+# BroadcastManager — stream mode (persistent, messages survive worker restart)
 
-# app/events/order_event.py
-from forgeapi import Event
+# app/events/__init__.py
+from forgeapi import BroadcastManager
 
-class OrderEvent(Event):
-    background = True
-    redis      = True
-    redis_type = "stream"
-    namespace  = "shop"   # stream key = "shop:OrderEvent"
-
-    def __init__(self, order_id: int, total: float, status: str) -> None:
-        self.order_id = order_id
-        self.total    = total
-        self.status   = status
+broadcast = BroadcastManager(
+    driver="redis",
+    url="redis://localhost:6379",
+    namespace="myapp",
+    mode="stream",   # persistent: messages survive restarts, maxlen caps storage
+    maxlen=1000,
+)
 
 
-# Standalone consumer worker
+# app/listeners/order_listener.py
+from app.events import broadcast
+
+@broadcast.on("order:created")
+async def handle_order(data: dict) -> None:
+    await warehouse.fulfill(data["order_id"])
+
+
+# main.py
+import app.listeners  # noqa: F401 — registers @broadcast.on handlers
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from forgeapi import Core
+from app.events import broadcast
+
+@asynccontextmanager
+async def lifespan(app):
+    await broadcast.connect(group="backend", consumer="worker-1")
+    yield
+    await broadcast.disconnect()
+
+app = FastAPI(lifespan=lifespan)
+Core(app)
+
+# Emit from a controller:
+await broadcast.emit("order:created", {"order_id": 42, "total": 99.9})
+
+
+# Second service consumer (worker-2 in same group = load balancing):
 import asyncio
-from forgeapi import EventBus
-from app.events.order_event import OrderEvent
+from forgeapi import BroadcastManager
+
+broadcast2 = BroadcastManager(driver="redis", url="redis://localhost:6379",
+                               namespace="myapp", mode="stream")
+
+@broadcast2.on("order:created")
+async def handle(data: dict) -> None:
+    print(f"[worker-2] {data}")
 
 async def main():
-    bus = EventBus.get_instance()
-    await bus.redis_connect("redis://localhost:6379")
+    await broadcast2.connect(group="backend", consumer="worker-2")
+    try:
+        await asyncio.sleep(float("inf"))
+    finally:
+        await broadcast2.disconnect()
 
-    @bus.on(OrderEvent)
-    async def handle_order(event: OrderEvent) -> None:
-        await warehouse.fulfill(event.order_id)
-
-    await bus.start_stream_subscriber(
-        group="warehouse_group",
-        consumer="worker_1",
-        event_classes=[OrderEvent],
-    )
-
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
 ''',
 
 "jwt_auth": '''\

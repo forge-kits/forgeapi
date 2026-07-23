@@ -30,12 +30,25 @@ config = {
     "models_dir": "database/models",
     "controllers_dir": "app/controllers",
     "schemas_dir": "app/schemas",
-    "events_dir": "app/events",
     "listeners_dir": "app/listeners",
     "policies_dir": "app/policies",
     "seeds_dir": "database/seeds",
     "base_prefix": "/api/v1",
 }
+'''
+
+_CONFIG_BROADCAST_TEMPLATE = '''\
+from forgeapi import BroadcastManager
+
+config = {{}}  # required by config loader — broadcast is configured below
+
+broadcast = BroadcastManager(
+    driver="redis",
+    url="redis://localhost:6379",
+    namespace="{name}",
+    mode="stream",   # "pubsub" = fire-and-forget | "stream" = persistent
+    maxlen=1000,
+)
 '''
 
 _CONFIG_STORAGE_TEMPLATE = '''\
@@ -236,16 +249,20 @@ from forgeapi import Core
 from tortoise.contrib.fastapi import register_tortoise
 from config.database import TORTOISE_ORM
 
-# Optional: uncomment to enable task scheduling
+# Optional: enable broadcasting (Redis required — configure in config/broadcast.py)
+# from config.broadcast import broadcast
+
+# Optional: enable task scheduling
 # from forgeapi import Scheduler
 # scheduler = Scheduler()
 # scheduler.call(lambda: print("tick")).hourly()
 
 @asynccontextmanager
 async def lifespan(app):
-    # Optional: uncomment to start the scheduler
+    # await broadcast.connect(group="{name}", consumer="worker-1")
     # task = asyncio.create_task(scheduler.run())
     yield
+    # await broadcast.disconnect()
     # task.cancel()
 
 app = FastAPI(lifespan=lifespan)
@@ -314,7 +331,7 @@ def run(name: str) -> None:
     typer.echo("")
     root.mkdir()
 
-    for d in ["app/controllers", "app/schemas", "app/events", "app/listeners", "app/policies",
+    for d in ["app/controllers", "app/schemas", "app/listeners", "app/policies",
               "database/models", "database/migrations", "database/seeds"]:
         p = root / d
         p.mkdir(parents=True, exist_ok=True)
@@ -330,6 +347,7 @@ def run(name: str) -> None:
     _write(root / "config/auth.py", _CONFIG_AUTH_TEMPLATES[strategy], name, typer)
     _write(root / "config/pagination.py", _CONFIG_PAGINATION_TEMPLATE, name, typer)
     _write(root / "config/storage.py", _CONFIG_STORAGE_TEMPLATE, name, typer)
+    _write(root / "config/broadcast.py", _CONFIG_BROADCAST_TEMPLATE.format(name=name), name, typer)
     _write(
         root / "config/database.py",
         _CONFIG_DATABASE_TEMPLATES[driver].format(name=name),
@@ -347,20 +365,13 @@ def run(name: str) -> None:
         name, typer,
     )
 
-    _write(root / "main.py", _MAIN_TEMPLATE, name, typer)
+    _write(root / "main.py", _MAIN_TEMPLATE.format(name=name), name, typer)
 
-    typer.echo("")
-    if typer.confirm(
-        "Create a welcome project? (User + Post, events, policies, cache, permissions)", default=False
-    ):
-        from .boilerplate import run as run_boilerplate
-        run_boilerplate(root, strategy=strategy)
-    else:
-        typer.echo("\nDone. Next:")
-        typer.echo(f"  cd {name}")
-        typer.echo("  forgeapi make:controller User --ms")
-        typer.echo("  forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate")
-        typer.echo("  forgeapi runserver --reload")
+    typer.echo("\nDone. Next:")
+    typer.echo(f"  cd {name}")
+    typer.echo("  forgeapi make:controller User --ms")
+    typer.echo("  forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate")
+    typer.echo("  forgeapi runserver --reload")
 
 
 def _write(path: Path, content: str, project_name: str, typer) -> None:

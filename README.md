@@ -18,19 +18,13 @@
    - [QuerySet .paginate()](#queryset-paginate)
    - [Offset pagination](#offset-pagination)
    - [Cursor pagination](#cursor-pagination)
-7. [Events](#7-events)
-   - [Lifecycle overview](#lifecycle-overview)
-   - [Defining events](#defining-events)
-   - [event_id and serialisation](#event_id-and-serialisation)
-   - [@listen decorator](#listen-decorator)
-   - [Dispatching](#dispatching)
-   - [Background vs synchronous dispatch](#background-vs-synchronous-dispatch)
-   - [Exception isolation](#exception-isolation)
-   - [EventBus](#eventbus)
-   - [Redis pub/sub — EventBus](#redis-pubsub--eventbus)
-   - [Redis Streams — EventBus](#redis-streams--eventbus)
-   - [RedisBus — cross-project bridge](#redisbus--cross-project-bridge)
-   - [Testing events](#testing-events)
+7. [Broadcasting](#7-broadcasting)
+   - [BroadcastManager](#broadcastmanager)
+   - [Pub/Sub mode](#pubsub-mode)
+   - [Stream mode](#stream-mode)
+   - [Cross-project example](#cross-project-example)
+   - [Registering handlers](#registering-handlers)
+   - [Lifecycle](#lifecycle)
 8. [Controllers](#8-controllers)
    - [Base pattern](#base-pattern)
    - [schema class var](#schema-class-var)
@@ -151,7 +145,7 @@ my-project/
     controllers/             # *_controller.py files, auto-loaded by Core
     schemas/                 # Pydantic schemas
     events/                  # Event subclasses
-    listeners/               # @listen(...) handlers
+    listeners/               # @broadcast.on(...) handlers
     policies/                # Policy classes, auto-discovered
   database/
     models/                  # Tortoise models
@@ -608,208 +602,129 @@ Always configured by `Core` — defaults apply when the file is absent.
 
 ---
 
-## 7. Events
+## 7. Broadcasting
 
-Events decouple side effects (emails, notifications, cache invalidation) from business logic.
+`BroadcastManager` is the universal event bus for both in-process and cross-project messaging. It supports two modes and a pluggable driver system (Redis now, RabbitMQ planned).
 
-### Lifecycle overview
-
-```
-route handler
-    │
-    └─ await event.dispatch()
-              │
-              ├─ background=False → asyncio.gather(all listeners) → await → continue
-              ├─ background=True  → asyncio.create_task(gather) → continue immediately
-              └─ redis=True       → publish to Redis → each worker runs local listeners
-```
-
-### Defining events
+### BroadcastManager
 
 ```python
-from forgeapi import Event
+from forgeapi import BroadcastManager
 
-class OrderCreated(Event):
-    background = True        # True = fire-and-forget
-    redis      = False       # True = publish to Redis
-    redis_type = "pubsub"    # "pubsub" | "stream"
-    namespace  = "forgeapi:events"
-    ttl: int | None = None   # Redis dedup window in seconds
-
-    def __init__(self, order_id: int, total: float) -> None:
-        self.order_id = order_id
-        self.total    = total
+broadcast = BroadcastManager(
+    driver="redis",
+    url="redis://localhost:6379",
+    namespace="shop",
+    mode="stream",   # "pubsub" | "stream"
+    maxlen=1000,     # stream mode: keep last N messages per key
+)
 ```
 
-| Flag | Default | Effect |
+| Arg | Default | Description |
 |---|---|---|
-| `background` | `False` | `True` = listeners run in background task |
-| `redis` | `False` | `True` = publish to Redis |
-| `redis_type` | `"pubsub"` | `"pubsub"` = fan-out; `"stream"` = persistent consumer groups |
-| `ttl` | `None` | Dedup window — only first worker that wins `SET NX EX {ttl}` processes it |
+| `driver` | `"redis"` | Transport backend. RabbitMQ planned. |
+| `url` | `"redis://localhost:6379"` | Broker connection URL |
+| `namespace` | `"forge"` | Prefix for all channel/stream keys |
+| `mode` | `"pubsub"` | `"pubsub"` = fire-and-forget, `"stream"` = persistent |
+| `maxlen` | `None` | Stream mode: max messages per stream key |
 
-### event_id and serialisation
-
-Every event automatically gets `self.event_id = str(uuid.uuid4())`. Override `to_dict()` / `from_dict()` for custom serialisation:
+### Registering handlers
 
 ```python
-def to_dict(self) -> dict:
-    base = super().to_dict()
-    base["items"] = [{"id": i.id} for i in self.items]
-    return base
+@broadcast.on("order:created")
+async def handle(data: dict) -> None:
+    print(data["id"])
 ```
 
-### @listen decorator
+`Core(app)` auto-imports all modules in `listeners_dir` so decorators execute at startup.
+
+### Pub/Sub mode
+
+Fire-and-forget fan-out. Fast, but messages are lost if subscriber is offline.
 
 ```python
-from forgeapi import listen
+broadcast = BroadcastManager(driver="redis", url="redis://localhost:6379", namespace="shop")
 
-@listen(OrderCreated)
-async def send_confirmation(event: OrderCreated) -> None:
-    await mailer.send(f"Order #{event.order_id} confirmed")
+@broadcast.on("order:created")
+async def handle(data: dict) -> None:
+    await telegram.send(f"Order #{data['id']}")
 
-@listen(OrderCreated)
-async def update_inventory(event: OrderCreated) -> None:
-    await Inventory.decrease(order_id=event.order_id)
-```
-
-Multiple listeners run **in parallel** via `asyncio.gather`. `Core(app)` imports all files in `listeners_dir` automatically when the directory exists.
-
-### Dispatching
-
-```python
-await OrderCreated(order_id=order.id, total=order.total).dispatch()
-```
-
-### Background vs synchronous dispatch
-
-```python
-# background=False — route waits for all listeners
-class UserRegistered(Event):
-    background = False
-
-# background=True — response returned immediately
-class OrderShipped(Event):
-    background = True
-```
-
-### Exception isolation
-
-Each listener is wrapped in try/except — one failure doesn't kill the others.
-
-### EventBus
-
-```python
-from forgeapi import EventBus
-
-bus = EventBus.get_instance()
-bus.register(OrderCreated, my_handler)
-bus.load_from_dir("app/listeners")
-EventBus.reset()   # clear all listeners — use in tests
-```
-
-### Redis pub/sub — EventBus
-
-```python
-class OrderShipped(Event):
-    background = True
-    redis = True
-    ttl = 300  # one worker per event_id per 5 minutes
-
-    def __init__(self, order_id: int) -> None:
-        self.order_id = order_id
-```
-
-Wire up in lifespan:
-
-```python
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    bus = EventBus.get_instance()
-    await bus.redis_connect("redis://localhost:6379")
-    task = asyncio.create_task(bus.start_redis_subscriber())
+async def lifespan(app):
+    await broadcast.connect()   # no group/consumer needed
     yield
-    task.cancel()
-    await bus.redis_disconnect()
+    await broadcast.disconnect()
 ```
 
-### Redis Streams — EventBus
+### Stream mode
 
-Persistent delivery with consumer groups — messages survive worker restarts:
+Persistent delivery via Redis Streams. Messages survive restarts. Each consumer group receives all messages independently.
 
 ```python
-class OrderEvent(Event):
-    background = True
-    redis      = True
-    redis_type = "stream"
-    namespace  = "shop"      # stream key → shop:OrderEvent
+broadcast = BroadcastManager(
+    driver="redis",
+    url="redis://localhost:6379",
+    namespace="shop",
+    mode="stream",
+    maxlen=1000,
+)
 
-    def __init__(self, order_id: int, total: float) -> None:
-        self.order_id = order_id
-        self.total    = total
+@broadcast.on("order:created")
+async def handle(data: dict) -> None:
+    await warehouse.fulfill(data["order_id"])
+
+@asynccontextmanager
+async def lifespan(app):
+    await broadcast.connect(group="backend", consumer="worker-1")
+    yield
+    await broadcast.disconnect()
 ```
 
-Consumer:
-
-```python
-async def main():
-    bus = EventBus.get_instance()
-    await bus.redis_connect("redis://localhost:6379")
-
-    @bus.on(OrderEvent)
-    async def on_order(event: OrderEvent):
-        await warehouse.fulfill(event.order_id)
-
-    await bus.start_stream_subscriber(
-        group="warehouse_group",
-        consumer="worker_1",
-        event_classes=[OrderEvent],
-    )
-```
-
-| | `redis_type="pubsub"` | `redis_type="stream"` |
+| | `mode="pubsub"` | `mode="stream"` |
 |---|---|---|
 | Persistence | None | Stored until all groups ACK |
 | Delivery | All subscribers simultaneously | Each group independently |
 | Offline workers | Miss messages | Catch up on reconnect |
-| Dedup | `ttl` class var | Not built-in |
+| Horizontal scaling | — | Multiple consumers per group share load |
 
-### RedisBus — cross-project bridge
+### Cross-project example
 
-Communication between **different projects** sharing a Redis URL:
+Both projects use the same `namespace` — no shared Python classes needed, only plain `dict`.
 
 ```python
-from forgeapi import RedisBus
+# Project A — publisher (e.g. backend API)
+broadcast = BroadcastManager(driver="redis", url="redis://...", namespace="shop", mode="stream")
+await broadcast.emit("order:created", {"id": 42, "total": 99.0})
 
-bus = RedisBus("redis://localhost:6379", namespace="shop")
+# Project B — consumer (e.g. Telegram bot, separate service)
+broadcast = BroadcastManager(driver="redis", url="redis://...", namespace="shop", mode="stream")
 
-@bus.on("order:created")
+@broadcast.on("order:created")
 async def handle(data: dict) -> None:
-    await telegram.send(f"Order #{data['id']}")
+    await bot.send(f"New order #{data['id']}")
 
-await bus.emit("order:created", {"id": 42, "total": 99.0})
+await broadcast.connect(group="telegram-bot", consumer="worker-1")
+await asyncio.sleep(float("inf"))
 ```
 
-Lifecycle with FastAPI:
+### Lifecycle
 
 ```python
+# FastAPI
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    async with bus:
-        yield
-```
-
-### Testing events
-
-```python
-import pytest
-from forgeapi import EventBus
-
-@pytest.fixture(autouse=True)
-def reset_bus():
-    EventBus.reset()
+async def lifespan(app):
+    await broadcast.connect(group="backend", consumer="worker-1")  # stream
+    # await broadcast.connect()                                     # pubsub
     yield
-    EventBus.reset()
+    await broadcast.disconnect()
+
+# Standalone script
+async def main():
+    await broadcast.connect(group="bot", consumer="w1")
+    try:
+        await asyncio.sleep(float("inf"))
+    finally:
+        await broadcast.disconnect()
 ```
 
 ---
@@ -1966,8 +1881,6 @@ forgeapi make:controller AdminUser     # controllers/admin/user_controller.py
 forgeapi make:controller Post --ms     # + model + schema stubs
 forgeapi make:model Post
 forgeapi make:model Post -cs           # + controller + schema
-forgeapi make:event OrderShipped       # app/events/order_shipped_event.py
-forgeapi make:listener OrderShipped    # app/listeners/order_shipped_listener.py
 forgeapi make:seed User                # database/seeds/user_seeder.py
 forgeapi make:schema Post              # stub schemas (3 classes with pass)
 ```
@@ -2052,7 +1965,6 @@ config = {
     "models_dir": "database/models",
     "controllers_dir": "app/controllers",
     "schemas_dir": "app/schemas",
-    "events_dir": "app/events",
     "listeners_dir": "app/listeners",
     "policies_dir": "app/policies",
     "seeds_dir": "database/seeds",
@@ -2326,7 +2238,7 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 | `workflow` | CLI rules — which commands to use and which to avoid |
 | `core` | Core constructor, options, startup sequence |
 | `controllers` | Controller, @route, schema class var, auto-prefix |
-| `events` | EventBus, Redis pub/sub, Streams, RedisBus |
+| `events` | BroadcastManager, pub/sub, Streams, cross-project |
 | `auth` | Guards, CurrentUser, strategies, token operations |
 | `permissions` | PermissionsMixin, require_permission, roles |
 | `policies` | Policy, Gate, authorize, allows, discover |

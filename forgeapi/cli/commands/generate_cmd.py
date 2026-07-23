@@ -12,8 +12,6 @@ _ALLOWED_EXTRA: dict[str, set[str]] = {
     "controller": {"model", "schema"},
     "model":      {"controller", "schema"},
     "schema":     {"model", "controller"},
-    "event":      set(),
-    "listener":   set(),
     "seed":       set(),
 }
 
@@ -196,21 +194,6 @@ def _gen_seed(class_name: str, module_name: str, st) -> None:
     _write(Path(seeds_dir) / f"{module_name}_seeder.py", content)
 
 
-def _gen_event(class_name: str, module_name: str, st) -> None:
-    content = _render("event.py.jinja2", class_name=class_name, module_name=module_name)
-    _write(Path(st.events_dir) / f"{module_name}_event.py", content)
-
-
-def _gen_listener(class_name: str, module_name: str, st) -> None:
-    events_module = _relative_import(st.listeners_dir, st.events_dir)
-    content = _render(
-        "listener.py.jinja2",
-        class_name=class_name,
-        module_name=module_name,
-        events_module=events_module,
-    )
-    _write(Path(st.listeners_dir) / f"{module_name}_listener.py", content)
-
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -254,16 +237,6 @@ def run_make(kind: str, name: str, flags: dict[str, bool], alias: str | None = N
 
     if kind == "seed":
         _gen_seed(class_name, module_name, st)
-        typer.echo("Done.")
-        return
-
-    if kind == "event":
-        _gen_event(class_name, module_name, st)
-        typer.echo("Done.")
-        return
-
-    if kind == "listener":
-        _gen_listener(class_name, module_name, st)
         typer.echo("Done.")
         return
 

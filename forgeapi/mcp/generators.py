@@ -126,7 +126,7 @@ def generate_event(name: str, fields: list[str]) -> str:
                 Supported types: int, str, float, bool, dict, list.
 
     Returns:
-        Python source containing the Event subclass and a companion listener.
+        Python source containing a TypedDict payload class and a companion listener.
     """
     if not re.match(r'^[A-Za-z][A-Za-z0-9]*$', name):
         return "Error: name must start with a letter and contain only letters and digits."
@@ -140,46 +140,40 @@ def generate_event(name: str, fields: list[str]) -> str:
 
     snake = re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
 
+    payload_fields = "\n".join(
+        f"    {fn}: {ft}" for fn, ft in parsed
+    ) if parsed else "    pass  # define payload fields"
+
+    emit_args = ", ".join(f'"{fn}": ...' for fn, _ in parsed)
+    emit_example = f'{{{emit_args}}}' if parsed else '{}'
+
     event_lines = [
         f"# app/events/{snake}_event.py",
-        "from forgeapi import Event",
+        "from typing import TypedDict",
         "",
         "",
-        f"class {name}Event(Event):",
-        "    background = True",
-        "    redis      = False",
+        f"class {name}EventData(TypedDict):",
+        payload_fields,
         "",
+        "",
+        f"# Emit from a controller:",
+        f"# from app.events import broadcast",
+        f"# await broadcast.emit(\"{snake}:created\", {name}EventData({emit_example}))",
     ]
-
-    if parsed:
-        init_args = ", ".join(f"{fn}: {ft}" for fn, ft in parsed)
-        event_lines.append(f"    def __init__(self, {init_args}) -> None:")
-        for fn, _ in parsed:
-            event_lines.append(f"        self.{fn} = {fn}")
-    else:
-        event_lines += ["    def __init__(self) -> None:", "        pass"]
 
     listener_lines = [
         "",
         "",
         f"# app/listeners/{snake}_listener.py",
-        "from forgeapi import listen",
-        f"from app.events.{snake}_event import {name}Event",
+        "from app.events import broadcast",
         "",
         "",
-        f"@listen({name}Event)",
-        f"async def handle_{snake}(event: {name}Event) -> None:",
+        f"@broadcast.on(\"{snake}:created\")",
+        f"async def handle_{snake}(data: dict) -> None:",
         "    pass",
     ]
 
-    dispatch_args = ", ".join(f"{fn}=..." for fn, _ in parsed)
-    dispatch_lines = [
-        "",
-        "",
-        f"# await {name}Event({dispatch_args}).dispatch()",
-    ]
-
-    return "\n".join(event_lines + listener_lines + dispatch_lines) + "\n"
+    return "\n".join(event_lines + listener_lines) + "\n"
 
 
 def generate_schema(name: str, fields: list[str], mode: str = "all") -> str:

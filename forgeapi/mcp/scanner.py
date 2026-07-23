@@ -306,7 +306,7 @@ def scan_project(path: str = ".") -> str:
     root = toml_path.parent
     defaults = {
         "models_dir": "database/models", "controllers_dir": "app/controllers",
-        "schemas_dir": "app/schemas",    "events_dir": "app/events",
+        "schemas_dir": "app/schemas",
         "listeners_dir": "app/listeners", "seeds_dir": "database/seeds",
         "base_prefix": "/api/v1",
     }
@@ -329,7 +329,6 @@ def scan_project(path: str = ".") -> str:
         ("Models",      "models_dir",      "*.py",              lambda f: _scan_models(f, root)),
         ("Controllers", "controllers_dir", "*_controller.py",   lambda f: _scan_controllers(f, root, base_prefix)),
         ("Schemas",     "schemas_dir",     "*.py",              lambda f: _scan_schemas(f, root)),
-        ("Events",      "events_dir",      "*_event.py",        lambda f: _scan_events(f, root)),
         ("Listeners",   "listeners_dir",   "*_listener.py",     lambda f: _scan_listeners(f, root)),
         ("Seeders",     "seeds_dir",       "*_seeder.py",       lambda f: _scan_seeders(f, root)),
     ]:
@@ -382,7 +381,7 @@ def project_info(path: str = ".") -> str:
     root = toml_path.parent
     defaults = {
         "models_dir": "database/models", "controllers_dir": "app/controllers",
-        "schemas_dir": "app/schemas",    "events_dir": "app/events",
+        "schemas_dir": "app/schemas",
         "listeners_dir": "app/listeners", "seeds_dir": "database/seeds",
         "base_prefix": "/api/v1",
     }
@@ -416,7 +415,6 @@ def project_info(path: str = ".") -> str:
 
     for label, dir_key, glob in [
         ("Controllers", "controllers_dir", "*_controller.py"),
-        ("Events",      "events_dir",      "*_event.py"),
         ("Listeners",   "listeners_dir",   "*_listener.py"),
     ]:
         d = root / struct[dir_key]
