@@ -36,9 +36,8 @@ class MiddlewareProvider(Provider):
         if http.cors is not False:
             from .cors import add_cors
             origins = http.cors if isinstance(http.cors, list) else ["*"]
-            allow_credentials = "*" not in origins
-            add_cors(self.app, origins=origins, allow_credentials=allow_credentials)
-            _log.debug("Middleware: CORS enabled, origins=%s credentials=%s", origins, allow_credentials)
+            add_cors(self.app, origins=origins, allow_credentials=http.cors_allow_credentials)
+            _log.debug("Middleware: CORS enabled, origins=%s, credentials=%s", origins, http.cors_allow_credentials)
         if http.rate_limit is not False:
             from .rate_limit import RateLimitMiddleware
             rpm = http.rate_limit if not isinstance(http.rate_limit, bool) else 60

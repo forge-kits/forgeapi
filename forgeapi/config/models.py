@@ -30,6 +30,7 @@ class HttpConfig(BaseModel):
     """
 
     cors: bool | list[str] = False
+    cors_allow_credentials: bool = False
     rate_limit: bool | int = False
     request_id: bool = False
     access_log: bool = True

@@ -37,19 +37,18 @@ class LogRecord:
 
 
 @dataclasses.dataclass
-class EventRecord:
-    event: str
-    listeners: list[str]
-    background: bool
+class BroadcastRecord:
+    channel: str
+    payload: Any
+    duration_ms: float
 
 
 @dataclasses.dataclass
-class JobRecord:
-    job: str
-    status: str          # queued | running | done | failed
-    attempts: int
-    duration_ms: float | None
-    error: str | None
+class CacheRecord:
+    op: str            # get / set / forget / flush
+    key: str
+    hit: bool | None   # True=hit, False=miss, None=n/a (set/forget/flush)
+    duration_ms: float
 
 
 @dataclasses.dataclass
@@ -66,8 +65,8 @@ class RequestEntry:
     response_body: Any = None
     queries: list[SqlRecord] = dataclasses.field(default_factory=list)
     logs: list[LogRecord] = dataclasses.field(default_factory=list)
-    events: list[EventRecord] = dataclasses.field(default_factory=list)
-    jobs: list[JobRecord] = dataclasses.field(default_factory=list)
+    broadcasts: list[BroadcastRecord] = dataclasses.field(default_factory=list)
+    caches: list[CacheRecord] = dataclasses.field(default_factory=list)
 
     def summary(self) -> dict:
         return {
@@ -80,8 +79,8 @@ class RequestEntry:
             "counts": {
                 "queries": len(self.queries),
                 "logs": len(self.logs),
-                "events": len(self.events),
-                "jobs": len(self.jobs),
+                "broadcasts": len(self.broadcasts),
+                "caches": len(self.caches),
             },
         }
 
