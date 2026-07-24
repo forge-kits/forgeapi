@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import importlib.util
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from forgeapi.cli.base import Command
@@ -58,7 +57,7 @@ Examples:
                 typer.echo(f"Running '{task_name}'...")
                 try:
                     await scheduler.run_one(task_name)
-                    typer.echo(f"Done.")
+                    typer.echo("Done.")
                 except ValueError as exc:
                     self.abort(str(exc))
             else:

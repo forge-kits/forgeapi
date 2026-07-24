@@ -156,8 +156,8 @@ def generate_event(name: str, fields: list[str]) -> str:
         payload_fields,
         "",
         "",
-        f"# Emit from a controller:",
-        f"# from app.events import broadcast",
+        "# Emit from a controller:",
+        "# from app.events import broadcast",
         f"# await broadcast.emit(\"{snake}:created\", {name}EventData({emit_example}))",
     ]
 

@@ -41,7 +41,6 @@ Examples:
 """
 
     def handle(self, cmd: str, args: list[str]) -> None:
-        import typer
         from forgeapi.config import load_config
 
         subcmd = cmd.split(":", 1)[1]
