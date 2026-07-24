@@ -22,6 +22,7 @@ config = {{
 _CONFIG_HTTP_TEMPLATE = '''\
 config = {
     "cors": ["*"],        # True → all origins; list → specific; False → off
+    "allow_credentials": False,
     "rate_limit": 60,     # req/min per IP; False → off
     "request_id": True,   # inject X-Request-ID header
     "access_log": True,   # log method/path/status/duration per request
