@@ -9,34 +9,29 @@ _DOCS: dict[str, str] = {
 ```python
 class PostController(Controller):
     prefix = "/posts"; tags = ["posts"]
+    schema = PostResponse   # auto response_model on all routes except 204
 
-    @route.get("/")
-    async def index(self, pagination: Pagination) -> dict:
-        total, items = await asyncio.gather(Post.all().count(),
-            Post.all().order_by("-created_at").offset(pagination.offset).limit(pagination.limit))
-        return {"items": items, "total": total, "page": pagination.page}
+    @route.get("/", response_model=None)
+    async def index(self, request: Request):
+        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
 
     @route.post("/", status_code=201)
-    async def create(self, payload: PostCreate, user: CurrentUser) -> dict:
-        post = await Post.create(**payload.model_dump(), author_id=int(user.id))
-        return PostResponse.model_validate(post).model_dump()
+    async def create(self, payload: PostCreate, user: CurrentUser):
+        return await Post.create_from(payload, author_id=int(user.id))
 
     @route.get("/{id}")
-    async def show(self, id: int) -> dict:
-        post = await Post.get_or_none(id=id)
-        if not post: raise HTTPException(404)
-        return PostResponse.model_validate(post).model_dump()
+    async def show(self, id: int):
+        return await Post.find_or_fail(id)
 
     @route.patch("/{id}")
-    async def update(self, id: int, payload: PostUpdate, user: CurrentUser) -> dict:
-        post = await Post.get_or_none(id=id, author_id=int(user.id))
-        if not post: raise HTTPException(404)
-        await post.update_from_dict(payload.model_dump(exclude_none=True)).save()
-        return PostResponse.model_validate(post).model_dump()
+    async def update(self, id: int, payload: PostUpdate, user: CurrentUser):
+        post = await Post.find_or_fail(id)
+        return await post.update_from(payload)
 
     @route.delete("/{id}", status_code=204)
-    async def destroy(self, id: int, user: CurrentUser):
-        if not await Post.filter(id=id, author_id=int(user.id)).delete(): raise HTTPException(404)
+    async def destroy(self, id: int):
+        post = await Post.find_or_fail(id)
+        await post.delete()
 ```
 
 ## Schemas | Auth | Broadcasting
@@ -46,7 +41,7 @@ class PostCreate(BaseCreateSchema): title: str
 class PostUpdate(BaseUpdateSchema): title: str | None = None  # auto-optional
 
 user: CurrentUser   # 401 if missing  |  user: OptionalUser  # None if missing
-access = auth.token(user)
+auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
 
 # app/events/__init__.py
 from forgeapi import BroadcastManager
@@ -426,10 +421,22 @@ Both projects use same `namespace`, handlers receive plain `dict` — no shared 
 "auth": """\
 # forge-kits: Authentication
 
-## Quick setup via Core
+Auth boots automatically when `config/auth.py` exists. Strategies: `cookie`, `telegram`.
+
+## config/auth.py
 ```python
-Core(app, auth="cookie")    # cookie-based session
-Core(app, auth="telegram")  # Telegram mini-app auth (BOT_TOKEN env var)
+from forgeapi import env
+
+config = {
+    "default": "api",
+    "guards": {
+        "api": {
+            "strategy": "cookie",
+            "secret": env("COOKIE_SECRET"),
+            "model": "database.models.user.User",   # optional — load user from DB
+        },
+    },
+}
 ```
 
 ## Using in routes
@@ -446,23 +453,21 @@ async def feed(self, user: OptionalUser) -> dict:
     return public_feed()
 ```
 
-## AuthUser fields
-- `user.id: str` — session `sub` claim; use `int(user.id)` for DB queries
+## AuthUser fields (when model= is not set)
+- `user.id: str` — `sub` claim; use `int(user.id)` for DB queries
 - `user.username: str | None`
-- `user.extra: dict` — any non-standard session claims
-- `user.auth_method: str` — "cookie" | "telegram"
+- `user.extra: dict` — any extra session claims
+- `user.auth_method: str` — `"cookie"` | `"telegram"`
 
-## Session operations
+## Cookie session operations
 ```python
 from forgeapi.auth import auth
 
-token = auth.token(user)  # returns signed session value
-
-auth.set_cookie(response, {"sub": str(user.id)})  # write session cookie
-auth.delete_cookie(response)                        # clear session cookie
+auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+auth.delete_cookie(response)
 ```
 
-## Login / Register endpoint pattern (cookie)
+## Login / Logout pattern (cookie)
 ```python
 @route.post("/login")
 async def login(self, payload: LoginPayload, response: Response) -> dict:
@@ -478,8 +483,39 @@ async def logout(self, response: Response) -> dict:
     return {"message": "Logged out"}
 ```
 
-## Exceptions
-- `forgeapi.exceptions.ForgeAPIConfigError`
+## Error semantics
+- credentials absent → 401 for `CurrentUser`, `None` for `OptionalUser`
+- credentials present but invalid (expired/bad signature/user gone) → 401 always
+- `WWW-Authenticate: Bearer error="<code>"` — codes: `session_expired`, `session_invalid`, `user_not_found`, `missing_credentials`
+
+## Multiple guards
+```python
+from forgeapi.auth import guard
+
+CurrentAdmin = guard("admin").current_user()
+token = auth.guard("admin").set_cookie(response, {"sub": str(admin.id)})
+```
+
+## Custom strategies
+```python
+from forgeapi.auth import auth
+from forgeapi.auth.strategies.base import AuthStrategy
+
+auth.extend("apikey", ApiKeyStrategy)
+# now "apikey" is a valid strategy name in config/auth.py
+```
+
+## Telegram strategy
+Client sends `window.Telegram.WebApp.initData` via `X-Telegram-Init-Data` or `Authorization: tma <initData>`.
+```python
+# config/auth.py
+config = {
+    "default": "api",
+    "guards": {
+        "api": {"strategy": "telegram", "bot_token": env("BOT_TOKEN")},
+    },
+}
+```
 """,
 
 "permissions": """\
@@ -630,25 +666,21 @@ await Cache.decrement("stock:item:5")       # → int
 await Cache.increment("counter", amount=5)
 ```
 
-## forgeapi.toml
-```toml
-[cache]
-driver    = "memory"   # "memory" | "redis"
-prefix    = "myapp:"
-ttl       = 3600       # default TTL in seconds (null = no expiry)
-
-# Redis driver:
-[cache]
-driver    = "redis"
-redis_url = "redis://localhost:6379/1"
-prefix    = "myapp:"
+## Configuration (config/cache.py)
+```python
+config = {
+    "driver": "memory",                        # "memory" | "redis"
+    "prefix": "myapp:",
+    "ttl": None,                               # default TTL in seconds (None = no expiry)
+    "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
+}
 ```
 
 ## Drivers
 - **memory** — in-process dict with TTL, no dependencies, resets on restart
 - **redis** — persistent, shared across workers; requires `pip install forge-kits[redis]`
 
-Core auto-configures Cache from forgeapi.toml on startup.
+Core auto-configures Cache from `config/cache.py` on startup (memory driver by default).
 """,
 
 "support": """\
@@ -735,14 +767,12 @@ Returns `PaginatedResponse` with `data`, `meta` (page/per_page/total/last_page),
 
 Query params: `?page=2&per_page=50`
 
-## Global configuration
+## Global configuration (config/pagination.py)
 ```python
-Core(app, pagination=20)   # sets default_limit=20
-```
-```toml
-[pagination]
-default_limit = 20
-max_limit     = 100
+config = {
+    "default_limit": 20,
+    "max_limit": 100,
+}
 ```
 """,
 
@@ -882,45 +912,90 @@ forgeapi runserver --port 9000 --host 0.0.0.0 --reload
 """,
 
 "config": """\
-# forge-kits: Configuration (forgeapi.toml)
+# forge-kits: Configuration (config/ directory)
 
-## Full example
-```toml
-[project]
-name        = "my-api"
-version     = "0.1.0"
-description = "My FastAPI service"
+Config format: **`config/<section>.py`** files, each defining `config = {...}`.
+Section name = filename. All sections optional. `forgeapi.toml` is NOT supported.
 
-[structure]
-models_dir      = "database/models"
-controllers_dir = "app/controllers"
-schemas_dir     = "app/schemas"
-listeners_dir   = "app/listeners"
-seeds_dir       = "database/seeds"
-base_prefix     = "/api/v1"
+## Known sections
 
-[auth]
-strategy = "cookie"
+```python
+# config/project.py
+from forgeapi import env
+config = {
+    "name": "my-api",
+    "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "providers": [],                    # extra Provider dotted paths
+}
 
-[pagination]
-default_limit = 20
-max_limit     = 100
+# config/structure.py
+config = {
+    "models_dir": "database/models",
+    "controllers_dir": "app/controllers",
+    "schemas_dir": "app/schemas",
+    "listeners_dir": "app/listeners",
+    "policies_dir": "app/policies",
+    "seeds_dir": "database/seeds",
+    "base_prefix": "/api/v1",
+    "schedule_file": "schedule.py",
+}
 
-[cache]
-driver    = "memory"   # or "redis"
-prefix    = ""
-redis_url = "redis://localhost:6379/0"
+# config/http.py
+config = {
+    "cors": ["*"],        # True = all origins; list = specific; False = off
+    "rate_limit": 60,     # req/min per IP
+    "request_id": True,
+    "access_log": True,
+    "middleware": [],     # [MyMiddleware] or [(MyMiddleware, {"key": val})]
+}
+
+# config/auth.py  — guards: cookie | telegram | custom
+config = {
+    "default": "api",
+    "guards": {
+        "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+                "model": "database.models.user.User"},
+    },
+}
+
+# config/pagination.py
+config = {"default_limit": 20, "max_limit": 100}
+
+# config/cache.py
+config = {
+    "driver": "memory",   # "memory" | "redis"
+    "prefix": "",
+    "ttl": None,
+    "redis_url": "redis://localhost:6379/0",
+}
+
+# config/storage.py
+config = {
+    "driver": "local",
+    "root": "storage/app",
+    "base_url": "/storage",
+    # S3: "bucket", "region", "access_key", "secret_key", "endpoint_url"
+}
+
+# config/database.py  — TORTOISE_ORM lives here (no config dict needed)
+TORTOISE_ORM = {"connections": {...}, "apps": {...}}
 ```
 
-## Loading in code
+## Custom sections
 ```python
-from forgeapi import load_config, KitConfig
+# config/services.py
+config = {"stripe": {"key": env("STRIPE_KEY")}}
 
-cfg: KitConfig = load_config()
-cfg.project.name
-cfg.auth.strategy
-cfg.pagination.default_limit
-cfg.cache.driver
+# Access in code:
+core.config.get("services.stripe.key")
+core.config.get("auth.guards.api.strategy")
+```
+
+## env() helper
+```python
+from forgeapi import env
+env("APP_DEBUG", False)   # reads env var; casts "true"/"false"/"null"
+env("COOKIE_SECRET")      # → str | None
 ```
 """,
 
@@ -930,6 +1005,7 @@ cfg.cache.driver
 ## ModelMixin shortcuts
 ```python
 from forgeapi import ModelMixin
+from forgeapi.database import scope
 from tortoise import fields, Model
 
 class Post(ModelMixin, Model):
@@ -944,9 +1020,13 @@ class Post(ModelMixin, Model):
     class Meta:
         table = "posts"
 
-    @classmethod
-    def published(cls):
-        return cls.filter(is_published=True)
+    @scope
+    def published(qs):
+        return qs.filter(is_published=True)
+
+    @scope
+    def by_author(qs, author_id: int):
+        return qs.filter(author_id=author_id)
 ```
 
 ## ModelMixin API
@@ -1360,6 +1440,83 @@ Partial observers (only some hooks defined) are handled — only relevant signal
 are registered.
 """,
 
+"queue": """\
+# forge-kits: Queue (DB-backed job queue)
+
+DB-backed async job queue. Jobs are stored in the `queued_jobs` table, failed
+ones in `failed_jobs`. No external broker needed (DB only).
+
+## Tortoise setup
+Add `forgeapi.queue.models` to your TORTOISE_ORM models list:
+```python
+# config/database.py
+TORTOISE_ORM = {
+    "apps": {
+        "models": {
+            "models": ["database.models", "forgeapi.queue.models"],
+        }
+    },
+}
+```
+The CLI creates tables automatically via `generate_schemas(safe=True)`.
+
+## Defining a Job
+```python
+from forgeapi.queue import Job
+
+class SendWelcomeEmail(Job):
+    queue = "default"   # optional — override queue name
+    max_tries = 3       # optional — retry attempts on failure
+
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+
+    async def handle(self) -> None:
+        user = await User.get(id=self.user_id)
+        await mailer.send(user.email, "Welcome!")
+```
+
+## Dispatching
+```python
+from forgeapi.queue import dispatch
+
+await dispatch(SendWelcomeEmail(user_id=user.id))
+await dispatch(SendWelcomeEmail(user_id=user.id), delay=60)    # seconds delay
+await dispatch(SendWelcomeEmail(user_id=user.id), queue="high")  # override queue
+```
+
+## CLI commands
+```bash
+forgeapi queue:work               # start infinite worker loop
+forgeapi queue:run                # process all pending jobs once
+forgeapi queue:failed             # list failed jobs
+forgeapi queue:retry <id>         # move a failed job back to the queue
+forgeapi queue:flush              # delete all failed jobs
+```
+
+## FastAPI lifespan (in-process worker)
+```python
+import asyncio
+from contextlib import asynccontextmanager
+from forgeapi.queue import Queue
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(Queue().work())
+    yield
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+```
+
+## Retry behaviour
+On failure, the job is retried with exponential backoff (`attempts² × 10s`).
+After `max_tries` attempts it moves to `failed_jobs`.
+
+## DB tables
+- `queued_jobs` — pending/reserved jobs (id, queue, payload, attempts, reserved_at, available_at)
+- `failed_jobs` — permanently failed jobs (id, queue, payload, exception, failed_at)
+""",
+
 }
 
 
@@ -1375,7 +1532,7 @@ def get_docs(topic: str) -> str:
 
     Topics (lightest → heaviest):
       cheatsheet, workflow, pagination, config, schemas, middleware,
-      core, cli, auth, permissions, policies, cache, storage, scheduler,
+      core, cli, auth, permissions, policies, cache, storage, scheduler, queue,
       scopes, observers, support, controllers, events, tortoise, tortoise_advanced, models
 
     Args:

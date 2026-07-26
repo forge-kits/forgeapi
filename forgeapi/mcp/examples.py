@@ -8,11 +8,13 @@ _EXAMPLES: dict[str, str] = {
 # database/models/post.py
 from tortoise import fields, Model
 from forgeapi import ModelMixin
+from forgeapi.database import scope
 
 class Post(ModelMixin, Model):
     id           = fields.IntField(pk=True)
     title        = fields.CharField(max_length=255)
     body         = fields.TextField()
+    is_published = fields.BooleanField(default=False)
     author_id    = fields.IntField()
     created_at   = fields.DatetimeField(auto_now_add=True)
     updated_at   = fields.DatetimeField(auto_now=True)
@@ -20,9 +22,9 @@ class Post(ModelMixin, Model):
     class Meta:
         table = "posts"
 
-    @classmethod
-    def published(cls):
-        return cls.filter(is_published=True)
+    @scope
+    def published(qs):
+        return qs.filter(is_published=True)
 
 
 # app/schemas/post.py
@@ -441,6 +443,83 @@ class PostController(Controller):
         return result
 ''',
 
+
+"queue": '''\
+# DB-backed job queue — define, dispatch, and run jobs
+
+# app/jobs/send_welcome_email.py
+from forgeapi.queue import Job
+
+class SendWelcomeEmail(Job):
+    queue = "default"
+    max_tries = 3
+
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+
+    async def handle(self) -> None:
+        from database.models.user import User
+        user = await User.get(id=self.user_id)
+        await mailer.send(user.email, "Welcome aboard!")
+
+
+# config/database.py — add queue models to Tortoise
+TORTOISE_ORM = {
+    "connections": {"default": "sqlite://./db.sqlite3"},
+    "apps": {
+        "models": {
+            "models": [
+                "database.models",
+                "forgeapi.queue.models",   # ← required: creates queued_jobs + failed_jobs
+            ],
+            "default_connection": "default",
+        }
+    },
+}
+
+
+# app/controllers/user_controller.py — dispatch from a controller
+from forgeapi.queue import dispatch
+from app.jobs.send_welcome_email import SendWelcomeEmail
+
+class UserController(Controller):
+    prefix = "/users"
+    tags   = ["users"]
+
+    @route.post("/register", status_code=201)
+    async def register(self, payload: RegisterPayload) -> dict:
+        user = await User.create_from(payload)
+        await dispatch(SendWelcomeEmail(user_id=user.id))         # immediate
+        await dispatch(SendWelcomeEmail(user_id=user.id), delay=60)  # after 60s
+        return {"id": user.id}
+
+
+# main.py — in-process worker via lifespan
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from forgeapi import Core
+from forgeapi.queue import Queue
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(Queue().work())
+    yield
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+app = FastAPI(lifespan=lifespan)
+core = Core(app)
+
+
+# CLI usage (separate process — recommended for production)
+# forgeapi queue:work               — start infinite worker loop
+# forgeapi queue:run                — process all pending jobs once
+# forgeapi queue:failed             — list failed jobs
+# forgeapi queue:retry <id>         — re-queue a failed job
+# forgeapi queue:flush              — delete all failed jobs
+''',
+
 }
 
 
@@ -448,7 +527,7 @@ def get_example(pattern: str) -> str:
     """Return a complete working code example for a forge-kits pattern.
 
     Patterns: crud_controller, broadcasting_pubsub, broadcasting_stream,
-              rbac, pagination, guard, cache, scheduler
+              rbac, pagination, guard, cache, scheduler, queue
 
     Args:
         pattern: One of the pattern names listed above (case-insensitive,

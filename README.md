@@ -11,7 +11,6 @@
    - [CurrentUser and OptionalUser](#currentuser-and-optionaluser)
    - [Auth facade — issuing tokens](#auth-facade--issuing-tokens)
    - [Multiple guards](#multiple-guards)
-   - [JWT strategy](#jwt-strategy)
    - [Cookie strategy](#cookie-strategy)
    - [Telegram strategy](#telegram-strategy)
 6. [Pagination](#6-pagination)
@@ -67,14 +66,19 @@
 20. [Settings](#20-settings)
 21. [Seeders](#21-seeders)
 22. [Scheduler](#22-scheduler)
-23. [CLI reference](#23-cli-reference)
-24. [Configuration reference (config/)](#24-configuration-reference-config)
-25. [Telescope](#25-telescope)
+23. [Queue](#23-queue)
+    - [Defining a job](#defining-a-job)
+    - [Dispatching](#dispatching)
+    - [Running the worker](#running-the-worker)
+    - [Failed jobs](#failed-jobs)
+24. [CLI reference](#24-cli-reference)
+25. [Configuration reference (config/)](#25-configuration-reference-config)
+26. [Telescope](#26-telescope)
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
     - [Recording jobs](#recording-jobs)
-26. [MCP Server](#26-mcp-server)
+27. [MCP Server](#27-mcp-server)
     - [Install](#install)
     - [Global setup for Claude Code](#global-setup-for-claude-code)
     - [Per-project setup](#per-project-setup)
@@ -92,22 +96,20 @@ pip install forge-kits
 
 | Extra | Installs | Use when |
 |---|---|---|
-| `auth` | `pyjwt` | JWT or Cookie auth strategy |
+| `auth` | `pyjwt` | Cookie auth strategy (HMAC signing) |
 | `asyncpg` | `tortoise-orm`, `asyncpg` | PostgreSQL |
 | `aiosqlite` | `tortoise-orm`, `aiosqlite` | SQLite |
 | `aiomysql` | `tortoise-orm`, `aiomysql` | MySQL / MariaDB |
-| `db` | `tortoise-orm` | ORM only, bring your own driver |
-| `redis` | `redis` | Cache Redis driver / Redis events |
-| `full-asyncpg` | auth + asyncpg | PostgreSQL + JWT |
-| `full-aiosqlite` | auth + aiosqlite | SQLite + JWT |
-| `full-aiomysql` | auth + aiomysql | MySQL + JWT |
-| `full` | auth + all three drivers | everything |
+| `redis` | `redis` | Cache Redis driver / BroadcastManager events |
+| `full-asyncpg` | auth + asyncpg | PostgreSQL + auth |
+| `full-aiosqlite` | auth + aiosqlite | SQLite + auth |
+| `full-aiomysql` | auth + aiomysql | MySQL + auth |
 | `s3` | `boto3` | S3 / MinIO / Cloudflare R2 storage driver |
 | `images` | `Pillow` | ImageProcessor helper |
 | `mcp` | `mcp` | forge-kits MCP server for AI-assisted development |
 
 ```bash
-pip install forge-kits[full-asyncpg]   # PostgreSQL + JWT
+pip install forge-kits[full-asyncpg]   # PostgreSQL + auth
 pip install forge-kits[mcp]            # MCP server
 pip install forge-kits[redis]          # Redis cache / events
 pip install forge-kits[s3,images]      # S3 storage + image processing
@@ -121,7 +123,7 @@ forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate
 forgeapi runserver --reload
 ```
 
-`forgeapi init` asks for auth strategy (jwt / cookie / telegram), DB driver (asyncpg / aiosqlite / aiomysql), and whether to generate the welcome boilerplate (User + Post + events).
+`forgeapi init` asks for auth strategy (cookie / telegram), DB driver (asyncpg / aiosqlite / aiomysql), and whether to generate the welcome boilerplate (User + Post + events).
 
 ---
 
@@ -132,12 +134,12 @@ After `forgeapi init my-project`:
 ```
 my-project/
   main.py                    # entry point — FastAPI app + Core(app)
-  .env                       # secrets (JWT_SECRET, DB_* etc.)
+  .env                       # secrets (COOKIE_SECRET, DB_* etc.)
   config/                    # Laravel-style config directory (see §24)
     project.py               # name, debug, extra providers
     structure.py             # directory layout + base_prefix
     http.py                  # cors, rate_limit, request_id, access_log, middleware
-    auth.py                  # named guards (jwt / cookie / telegram)
+    auth.py                  # named guards (cookie / telegram)
     pagination.py            # default_limit, max_limit
     database.py              # TORTOISE_ORM dict lives here
     storage.py               # driver, root, base_url (or S3 config)
@@ -277,10 +279,12 @@ Auth has its own domain-exception hierarchy (`ForgeAPIAuthError` subclasses:
 
 Auth is based on **Guards**. A Guard combines a **strategy** (how to verify credentials) with an optional **user model** (which Tortoise model to load from the DB).
 
+Available strategies: **cookie** (HMAC-signed session cookie), **telegram** (Telegram Mini App initData).
+
 ```
 Auth (facade)   — guard registry + strategy factories, pure delegation
  └─ Guard       — the only layer that speaks HTTP (401) and touches the DB
-     └─ AuthStrategy — pure domain: extract/verify credentials, issue tokens
+     └─ AuthStrategy — pure domain: extract/verify credentials, issue sessions
 ```
 
 ### Step 1 — define guards in config/auth.py
@@ -295,10 +299,8 @@ config = {
     "default": "api",
     "guards": {
         "api": {
-            "strategy": "jwt",              # jwt | cookie | telegram | custom
-            "secret": env("JWT_SECRET"),
-            "access_ttl": 30,               # minutes
-            "refresh_ttl": 7,               # days
+            "strategy": "cookie",           # cookie | telegram | custom
+            "secret": env("COOKIE_SECRET"),
             "model": "database.models.user.User",   # optional — load user from DB
         },
     },
@@ -308,7 +310,7 @@ config = {
 `strategy` picks the credential mechanism; the remaining keys are passed to
 the strategy's `from_config()` (see per-strategy tables below). `model` is a
 dotted path to a Tortoise model — when set, `CurrentUser` resolves to a real
-DB instance (and a valid token whose user is gone from the DB is a 401).
+DB instance (and a valid session whose user is gone from the DB is a 401).
 
 ### Step 2 — protect routes
 
@@ -332,96 +334,60 @@ async def feed(self, user: OptionalUser):
 - credentials **present but invalid** (expired / bad signature / user gone
   from the DB) → **401 always**, even for `OptionalUser`
 - every 401 carries `WWW-Authenticate: Bearer error="<code>"` with a
-  machine-readable code: `token_expired`, `token_invalid`, `session_expired`,
-  `session_invalid`, `user_not_found`, `missing_credentials`
+  machine-readable code: `session_expired`, `session_invalid`, `user_not_found`, `missing_credentials`
 
 ### What the user object contains
 
 With `"model"` configured, the dependency returns your **Tortoise model
 instance** loaded from the DB — all its fields and methods are available.
 
-Without `"model"`, it returns a lightweight `AuthUser` built from the token
+Without `"model"`, it returns a lightweight `AuthUser` built from the session
 payload:
 
 | Field | Type | Description |
 |---|---|---|
-| `user.id` | `str \| int` | JWT `sub` claim — cast with `int(user.id)` for DB queries |
-| `user.username` | `str \| None` | From token payload |
-| `user.auth_method` | `str` | `"jwt"` / `"cookie"` / `"telegram"` |
+| `user.id` | `str` | Session `sub` claim — cast with `int(user.id)` for DB queries |
+| `user.username` | `str \| None` | From session payload |
+| `user.auth_method` | `str` | `"cookie"` / `"telegram"` |
 | `user.extra` | `dict` | Any extra claims (`role`, `email`, etc.) |
 
-### Token claims — auth_claims()
-
-Define `auth_claims()` on the user model to control what goes into tokens
-(`sub` is auto-filled from `user.id`):
-
-```python
-class User(ModelMixin, Model):
-    def auth_claims(self) -> dict:
-        return {"username": self.username, "role": self.role}
-```
-
-### Auth facade — issuing tokens
+### Auth facade — session operations
 
 ```python
 from forgeapi.auth import auth
 
-access  = auth.token(user)           # access token — takes DB model instance
-refresh = auth.refresh_token(user)   # refresh token — RefreshCapable strategies (jwt)
-
-# Decode
-payload = auth.decode(token, expected_type="access")  # raises TokenExpiredError | TokenInvalidError
-
-# SessionIssuer strategies (cookie) only
+# Cookie strategy
 auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
 auth.delete_cookie(response)
 ```
 
-`auth.token(user)` accepts any model instance — `sub` is auto-filled from
-`user.id`, the rest comes from the model's `auth_claims()` hook (see above).
-
-Capabilities are protocols (`forgeapi.auth.contracts`): `TokenIssuer`,
-`RefreshCapable`, `SessionIssuer`. The facade dispatches on
-`isinstance(strategy, Protocol)` — a custom strategy that implements a
-protocol gets `token()` / `decode()` / cookie helpers for free.
-
-### Login endpoint pattern
+### Login / Logout endpoint pattern (cookie)
 
 ```python
 @route.post("/login")
-async def login(self, payload: LoginPayload) -> dict:
+async def login(self, payload: LoginPayload, response: Response) -> dict:
     user = await User.get_or_none(email=payload.email)
     if not user or not user.verify_password(payload.password):
         raise HTTPException(401, "Invalid credentials")
-    return {
-        "access_token":  auth.token(user),
-        "refresh_token": auth.refresh_token(user),
-        "token_type":    "bearer",
-    }
+    auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+    return {"message": "Logged in"}
 
-@route.post("/refresh")
-async def refresh(self, payload: RefreshPayload) -> dict:
-    try:
-        data = auth.decode(payload.refresh_token, expected_type="refresh")
-    except (TokenExpiredError, TokenInvalidError) as e:
-        raise HTTPException(401, str(e))
-    user = await User.find_or_fail(int(data["sub"]))
-    return {"access_token": auth.token(user), "token_type": "bearer"}
+@route.post("/logout")
+async def logout(self, response: Response) -> dict:
+    auth.delete_cookie(response)
+    return {"message": "Logged out"}
 ```
 
 ### Multiple guards
-
-Define several named guards in `config/auth.py`; each gets its own strategy,
-secret, and user model:
 
 ```python
 # config/auth.py
 config = {
     "default": "api",
     "guards": {
-        "api":   {"strategy": "jwt", "secret": env("JWT_SECRET"),
+        "api":   {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
                   "model": "database.models.user.User"},
-        "admin": {"strategy": "jwt", "secret": env("ADMIN_JWT_SECRET"),
+        "admin": {"strategy": "cookie", "secret": env("ADMIN_COOKIE_SECRET"),
                   "model": "database.models.admin.Admin"},
     },
 }
@@ -434,8 +400,6 @@ CurrentAdmin = guard("admin").current_user()   # dependency bound to the admin g
 
 @route.get("/admin/stats")
 async def stats(self, admin: CurrentAdmin): ...
-
-token = guard("admin").token(admin)            # per-guard token operations
 ```
 
 Manual registration remains as an escape hatch:
@@ -443,9 +407,9 @@ Manual registration remains as an escape hatch:
 ```python
 from forgeapi.auth import auth
 from forgeapi.auth.guard import Guard
-from forgeapi.auth.strategies import JWTStrategy
+from forgeapi.auth.strategies import CookieStrategy
 
-auth.register("api", Guard(name="api", strategy=JWTStrategy(secret_key="..."), user_model=User))
+auth.register("api", Guard(name="api", strategy=CookieStrategy(secret_key="..."), user_model=User))
 auth.set_default("api")
 ```
 
@@ -464,24 +428,11 @@ auth.extend("apikey", ApiKeyStrategy)
 ```
 
 Strategies raise **only** `ForgeAPIAuthError` subclasses — never
-`HTTPException`, never touch the DB. That structural rule is what keeps all
-strategies behaviourally identical at the edges.
-
-### JWT strategy
-
-Reads `Authorization: Bearer <token>`. Implements `TokenIssuer` + `RefreshCapable`.
-
-| Config key | Default | Description |
-|---|---|---|
-| `secret` | — | Signing secret (use `env("JWT_SECRET")`) |
-| `secret_env` | `"JWT_SECRET"` | Env var name to read when `secret` is not set |
-| `algorithm` | `"HS256"` | JWT algorithm |
-| `access_ttl` | `30` | Access token TTL, minutes |
-| `refresh_ttl` | `7` | Refresh token TTL, days |
+`HTTPException`, never touch the DB.
 
 ### Cookie strategy
 
-Stores a signed JSON session in an `HttpOnly` cookie (HMAC). Implements `SessionIssuer`.
+Stores a signed JSON session in an `HttpOnly` cookie (HMAC-SHA256).
 
 | Config key | Default | Description |
 |---|---|---|
@@ -492,11 +443,6 @@ Stores a signed JSON session in an `HttpOnly` cookie (HMAC). Implements `Session
 | `httponly` | `True` | `HttpOnly` flag |
 | `secure` | `True` | Set `False` only for local HTTP development |
 | `samesite` | `"lax"` | SameSite policy |
-
-```python
-auth.set_cookie(response, {"sub": str(user.id)})
-auth.delete_cookie(response)
-```
 
 ### Telegram strategy
 
@@ -1736,7 +1682,7 @@ from forgeapi.settings import BaseAppSettings
 class Settings(BaseAppSettings):
     database_url: str
     redis_url: str | None = None
-    jwt_secret: str
+    cookie_secret: str
     debug: bool = False
 
 settings = Settings()   # reads .env automatically
@@ -1746,7 +1692,7 @@ Sensitive field masking — fields containing `password`, `secret`, `token`, `ke
 
 ```python
 >>> print(settings)
-Settings(database_url='postgresql://...', jwt_secret='***', debug=True)
+Settings(database_url='postgresql://...', cookie_secret='***', debug=True)
 ```
 
 ---
@@ -1925,7 +1871,99 @@ The `jobs` table columns:
 
 ---
 
-## 23. CLI reference
+## 23. Queue
+
+DB-backed async job queue. Jobs are stored in the `queued_jobs` table; permanently-failed ones land in `failed_jobs`. No external broker — Tortoise ORM only.
+
+### Setup
+
+Add `forgeapi.queue.models` to TORTOISE_ORM so the tables are created:
+
+```python
+# config/database.py
+TORTOISE_ORM = {
+    "apps": {
+        "models": {
+            "models": ["database.models", "forgeapi.queue.models"],
+            ...
+        }
+    },
+}
+```
+
+The CLI creates tables automatically via `generate_schemas(safe=True)` — no manual migration step needed.
+
+### Defining a job
+
+```python
+from forgeapi.queue import Job
+
+class SendWelcomeEmail(Job):
+    queue = "default"   # optional — queue name
+    max_tries = 3       # optional — retry attempts before moving to failed_jobs
+
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+
+    async def handle(self) -> None:
+        user = await User.get(id=self.user_id)
+        await mailer.send(user.email, "Welcome!")
+```
+
+### Dispatching
+
+```python
+from forgeapi.queue import dispatch
+
+await dispatch(SendWelcomeEmail(user_id=user.id))             # immediate
+await dispatch(SendWelcomeEmail(user_id=user.id), delay=60)   # available after 60 s
+await dispatch(SendWelcomeEmail(user_id=user.id), queue="high")  # override queue
+```
+
+### Running the worker
+
+**CLI (recommended for production):**
+
+```bash
+forgeapi queue:work        # start infinite worker loop (press Ctrl+C to stop)
+forgeapi queue:run         # process all currently pending jobs once (use from cron)
+```
+
+**FastAPI lifespan (in-process):**
+
+```python
+import asyncio
+from contextlib import asynccontextmanager
+from forgeapi.queue import Queue
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(Queue().work())
+    yield
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+```
+
+### Failed jobs
+
+After `max_tries` attempts (with exponential backoff), the job is moved to `failed_jobs`.
+
+```bash
+forgeapi queue:failed           # list failed jobs
+forgeapi queue:retry <id>       # move a failed job back to the queue
+forgeapi queue:flush            # delete all failed jobs
+```
+
+### DB tables
+
+| Table | Description |
+|---|---|
+| `queued_jobs` | Pending/reserved jobs (queue, payload, attempts, reserved_at, available_at) |
+| `failed_jobs` | Permanently failed jobs (queue, payload, exception, failed_at) |
+
+---
+
+## 24. CLI reference
 
 ```bash
 forgeapi --help
@@ -1995,6 +2033,16 @@ forgeapi schedule:work            # start infinite dev loop
 forgeapi schedule:list            # show all tasks and their DB state
 ```
 
+### Queue
+
+```bash
+forgeapi queue:work               # start infinite worker loop
+forgeapi queue:run                # process all pending jobs once (use from cron)
+forgeapi queue:failed             # list failed jobs
+forgeapi queue:retry <id>         # move a failed job back to the queue
+forgeapi queue:flush              # delete all failed jobs
+```
+
 ### Inspection
 
 ```bash
@@ -2004,7 +2052,7 @@ forgeapi models    # list all Tortoise model classes, tables, and fields
 
 ---
 
-## 24. Configuration reference (config/)
+## 25. Configuration reference (config/)
 
 The only config format is a **`config/` directory of Python dict files**
 (Laravel-style). Each `config/<section>.py` defines a module-level
@@ -2019,7 +2067,7 @@ migration hint.)
 from forgeapi import env
 
 env("APP_DEBUG", False)   # reads env var; casts "true"/"false"/"null"
-env("JWT_SECRET")         # → str | None
+env("COOKIE_SECRET")      # → str | None
 ```
 
 ### Known sections
@@ -2059,7 +2107,7 @@ config = {
 config = {
     "default": "api",
     "guards": {
-        "api": {"strategy": "jwt", "secret": env("JWT_SECRET"),
+        "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
                 "model": "database.models.user.User"},
     },
 }
@@ -2136,7 +2184,7 @@ Known sections are validated by Pydantic models; misconfiguration raises
 
 ---
 
-## 25. Telescope
+## 26. Telescope
 
 Debug-only request inspector activated by `"debug": True` in `config/project.py`. **Never use in production.**
 
@@ -2191,7 +2239,7 @@ No-op when called outside a Telescope request context.
 
 ---
 
-## 26. MCP Server
+## 27. MCP Server
 
 forge-kits ships an MCP server that gives AI assistants (Claude Code, Cursor, etc.) direct access to API docs, code generation tools, and project structure scanning — without reading source files.
 
@@ -2303,7 +2351,7 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 | `generate_event(name, fields)` | Generate an `Event` class + listener |
 | `generate_schema(name, fields, mode)` | Generate Pydantic schemas |
 | `scan_project(path)` | Deep AST scan: models, controllers, schemas, events, listeners, seeders, deps |
-| `project_info(path)` | Read `forgeapi.toml` and list project files |
+| `project_info(path)` | List project files and structure |
 
 #### get_docs topics
 
@@ -2314,18 +2362,19 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 | `core` | Core constructor, options, startup sequence |
 | `controllers` | Controller, @route, schema class var, auto-prefix |
 | `events` | BroadcastManager, pub/sub, Streams, cross-project |
-| `auth` | Guards, CurrentUser, strategies, token operations |
+| `auth` | Guards, CurrentUser, strategies (cookie/telegram), session ops |
 | `permissions` | PermissionsMixin, require_permission, roles |
 | `policies` | Policy, Gate, authorize, allows, discover |
 | `pagination` | QuerySet .paginate(), offset, cursor, configuration |
 | `schemas` | BaseSchema, BaseCreateSchema, BaseUpdateSchema |
 | `middleware` | Middleware, Guard, built-in middleware |
 | `cli` | All CLI commands reference |
-| `config` | forgeapi.toml full reference |
-| `models` | ModelMixin, Tortoise field types, relationships |
+| `config` | config/ directory format, all known sections |
+| `models` | ModelMixin, @scope, Tortoise field types |
 | `cache` | Cache facade, drivers, remember/pull/increment |
 | `storage` | Storage facade, LocalDriver, S3Driver, ImageProcessor |
-| `scheduler` | Scheduler, ScheduledJob, timing methods, lifespan integration |
+| `scheduler` | Scheduler, timing methods, lifespan integration |
+| `queue` | Job, dispatch, Queue worker, CLI commands |
 | `scopes` | @scope decorator, queryset chaining |
 | `observers` | ModelObserver, lifecycle hooks |
 | `support` | Number, Str, Time helpers |
@@ -2337,16 +2386,14 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 | Pattern | Content |
 |---|---|
 | `crud_controller` | Full CRUD with ModelMixin + schema class var |
-| `jwt_auth` | Login, refresh, protected routes |
-| `redis_event` | Redis pub/sub fan-out event |
-| `stream_event` | Redis Streams consumer |
+| `broadcasting_pubsub` | BroadcastManager pub/sub mode |
+| `broadcasting_stream` | BroadcastManager stream mode (persistent) |
 | `rbac` | Full RBAC — model, seeder, protected routes |
 | `pagination` | QuerySet .paginate() with filters |
-| `guard` | API key, active-user, admin guards |
+| `guard` | API key, active-user guards |
 | `cache` | remember, pull, counters in a controller |
-| `storage` | upload, resize, store, S3 config |
-| `observer` | audit log, cache invalidation on model events |
 | `scheduler` | lifespan task worker with daily/weekly jobs |
+| `queue` | Job definition, dispatch, worker, CLI |
 
 #### generate_controller
 
