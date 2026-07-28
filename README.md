@@ -2258,30 +2258,48 @@ This installs `forgeapi-mcp` as a CLI entry point.
 The easiest way — no JSON editing required:
 
 ```bash
+# Interactive prompt — choose scope on the fly
+forgeapi mcp:install
+
 # Per-project — adds to .mcp.json in the current directory
+forgeapi mcp:install --project
+
+# Global (user scope) — available in all projects
+forgeapi mcp:install --global
+
+# Check current status
+forgeapi mcp:status
+```
+
+Or use the `claude` CLI directly:
+
+```bash
+# Per-project
 claude mcp add forge-kits forgeapi-mcp
 
-# Global — adds to ~/.claude/settings.json, available in all projects
-claude mcp add forge-kits forgeapi-mcp --scope global
+# Global (user scope)
+claude mcp add --scope user forge-kits forgeapi-mcp
 ```
 
 ---
 
 ### Global setup for Claude Code (manual)
 
-Install once and use across **all your projects**. Edit the global Claude Code settings file:
+Install once and use across **all your projects**. Create or edit `~/.claude/.mcp.json`:
 
-**macOS / Linux:**
-```
-~/.claude/settings.json
+**macOS / Linux — `~/.claude/.mcp.json`:**
+
+```json
+{
+  "mcpServers": {
+    "forge-kits": {
+      "command": "forgeapi-mcp"
+    }
+  }
+}
 ```
 
-**Windows:**
-```
-C:\Users\<your-username>\.claude\settings.json
-```
-
-Add the MCP server:
+**Windows — `C:\Users\<your-username>\.claude\.mcp.json`:**
 
 ```json
 {
@@ -2337,7 +2355,7 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 }
 ```
 
-> **Priority:** per-project `.mcp.json` takes precedence over the global `~/.claude/settings.json` when both exist.
+> **Tip:** `forgeapi mcp:install --project` generates `.mcp.json` automatically with the correct path for your current venv.
 
 ---
 
