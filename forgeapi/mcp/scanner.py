@@ -1,7 +1,59 @@
 from __future__ import annotations
 
-import tomllib
+import ast
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Project root detection
+# ---------------------------------------------------------------------------
+
+def _find_project_root(start: Path) -> Path | None:
+    """Walk up from start looking for a config/ directory (forge-kits project anchor).
+
+    Recognises a directory as a forge-kits project root when it has a config/
+    subdirectory that contains at least one of project.py, structure.py,
+    database.py, or auth.py.  Returns None when nothing is found.
+    """
+    current = start.expanduser().resolve()
+    if current.is_file():
+        current = current.parent
+    for _ in range(12):
+        config_dir = current / "config"
+        if config_dir.is_dir() and any(
+            (config_dir / name).exists()
+            for name in ("project.py", "structure.py", "database.py", "auth.py")
+        ):
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Config reader  (AST-based, no imports)
+# ---------------------------------------------------------------------------
+
+def _read_config_py(path: Path) -> dict:
+    """Read the `config = {...}` assignment from a config/*.py file safely."""
+    if not path.exists():
+        return {}
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        return {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "config":
+                try:
+                    return ast.literal_eval(node.value)
+                except (ValueError, TypeError):
+                    return {}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -9,7 +61,6 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def _ast_parse_safe(path: Path):
-    import ast
     try:
         return ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     except SyntaxError:
@@ -17,7 +68,6 @@ def _ast_parse_safe(path: Path):
 
 
 def _node_name(node: object) -> str:
-    import ast
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -26,14 +76,12 @@ def _node_name(node: object) -> str:
 
 
 def _call_name(node: object) -> str:
-    import ast
     if isinstance(node, ast.Call):
         return _node_name(node.func)
     return _node_name(node)
 
 
 def _scan_models(files: list[Path], root: Path) -> list[str]:
-    import ast
     out: list[str] = []
     model_bases = {"Model", "PermissionsMixin", "ModelMixin"}
     for f in files:
@@ -87,7 +135,6 @@ def _scan_models(files: list[Path], root: Path) -> list[str]:
 
 
 def _scan_controllers(files: list[Path], root: Path, base_prefix: str) -> list[str]:
-    import ast
     out: list[str] = []
     for f in files:
         tree = _ast_parse_safe(f)
@@ -133,7 +180,6 @@ def _scan_controllers(files: list[Path], root: Path, base_prefix: str) -> list[s
 
 
 def _scan_schemas(files: list[Path], root: Path) -> list[str]:
-    import ast
     schema_bases = {"BaseSchema", "BaseCreateSchema", "BaseUpdateSchema", "BaseModel"}
     out: list[str] = []
     for f in files:
@@ -158,7 +204,6 @@ def _scan_schemas(files: list[Path], root: Path) -> list[str]:
 
 
 def _scan_events(files: list[Path], root: Path) -> list[str]:
-    import ast
     out: list[str] = []
     for f in files:
         tree = _ast_parse_safe(f)
@@ -200,7 +245,6 @@ def _scan_events(files: list[Path], root: Path) -> list[str]:
 
 
 def _scan_listeners(files: list[Path], root: Path) -> list[str]:
-    import ast
     out: list[str] = []
     for f in files:
         tree = _ast_parse_safe(f)
@@ -212,17 +256,17 @@ def _scan_listeners(files: list[Path], root: Path) -> list[str]:
             for dec in node.decorator_list:
                 if (
                     isinstance(dec, ast.Call)
-                    and isinstance(dec.func, ast.Name)
-                    and dec.func.id == "listen"
+                    and isinstance(dec.func, ast.Attribute)
+                    and dec.func.attr == "on"
                     and dec.args
+                    and isinstance(dec.args[0], ast.Constant)
                 ):
-                    event = _node_name(dec.args[0])
+                    event = dec.args[0].value
                     out.append(f"  {node.name}  →  {event}")
     return out
 
 
 def _scan_seeders(files: list[Path], root: Path) -> list[str]:
-    import ast
     out: list[str] = []
     for f in files:
         tree = _ast_parse_safe(f)
@@ -242,6 +286,7 @@ def _read_pyproject_deps(root: Path) -> list[str]:
     if not pp.exists():
         return []
     try:
+        import tomllib
         with open(pp, "rb") as fh:
             data = tomllib.load(fh)
         return data.get("project", {}).get("dependencies", [])
@@ -262,6 +307,22 @@ def _read_env_keys(root: Path) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Default structure
+# ---------------------------------------------------------------------------
+
+_STRUCTURE_DEFAULTS: dict[str, str] = {
+    "models_dir":      "database/models",
+    "controllers_dir": "app/controllers",
+    "schemas_dir":     "app/schemas",
+    "listeners_dir":   "app/listeners",
+    "policies_dir":    "app/policies",
+    "seeds_dir":       "database/seeds",
+    "base_prefix":     "/api/v1",
+    "schedule_file":   "schedule.py",
+}
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -272,52 +333,55 @@ def scan_project(path: str = ".") -> str:
     - Tortoise ORM models with field names and types
     - Controllers with every registered route (METHOD + full path)
     - Pydantic schema classes grouped by file
-    - Events (background/redis flags, field names)
-    - Listeners and which events they handle
+    - Listeners and which broadcast events they handle
     - Seeders
     - pyproject.toml dependencies
     - .env variable names (values hidden)
+
+    Project root is detected automatically by walking up from `path` until a
+    config/ directory is found.  No forgeapi.toml required.
 
     Use this at the start of every coding session on a forge-kits project so you
     have a complete picture of what already exists before making changes.
 
     Args:
-        path: Path to the project root (directory containing forgeapi.toml).
-              Defaults to current directory.
+        path: Path to the project root (or any subdirectory). Defaults to the
+              current working directory. The tool walks up to find the project root.
 
     Returns:
         Structured text report of the entire project.
     """
-    given    = Path(path).expanduser().resolve()
-    toml_path = given if (given.is_file() and given.name == "forgeapi.toml") else given / "forgeapi.toml"
+    given = Path(path).expanduser().resolve()
+    root  = _find_project_root(given)
 
-    if not toml_path.exists():
+    if root is None:
         return (
-            f"No forgeapi.toml found at '{given}'.\n"
-            "Run `forgeapi init <name>` to scaffold a project."
+            f"No forge-kits project found at or above '{given}'.\n"
+            "A forge-kits project needs a config/ directory with at least one of:\n"
+            "  config/project.py, config/structure.py, config/database.py, config/auth.py\n\n"
+            "Run `forgeapi init <name>` to scaffold a new project."
         )
 
-    try:
-        with open(toml_path, "rb") as fh:
-            raw = tomllib.load(fh)
-    except Exception as exc:
-        return f"Error reading forgeapi.toml: {exc}"
+    config_dir  = root / "config"
+    struct_cfg  = _read_config_py(config_dir / "structure.py")
+    project_cfg = _read_config_py(config_dir / "project.py")
+    auth_cfg    = _read_config_py(config_dir / "auth.py")
 
-    root = toml_path.parent
-    defaults = {
-        "models_dir": "database/models", "controllers_dir": "app/controllers",
-        "schemas_dir": "app/schemas",
-        "listeners_dir": "app/listeners", "seeds_dir": "database/seeds",
-        "base_prefix": "/api/v1",
-    }
-    struct      = {**defaults, **raw.get("structure", {})}
-    proj        = raw.get("project", {})
-    auth        = {**{"strategy": "cookie"}, **raw.get("auth", {})}
+    struct      = {**_STRUCTURE_DEFAULTS, **struct_cfg}
     base_prefix = struct["base_prefix"]
 
+    auth_strategy = "none"
+    guards = auth_cfg.get("guards", {})
+    default_guard = auth_cfg.get("default", "api")
+    if default_guard in guards:
+        auth_strategy = guards[default_guard].get("strategy", "cookie")
+    elif guards:
+        first = next(iter(guards.values()))
+        auth_strategy = first.get("strategy", "cookie")
+
     sections: list[str] = [
-        f"# Project: {proj.get('name', root.name)}  v{proj.get('version', '?')}",
-        f"  auth={auth['strategy']}  prefix={base_prefix}",
+        f"# Project: {project_cfg.get('name', root.name)}  v{project_cfg.get('version', '?')}",
+        f"  auth={auth_strategy}  prefix={base_prefix}  root={root}",
         "",
     ]
 
@@ -326,11 +390,11 @@ def scan_project(path: str = ".") -> str:
         return sorted(d.rglob(pattern)) if d.exists() else []
 
     for label, dir_key, pattern, scanner in [
-        ("Models",      "models_dir",      "*.py",              lambda f: _scan_models(f, root)),
-        ("Controllers", "controllers_dir", "*_controller.py",   lambda f: _scan_controllers(f, root, base_prefix)),
-        ("Schemas",     "schemas_dir",     "*.py",              lambda f: _scan_schemas(f, root)),
-        ("Listeners",   "listeners_dir",   "*_listener.py",     lambda f: _scan_listeners(f, root)),
-        ("Seeders",     "seeds_dir",       "*_seeder.py",       lambda f: _scan_seeders(f, root)),
+        ("Models",      "models_dir",      "*.py",             lambda f: _scan_models(f, root)),
+        ("Controllers", "controllers_dir", "*_controller.py",  lambda f: _scan_controllers(f, root, base_prefix)),
+        ("Schemas",     "schemas_dir",     "*.py",             lambda f: _scan_schemas(f, root)),
+        ("Listeners",   "listeners_dir",   "*_listener.py",    lambda f: _scan_listeners(f, root)),
+        ("Seeders",     "seeds_dir",       "*_seeder.py",      lambda f: _scan_seeders(f, root)),
     ]:
         files = _glob_py(dir_key, pattern)
         if label in ("Models", "Schemas"):
@@ -353,58 +417,68 @@ def scan_project(path: str = ".") -> str:
 
 
 def project_info(path: str = ".") -> str:
-    """Read a user's forgeapi.toml and return project structure information.
+    """Read a forge-kits project's config/ directory and return a structured summary.
+
+    Project root is detected automatically by walking up from `path` until a
+    config/ directory is found.  No forgeapi.toml required.
 
     Args:
-        path: Path to the project directory or directly to forgeapi.toml.
-              Defaults to the current directory.
+        path: Path to the project directory (or any subdirectory).
+              Defaults to the current working directory.
 
     Returns:
         Formatted project configuration and directory structure summary.
     """
-    given     = Path(path).expanduser().resolve()
-    toml_path = given if (given.is_file() and given.name == "forgeapi.toml") else given / "forgeapi.toml"
+    given = Path(path).expanduser().resolve()
+    root  = _find_project_root(given)
 
-    if not toml_path.exists():
+    if root is None:
         return (
-            f"No forgeapi.toml found at '{given}'.\n\n"
+            f"No forge-kits project found at or above '{given}'.\n\n"
             "Create one with: forgeapi init <project-name>\n"
-            "Or run in a directory that contains forgeapi.toml."
+            "Or run in a directory that contains a config/ subdirectory."
         )
 
-    try:
-        with open(toml_path, "rb") as fh:
-            raw = tomllib.load(fh)
-    except Exception as exc:
-        return f"Error reading forgeapi.toml: {exc}"
+    config_dir  = root / "config"
+    struct_cfg  = _read_config_py(config_dir / "structure.py")
+    project_cfg = _read_config_py(config_dir / "project.py")
+    auth_cfg    = _read_config_py(config_dir / "auth.py")
+    pag_cfg     = _read_config_py(config_dir / "pagination.py")
 
-    root = toml_path.parent
-    defaults = {
-        "models_dir": "database/models", "controllers_dir": "app/controllers",
-        "schemas_dir": "app/schemas",
-        "listeners_dir": "app/listeners", "seeds_dir": "database/seeds",
-        "base_prefix": "/api/v1",
-    }
-    struct = {**defaults, **raw.get("structure", {})}
-    proj   = raw.get("project", {})
-    auth   = {**{"strategy": "cookie"}, **raw.get("auth", {})}
-    pag    = {**{"default_limit": 20, "max_limit": 100}, **raw.get("pagination", {})}
+    struct = {**_STRUCTURE_DEFAULTS, **struct_cfg}
+    pag    = {**{"default_limit": 20, "max_limit": 100}, **pag_cfg}
 
     lines = [
-        f"# forge-kits project: {toml_path}", "",
+        f"# forge-kits project: {root}", "",
         "## Project",
-        f"  name    = {proj.get('name', 'my-app')!r}",
-        f"  version = {proj.get('version', '0.1.0')!r}", "",
-        "## Structure",
+        f"  name    = {project_cfg.get('name', root.name)!r}",
+        f"  version = {project_cfg.get('version', '?')!r}", "",
+        "## Config files",
     ]
 
+    for cfg_file in sorted(config_dir.glob("*.py")):
+        if cfg_file.name == "__init__.py":
+            continue
+        lines.append(f"  config/{cfg_file.name}")
+
+    lines += ["", "## Structure"]
     for key, val in struct.items():
-        marker = "" if key == "base_prefix" else (" [exists]" if (root / val).exists() else " [missing]")
-        lines.append(f"  {key:<20} = {val!r}{marker}")
+        if key == "base_prefix":
+            lines.append(f"  {key:<20} = {val!r}")
+        else:
+            marker = " [exists]" if (root / val).exists() else " [missing]"
+            lines.append(f"  {key:<20} = {val!r}{marker}")
 
     lines += [
         "", "## Auth",
-        f"  strategy = {auth['strategy']!r}",
+        f"  default guard = {auth_cfg.get('default', 'none')!r}",
+    ]
+    guards = auth_cfg.get("guards", {})
+    for guard_name, guard_cfg in guards.items():
+        strategy = guard_cfg.get("strategy", "?") if isinstance(guard_cfg, dict) else "?"
+        lines.append(f"  guard {guard_name!r}: strategy={strategy!r}")
+
+    lines += [
         "", "## Pagination",
         f"  default_limit = {pag['default_limit']}",
         f"  max_limit     = {pag['max_limit']}",

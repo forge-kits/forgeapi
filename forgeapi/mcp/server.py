@@ -3,14 +3,9 @@
 Start via:
     forgeapi-mcp
 
-Or register in .claude/settings.json:
-    {
-      "mcpServers": {
-        "forge-kits": {
-          "command": "forgeapi-mcp"
-        }
-      }
-    }
+Or register via the CLI:
+    forgeapi mcp:install           # local scope
+    forgeapi mcp:install --global  # all projects
 """
 
 from mcp.server.fastmcp import FastMCP
@@ -29,8 +24,14 @@ RULES — must follow for every forge-kits project:
 - Dev server: `forgeapi runserver --reload` — NEVER uvicorn directly
 - Migrations: `forgeapi db:*` — NEVER aerich, NEVER pip install aerich
 - Code generation: `forgeapi make:*` — prefer CLI over writing files manually
+- Config lives in config/<section>.py files — there is NO forgeapi.toml
 
-Start every session: call scan_project('.') then get_docs('cheatsheet').
+SESSION START — always do this first:
+1. Call scan_project('<absolute path to user project>') — detects root automatically
+   by walking up until it finds a config/ directory. Pass the project folder,
+   NOT the forge-kits package directory.
+2. Call get_docs('cheatsheet') — covers 80% of tasks.
+
 For advanced topics call get_docs with: workflow, core, controllers, events,
 auth, permissions, policies, schemas, middleware, cli, config, models,
 cache, storage, scheduler, queue, scopes, observers, support, tortoise, tortoise_advanced.

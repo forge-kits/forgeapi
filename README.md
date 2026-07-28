@@ -94,25 +94,24 @@ pip install forge-kits
 
 ### Optional dependencies
 
+SQLite + auth are included in the base package. Install extras only for production DB drivers or optional features.
+
 | Extra | Installs | Use when |
 |---|---|---|
-| `auth` | `pyjwt` | Cookie auth strategy (HMAC signing) |
-| `asyncpg` | `tortoise-orm`, `asyncpg` | PostgreSQL |
-| `aiosqlite` | `tortoise-orm`, `aiosqlite` | SQLite |
-| `aiomysql` | `tortoise-orm`, `aiomysql` | MySQL / MariaDB |
+| `asyncpg` | `asyncpg` | PostgreSQL |
+| `aiomysql` | `aiomysql` | MySQL / MariaDB |
 | `redis` | `redis` | Cache Redis driver / BroadcastManager events |
-| `full-asyncpg` | auth + asyncpg | PostgreSQL + auth |
-| `full-aiosqlite` | auth + aiosqlite | SQLite + auth |
-| `full-aiomysql` | auth + aiomysql | MySQL + auth |
 | `s3` | `boto3` | S3 / MinIO / Cloudflare R2 storage driver |
 | `images` | `Pillow` | ImageProcessor helper |
 | `mcp` | `mcp` | forge-kits MCP server for AI-assisted development |
 
 ```bash
-pip install forge-kits[full-asyncpg]   # PostgreSQL + auth
-pip install forge-kits[mcp]            # MCP server
-pip install forge-kits[redis]          # Redis cache / events
-pip install forge-kits[s3,images]      # S3 storage + image processing
+pip install forge-kits               # SQLite included by default
+pip install forge-kits[asyncpg]      # PostgreSQL
+pip install forge-kits[aiomysql]     # MySQL / MariaDB
+pip install forge-kits[redis]        # Redis cache / events
+pip install forge-kits[mcp]          # MCP server
+pip install forge-kits[s3,images]    # S3 storage + image processing
 ```
 
 ```bash
