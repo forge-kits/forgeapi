@@ -22,6 +22,7 @@ from forgeapi.cli.commands.schedule_cmd import ScheduleCommand
 from forgeapi.cli.commands.queue_cmd import QueueCommand
 from forgeapi.cli.commands.models_cmd import ModelsCommand
 from forgeapi.cli.commands.runserver_cmd import RunserverCommand
+from forgeapi.cli.commands.mcp_cmd import McpCommand
 
 
 _HELP = """\
@@ -52,6 +53,9 @@ Commands:
   forgeapi routers
   forgeapi models
   forgeapi runserver [--port 8000] [--host 127.0.0.1] [--reload]
+  forgeapi mcp:install [--global] [--project] [--force]
+  forgeapi mcp:remove  [--global] [--project]
+  forgeapi mcp:status
 
 \b
 Add -h after any command for detailed help:
@@ -86,6 +90,7 @@ _make_cmd = MakeCommand()
 _db_cmd = DbCommand()
 _schedule_cmd = ScheduleCommand()
 _queue_cmd = QueueCommand()
+_mcp_cmd = McpCommand()
 
 _registry = CommandRegistry([
     InitCommand(),
@@ -99,11 +104,13 @@ _registry = CommandRegistry([
     _db_cmd,
     _schedule_cmd,
     _queue_cmd,
+    _mcp_cmd,
 ])
 _registry.register_prefix("make:", _make_cmd)
 _registry.register_prefix("db:", _db_cmd)
 _registry.register_prefix("schedule:", _schedule_cmd)
 _registry.register_prefix("queue:", _queue_cmd)
+_registry.register_prefix("mcp:", _mcp_cmd)
 
 
 app = typer.Typer(
