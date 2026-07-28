@@ -18,6 +18,11 @@ class PaginationMeta(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class SimplePaginationMeta(BaseModel):
+    current_page: int
+    per_page: int
+
+
 class PaginationLinks(BaseModel):
     prev: str | None = None
     next: str | None = None
@@ -26,6 +31,12 @@ class PaginationLinks(BaseModel):
 class PaginatedResponse(BaseModel, Generic[T]):
     data: list[T]
     meta: PaginationMeta
+    links: PaginationLinks
+
+
+class SimplePaginatedResponse(BaseModel, Generic[T]):
+    data: list[T]
+    meta: SimplePaginationMeta
     links: PaginationLinks
 
 

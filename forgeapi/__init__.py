@@ -80,10 +80,8 @@ def __getattr__(name: str):
         "CookieStrategy", "TelegramStrategy",
     }
     _db_exports = {
-        "Paginator", "Pagination",
-        "CursorPaginator", "CursorPagination",
-        "PaginatedResponse", "CursorResponse",
-        "PaginationMeta", "PaginationLinks", "CursorMeta",
+        "PaginatedResponse", "SimplePaginatedResponse", "CursorResponse",
+        "PaginationMeta", "SimplePaginationMeta", "PaginationLinks", "CursorMeta",
     }
 
     if name in _auth_exports:

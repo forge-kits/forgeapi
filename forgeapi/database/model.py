@@ -23,8 +23,8 @@ class ModelMixin:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # After Tortoise sets up _meta, inject ForgeManager so .paginate() is available
-        # on every queryset: Post.filter(...).paginate(request, schema)
+        # After Tortoise sets up _meta, inject ForgeManager so pagination methods are available
+        # on every queryset: Post.filter(...).paginate(15, schema)
         if hasattr(cls, "_meta") and "objects" not in cls.__dict__:
             from .queryset import ForgeManager
             cls._meta.manager = ForgeManager(cls)

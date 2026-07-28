@@ -12,8 +12,8 @@ class PostController(Controller):
     schema = PostResponse   # auto response_model on all routes except 204
 
     @route.get("/", response_model=None)
-    async def index(self, request: Request):
-        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
+    async def index(self):
+        return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.post("/", status_code=201)
     async def create(self, payload: PostCreate, user: CurrentUser):
@@ -283,7 +283,6 @@ Imports:
 ```python
 from forgeapi.controllers import Controller, route
 from forgeapi.auth import CurrentUser, OptionalUser
-from forgeapi.pagination import Pagination
 from fastapi import HTTPException, Depends
 ```
 
@@ -319,8 +318,8 @@ class PostController(Controller):
     schema = PostResponse      # auto response_model
 
     @route.get("/", response_model=None)   # override: returns paginated envelope
-    async def index(self, request: Request) -> dict:
-        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
+    async def index(self) -> dict:
+        return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.post("/", status_code=201)
     async def create(self, payload: PostCreatePayload) -> dict:
@@ -348,10 +347,10 @@ post = await Post.create_from(payload, author_id=user_id)
 post = await post.update_from(payload)
 ```
 
-## QuerySet .paginate()
+## QuerySet pagination
 ```python
-result = await Post.all().order_by("-created_at").paginate(request, PostResponse)
-# Returns PaginatedResponse with data, meta (page/total/last_page), links (prev/next)
+result = await Post.all().order_by("-created_at").paginate(15, PostResponse)
+# Returns PaginatedResponse with data, meta (current_page/per_page/total/last_page/from/to), links (prev/next)
 ```
 
 ## Important rules
@@ -738,28 +737,36 @@ Time.end_of_day(dt)                 # 23:59:59
 "pagination": """\
 # forge-kits: Pagination
 
-## Two approaches
+Three queryset methods — no dependency injection needed.
 
-### 1. Paginator DI (classic)
-```python
-from forgeapi.pagination import Pagination
-
-@route.get("/")
-async def index(self, pagination: Pagination) -> dict:
-    total = await Post.all().count()
-    items = await Post.all().offset(pagination.offset).limit(pagination.limit)
-    return {"items": items, "total": total, "page": pagination.page}
-```
-
-### 2. QuerySet .paginate() (recommended)
+## paginate() — full (2 queries: COUNT + SELECT)
 ```python
 @route.get("/", response_model=None)
-async def index(self, request: Request):
-    return await Post.all().order_by("-created_at").paginate(request, PostResponse)
+async def index(self):
+    return await Post.all().order_by("-created_at").paginate(15, PostSchema)
 ```
-Returns `PaginatedResponse` with `data`, `meta` (page/per_page/total/last_page), `links` (prev/next).
+Returns `PaginatedResponse` with `data`, `meta` (current_page/per_page/total/last_page/from/to), `links` (prev/next).
 
-Query params: `?page=2&per_page=50`
+## simple_paginate() — fast (1 query, no COUNT)
+```python
+@route.get("/", response_model=None)
+async def index(self):
+    return await Post.all().order_by("-created_at").simple_paginate(15, PostSchema)
+```
+Returns `SimplePaginatedResponse` — only prev/next links, no total count. Faster on large tables.
+
+## cursor_paginate() — cursor-based (no OFFSET)
+```python
+@route.get("/", response_model=None)
+async def index(self):
+    return await Post.all().cursor_paginate(15, PostSchema, order_by="-created_at")
+```
+Returns `CursorResponse` with opaque `next_cursor`/`prev_cursor`.
+
+## Notes
+- `per_page` argument overrides `?per_page` query param when given.
+- `?page` (or `?cursor`) is always read automatically from the request.
+- Query params: `?page=2&per_page=50`
 
 ## Global configuration (config/pagination.py)
 ```python
@@ -1030,8 +1037,8 @@ post = await Post.create_from(payload, author_id=user.id)
 post = await post.update_from(payload)
 
 # QuerySet + .paginate()
-await Post.filter(is_published=True).paginate(request, PostResponse)
-await Post.published().order_by("-created_at").paginate(request, PostResponse)
+await Post.filter(is_published=True).paginate(15, PostResponse)
+await Post.published().order_by("-created_at").paginate(15, PostResponse)
 ```
 
 ## All field types

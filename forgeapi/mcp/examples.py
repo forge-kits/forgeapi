@@ -58,8 +58,8 @@ class PostController(Controller):
     schema = PostResponse      # auto response_model on all routes except 204
 
     @route.get("/", response_model=None)
-    async def index(self, request: Request):
-        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
+    async def index(self):
+        return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.post("/", status_code=201)
     async def create(self, payload: PostCreatePayload, user: CurrentUser):
@@ -241,9 +241,8 @@ class PostController(Controller):
 ''',
 
 "pagination": '''\
-# Pagination — QuerySet .paginate() (recommended)
+# Pagination — three queryset methods, no DI needed
 
-from fastapi import Request
 from forgeapi.controllers import Controller, route
 from database.models.product import Product
 from app.schemas.product import ProductResponse
@@ -252,22 +251,32 @@ from app.schemas.product import ProductResponse
 class ProductController(Controller):
     prefix = "/products"
     tags   = ["products"]
-    schema = ProductResponse
 
+    # paginate() — 2 queries (COUNT + SELECT), full meta with total/last_page
     @route.get("/", response_model=None)
-    async def index(self, request: Request):
-        # ?page=1&per_page=20 (default)
-        return await Product.all().order_by("-created_at").paginate(request, ProductResponse)
+    async def index(self):
+        return await Product.all().order_by("-created_at").paginate(15, ProductResponse)
 
+    # simple_paginate() — 1 query, no COUNT, only prev/next links (faster)
+    @route.get("/light", response_model=None)
+    async def light(self):
+        return await Product.all().order_by("-created_at").simple_paginate(15, ProductResponse)
+
+    # cursor_paginate() — no OFFSET, stable on inserts/deletes
+    @route.get("/feed", response_model=None)
+    async def feed(self):
+        return await Product.all().cursor_paginate(15, ProductResponse, order_by="-created_at")
+
+    # Search — per_page from ?per_page query param
     @route.get("/search", response_model=None)
-    async def search(self, request: Request, q: str):
-        return await Product.filter(name__icontains=q).paginate(request, ProductResponse)
+    async def search(self, q: str):
+        return await Product.filter(name__icontains=q).paginate(schema=ProductResponse)
 
-# Response shape:
+# paginate() response shape:
 # {
 #   "data": [...],
-#   "meta": {"current_page": 1, "per_page": 20, "total": 100, "last_page": 5, "from": 1, "to": 20},
-#   "links": {"prev": null, "next": "http://...?page=2&per_page=20"}
+#   "meta": {"current_page": 1, "per_page": 15, "total": 100, "last_page": 7, "from": 1, "to": 15},
+#   "links": {"prev": null, "next": "http://...?page=2&per_page=15"}
 # }
 ''',
 
@@ -434,11 +443,11 @@ class PostController(Controller):
     tags   = ["posts"]
 
     @route.get("/popular", response_model=None)
-    async def popular(self, request: Request):
+    async def popular(self):
         cached = await Cache.get("posts:popular")
         if cached:
             return cached
-        result = await Post.filter(is_published=True).order_by("-views").paginate(request, PostResponse)
+        result = await Post.filter(is_published=True).order_by("-views").paginate(15, PostResponse)
         await Cache.set("posts:popular", result, ttl=60)
         return result
 ''',

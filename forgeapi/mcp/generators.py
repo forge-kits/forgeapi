@@ -75,10 +75,9 @@ def generate_controller(name: str, routes: list[str]) -> str:
         })
 
     lines = [
-        "from fastapi import HTTPException, Request",
+        "from fastapi import HTTPException",
         "from forgeapi.controllers import Controller, route",
         "from forgeapi.auth import CurrentUser, OptionalUser",
-        "from forgeapi.pagination import Pagination",
         "",
         "",
         f"class {name}Controller(Controller):",
@@ -89,9 +88,9 @@ def generate_controller(name: str, routes: list[str]) -> str:
     if not route_defs:
         lines += [
             "",
-            '    @route.get("/")',
-            "    async def index(self, pagination: Pagination) -> dict:",
-            "        pass",
+            '    @route.get("/", response_model=None)',
+            "    async def index(self):",
+            "        pass  # e.g.: return await Model.all().paginate(15, ModelSchema)",
         ]
     else:
         for rd in route_defs:
@@ -105,8 +104,6 @@ def generate_controller(name: str, routes: list[str]) -> str:
                 sig.append(f"payload: {payload}")
             if rd["http_method"] != "GET":
                 sig.append("user: CurrentUser")
-            elif rd["path"] == "/" and rd["http_method"] == "GET":
-                sig.append("request: Request")
 
             ret = "" if rd["http_method"] == "DELETE" else " -> dict"
             lines.append(f"    async def {rd['fn_name']}({', '.join(sig)}){ret}:")
