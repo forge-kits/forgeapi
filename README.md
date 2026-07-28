@@ -142,6 +142,9 @@ my-project/
     pagination.py            # default_limit, max_limit
     database.py              # TORTOISE_ORM dict lives here
     storage.py               # driver, root, base_url (or S3 config)
+    broadcast.py             # redis url, mode (pubsub/stream), namespace — activates BroadcastProvider
+    scheduler.py             # enabled, schedule file path — activates SchedulerProvider
+    queue.py                 # enabled, queue name — activates QueueProvider
   app/
     controllers/             # *_controller.py files, auto-loaded by Core
     schemas/                 # Pydantic schemas
@@ -192,8 +195,11 @@ core = Core(app)
 | Middleware stack | `config/http.py` (`cors`, `rate_limit`, `request_id`, `access_log`, `middleware`) |
 | Auth guards | `config/auth.py` exists |
 | Storage | `config/storage.py` exists — configures the `Storage` facade |
+| Broadcasting | `config/broadcast.py` exists — creates global `broadcast`, connects on startup, disconnects on shutdown |
+| Scheduler | `config/scheduler.py` exists — loads `schedule.py`, starts worker task on startup |
+| Queue worker | `config/queue.py` exists — starts worker task on startup |
 | Controllers | `controllers_dir` exists — all `*_controller.py` imported recursively |
-| Event listeners | `listeners_dir` exists — all files imported |
+| Event listeners | `config/broadcast.py` exists — all files in `listeners_dir` imported |
 | Policies | `policies_dir` exists — all `*_policy.py` imported |
 | Permissions | a model in `models_dir` inherits `PermissionsMixin` (no config needed) |
 | Telescope | `"debug": True` in `config/project.py` — **never in production** |
@@ -551,7 +557,56 @@ Always configured by `Core` — defaults apply when the file is absent.
 
 `BroadcastManager` is the universal event bus for both in-process and cross-project messaging. It supports two modes and a pluggable driver system (Redis now, RabbitMQ planned).
 
-### BroadcastManager
+### Config-driven setup (with Core)
+
+Add `config/broadcast.py` — `Core(app)` does the rest: creates the global `broadcast` proxy, imports all listeners, and manages connect/disconnect via FastAPI startup/shutdown hooks.
+
+```python
+# config/broadcast.py
+from forgeapi import env
+
+config = {
+    "enabled": True,
+    "driver": "redis",
+    "url": env("REDIS_URL", "redis://localhost:6379"),
+    "namespace": "shop",
+    "mode": "pubsub",       # "pubsub" | "stream"
+    # "maxlen": 1000,       # stream mode: keep last N messages per key
+    # "group": "backend",   # stream mode: consumer group name
+    # "consumer": "worker-1",
+}
+```
+
+```python
+# app/listeners/order_listener.py
+from forgeapi.broadcasting import broadcast
+
+@broadcast.on("order:created")
+async def handle(data: dict) -> None:
+    print(data["id"])
+```
+
+```python
+# main.py — no lifespan needed, BroadcastProvider handles connect/disconnect
+from fastapi import FastAPI
+from forgeapi import Core
+
+app = FastAPI()
+core = Core(app)
+```
+
+### Modes
+
+| | `mode="pubsub"` | `mode="stream"` |
+|---|---|---|
+| Persistence | None — messages lost if subscriber is offline | Stored until all groups ACK |
+| Delivery | All subscribers simultaneously | Each group independently |
+| Offline workers | Miss messages | Catch up on reconnect |
+| Horizontal scaling | — | Multiple consumers per group share load |
+
+### Standalone / Cross-project usage
+
+Use `BroadcastManager` directly when broadcasting outside a Core-managed app (e.g. a standalone bot, a worker process, a publisher-only script):
 
 ```python
 from forgeapi import BroadcastManager
@@ -573,72 +628,10 @@ broadcast = BroadcastManager(
 | `mode` | `"pubsub"` | `"pubsub"` = fire-and-forget, `"stream"` = persistent |
 | `maxlen` | `None` | Stream mode: max messages per stream key |
 
-### Registering handlers
-
-```python
-@broadcast.on("order:created")
-async def handle(data: dict) -> None:
-    print(data["id"])
-```
-
-`Core(app)` auto-imports all modules in `listeners_dir` so decorators execute at startup.
-
-### Pub/Sub mode
-
-Fire-and-forget fan-out. Fast, but messages are lost if subscriber is offline.
-
-```python
-broadcast = BroadcastManager(driver="redis", url="redis://localhost:6379", namespace="shop")
-
-@broadcast.on("order:created")
-async def handle(data: dict) -> None:
-    await telegram.send(f"Order #{data['id']}")
-
-@asynccontextmanager
-async def lifespan(app):
-    await broadcast.connect()   # no group/consumer needed
-    yield
-    await broadcast.disconnect()
-```
-
-### Stream mode
-
-Persistent delivery via Redis Streams. Messages survive restarts. Each consumer group receives all messages independently.
-
-```python
-broadcast = BroadcastManager(
-    driver="redis",
-    url="redis://localhost:6379",
-    namespace="shop",
-    mode="stream",
-    maxlen=1000,
-)
-
-@broadcast.on("order:created")
-async def handle(data: dict) -> None:
-    await warehouse.fulfill(data["order_id"])
-
-@asynccontextmanager
-async def lifespan(app):
-    await broadcast.connect(group="backend", consumer="worker-1")
-    yield
-    await broadcast.disconnect()
-```
-
-| | `mode="pubsub"` | `mode="stream"` |
-|---|---|---|
-| Persistence | None | Stored until all groups ACK |
-| Delivery | All subscribers simultaneously | Each group independently |
-| Offline workers | Miss messages | Catch up on reconnect |
-| Horizontal scaling | — | Multiple consumers per group share load |
-
-### Cross-project example
-
-Both projects use the same `namespace` — no shared Python classes needed, only plain `dict`.
-
 ```python
 # Project A — publisher (e.g. backend API)
 broadcast = BroadcastManager(driver="redis", url="redis://...", namespace="shop", mode="stream")
+await broadcast.connect()
 await broadcast.emit("order:created", {"id": 42, "total": 99.0})
 
 # Project B — consumer (e.g. Telegram bot, separate service)
@@ -652,24 +645,15 @@ await broadcast.connect(group="telegram-bot", consumer="worker-1")
 await asyncio.sleep(float("inf"))
 ```
 
-### Lifecycle
+### Manual lifespan (without Core)
 
 ```python
-# FastAPI
 @asynccontextmanager
 async def lifespan(app):
     await broadcast.connect(group="backend", consumer="worker-1")  # stream
     # await broadcast.connect()                                     # pubsub
     yield
     await broadcast.disconnect()
-
-# Standalone script
-async def main():
-    await broadcast.connect(group="bot", consumer="w1")
-    try:
-        await asyncio.sleep(float("inf"))
-    finally:
-        await broadcast.disconnect()
 ```
 
 ---
@@ -1827,16 +1811,35 @@ forgeapi schedule:list
 * * * * * cd /path/to/project && forgeapi schedule:run >> /var/log/scheduler.log 2>&1
 ```
 
-### FastAPI lifespan integration
+### In-process with Core (config-driven)
 
-If you prefer to run the scheduler in-process instead of a separate process:
+Add `config/scheduler.py` — `Core(app)` starts the scheduler as a background task on startup and cancels it on shutdown. No lifespan boilerplate needed.
 
 ```python
-# main.py
+# config/scheduler.py
+config = {
+    "enabled": True,
+    "schedule": "schedule.py",   # path to your schedule.py
+}
+```
+
+```python
+# main.py — scheduler starts automatically
+from fastapi import FastAPI
+from forgeapi import Core
+
+app = FastAPI()
+core = Core(app)
+```
+
+### Manual lifespan (without Core)
+
+If you need to run the scheduler in-process without using `config/scheduler.py`:
+
+```python
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from forgeapi import Core
 from schedule import scheduler   # your schedule.py
 
 @asynccontextmanager
@@ -1847,7 +1850,6 @@ async def lifespan(app):
     await asyncio.gather(task, return_exceptions=True)
 
 app = FastAPI(lifespan=lifespan)
-core = Core(app)
 ```
 
 `scheduler.run()` calls `sync()` on startup (upserts all jobs to DB), then loops
@@ -1928,7 +1930,28 @@ forgeapi queue:work        # start infinite worker loop (press Ctrl+C to stop)
 forgeapi queue:run         # process all currently pending jobs once (use from cron)
 ```
 
-**FastAPI lifespan (in-process):**
+**In-process with Core (config-driven):**
+
+Add `config/queue.py` — `Core(app)` starts the queue worker as a background task on startup.
+
+```python
+# config/queue.py
+config = {
+    "enabled": True,
+    "queue": "default",   # queue name to consume
+}
+```
+
+```python
+# main.py — worker starts automatically
+from fastapi import FastAPI
+from forgeapi import Core
+
+app = FastAPI()
+core = Core(app)
+```
+
+**Manual lifespan (without Core):**
 
 ```python
 import asyncio
@@ -2130,6 +2153,30 @@ config = {
     # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
     # "endpoint_url": "",     # MinIO / R2 endpoint
     # "acl": "public-read",
+}
+
+# config/broadcast.py — activates BroadcastProvider (see §7)
+config = {
+    "enabled": True,
+    "driver": "redis",
+    "url": env("REDIS_URL", "redis://localhost:6379"),
+    "namespace": "forge",
+    "mode": "pubsub",       # "pubsub" | "stream"
+    # "maxlen": None,       # stream mode: keep last N messages per key
+    # "group": "backend",   # stream mode: consumer group name
+    # "consumer": "worker-1",
+}
+
+# config/scheduler.py — activates SchedulerProvider (see §22)
+config = {
+    "enabled": True,
+    "schedule": "schedule.py",   # path to your schedule.py relative to project root
+}
+
+# config/queue.py — activates QueueProvider (see §23)
+config = {
+    "enabled": True,
+    "queue": "default",   # queue name the in-process worker will consume
 }
 ```
 

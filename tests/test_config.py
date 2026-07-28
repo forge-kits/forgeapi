@@ -115,6 +115,74 @@ class TestLoadConfig:
             load_config(str(toml))
 
 
+class TestBroadcastConfig:
+    def test_defaults(self):
+        from forgeapi.config import BroadcastConfig
+        cfg = BroadcastConfig()
+        assert cfg.enabled is True
+        assert cfg.driver == "redis"
+        assert cfg.mode == "pubsub"
+        assert cfg.namespace == "forge"
+        assert cfg.maxlen is None
+
+    def test_load_from_file(self, config_dir):
+        (config_dir / "broadcast.py").write_text(
+            "config = {'namespace': 'myapp', 'mode': 'stream'}\n"
+        )
+        cfg = load_config()
+        assert cfg.broadcast.namespace == "myapp"
+        assert cfg.broadcast.mode == "stream"
+        assert cfg.provided("broadcast")
+
+    def test_broadcast_disabled(self, config_dir):
+        (config_dir / "broadcast.py").write_text("config = {'enabled': False}\n")
+        cfg = load_config()
+        assert cfg.broadcast.enabled is False
+        assert cfg.provided("broadcast")
+
+    def test_not_provided_when_no_file(self, config_dir):
+        cfg = load_config()
+        assert not cfg.provided("broadcast")
+
+
+class TestSchedulerConfig:
+    def test_defaults(self):
+        from forgeapi.config import SchedulerConfig
+        cfg = SchedulerConfig()
+        assert cfg.enabled is True
+        assert cfg.schedule == "schedule.py"
+
+    def test_load_from_file(self, config_dir):
+        (config_dir / "scheduler.py").write_text(
+            "config = {'schedule': 'tasks/schedule.py'}\n"
+        )
+        cfg = load_config()
+        assert cfg.scheduler.schedule == "tasks/schedule.py"
+        assert cfg.provided("scheduler")
+
+    def test_not_provided_when_no_file(self, config_dir):
+        cfg = load_config()
+        assert not cfg.provided("scheduler")
+
+
+class TestQueueConfig:
+    def test_defaults(self):
+        from forgeapi.config import QueueConfig
+        cfg = QueueConfig()
+        assert cfg.enabled is True
+        assert cfg.queue == "default"
+
+    def test_load_from_file(self, config_dir):
+        (config_dir / "queue.py").write_text("config = {'queue': 'high'}\n")
+        cfg = load_config()
+        assert cfg.queue.queue == "high"
+        assert cfg.provided("queue")
+
+    def test_not_provided_when_no_file(self, config_dir):
+        cfg = load_config()
+        assert not cfg.provided("queue")
+
+
 class TestPaginationConfigValidation:
     def test_default_limit_must_be_positive(self):
         from pydantic import ValidationError as PydanticValidationError

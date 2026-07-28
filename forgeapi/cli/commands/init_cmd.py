@@ -43,17 +43,32 @@ config = {
 '''
 
 _CONFIG_BROADCAST_TEMPLATE = '''\
-from forgeapi import BroadcastManager
+from forgeapi import env
 
-config = {{}}  # required by config loader — broadcast is configured below
+config = {{
+    "enabled": True,
+    "driver": "redis",
+    "url": env("REDIS_URL", "redis://localhost:6379"),
+    "namespace": "{name}",
+    "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent
+    # "maxlen": 1000,       # stream mode: keep last N messages per key
+    # "group": "backend",   # stream mode: consumer group name
+    # "consumer": "worker-1",
+}}
+'''
 
-broadcast = BroadcastManager(
-    driver="redis",
-    url="redis://localhost:6379",
-    namespace="{name}",
-    mode="stream",   # "pubsub" = fire-and-forget | "stream" = persistent
-    maxlen=1000,
-)
+_CONFIG_SCHEDULER_TEMPLATE = '''\
+config = {
+    "enabled": True,
+    "schedule": "schedule.py",   # path to your schedule.py relative to project root
+}
+'''
+
+_CONFIG_QUEUE_TEMPLATE = '''\
+config = {
+    "enabled": True,
+    "queue": "default",   # queue name the in-process worker will consume
+}
 '''
 
 _CONFIG_STORAGE_TEMPLATE = '''\
@@ -235,28 +250,12 @@ _ENV_VARS = {
 }
 
 _MAIN_TEMPLATE = """\
-import asyncio
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from forgeapi import Core
 from tortoise.contrib.fastapi import register_tortoise
 from config.database import TORTOISE_ORM
 
-# Optional: enable broadcasting (Redis required — configure in config/broadcast.py)
-# from config.broadcast import broadcast
-
-# Optional: run scheduler in-process (or use CLI: forgeapi schedule:work)
-# from schedule import scheduler
-
-@asynccontextmanager
-async def lifespan(app):
-    # await broadcast.connect(group="{name}", consumer="worker-1")
-    # task = asyncio.create_task(scheduler.run())
-    yield
-    # await broadcast.disconnect()
-    # task.cancel()
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 core = Core(app)   # everything is wired from config/
 
@@ -338,6 +337,8 @@ Creates:
         self._write(root / "config/pagination.py", _CONFIG_PAGINATION_TEMPLATE, typer)
         self._write(root / "config/storage.py", _CONFIG_STORAGE_TEMPLATE, typer)
         self._write(root / "config/broadcast.py", _CONFIG_BROADCAST_TEMPLATE.format(name=name), typer)
+        self._write(root / "config/scheduler.py", _CONFIG_SCHEDULER_TEMPLATE, typer)
+        self._write(root / "config/queue.py", _CONFIG_QUEUE_TEMPLATE, typer)
         self._write(
             root / "config/database.py",
             _CONFIG_DATABASE_TEMPLATES[driver].format(name=name),

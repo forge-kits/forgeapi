@@ -601,12 +601,6 @@ class PostPolicy(Policy):
         return user.id == post.author_id
 ```
 
-## Gate closures (lightweight — no Policy class needed)
-```python
-gate.define("edit-post", lambda user, post: user.id == post.author_id)
-gate.define("is-admin", lambda user: user.is_admin)
-```
-
 ## Using in controllers
 ```python
 from forgeapi import gate

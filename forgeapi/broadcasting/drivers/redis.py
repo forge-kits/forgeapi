@@ -84,7 +84,7 @@ class RedisDriver(BroadcastDriver):
         try:
             import redis.asyncio as aioredis
         except ImportError:
-            raise ImportError("RedisDriver requires redis. Install: pip install redis")
+            raise ImportError("RedisDriver requires redis. Install: pip install forge-kits[redis]")
         self._redis = aioredis.from_url(
             self._url,
             decode_responses=True,

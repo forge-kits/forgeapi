@@ -5,7 +5,7 @@ from .exceptions import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 from .settings import BaseAppSettings
 from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
 from .database import ModelMixin, scope, ModelObserver
-from .broadcasting import BroadcastManager
+from .broadcasting import BroadcastManager, broadcast
 from .controllers import Controller, route
 from .middleware import Middleware, Guard
 from .logging import Log
@@ -42,6 +42,7 @@ __all__ = [
     "ModelObserver",
     # Broadcasting
     "BroadcastManager",
+    "broadcast",
     # Controllers
     "Controller",
     "route",
@@ -86,26 +87,13 @@ def __getattr__(name: str):
     }
 
     if name in _auth_exports:
-        try:
-            from . import auth as _auth_module
-        except ImportError:
-            raise ImportError(
-                f"'{name}' requires auth dependencies. Install them: pip install forge-kits[auth]"
-            )
+        import importlib
+        _auth_module = importlib.import_module("forgeapi.auth")
         return getattr(_auth_module, name)
 
     if name in _db_exports:
-        try:
-            from .pagination import (  # noqa: F401
-                Paginator, Pagination,
-                CursorPaginator, CursorPagination,
-                PaginatedResponse, CursorResponse,
-                PaginationMeta, PaginationLinks, CursorMeta,
-            )
-        except ImportError:
-            raise ImportError(
-                f"'{name}' requires tortoise-orm. Install it: pip install forge-kits[db]"
-            )
-        return locals()[name]
+        import importlib
+        _pag = importlib.import_module("forgeapi.pagination")
+        return getattr(_pag, name)
 
     raise AttributeError(f"module 'forgeapi' has no attribute '{name}'")

@@ -138,6 +138,57 @@ class StorageConfig(BaseModel):
     acl: str = ""
 
 
+class BroadcastConfig(BaseModel):
+    """The ``broadcast`` config section (``config/broadcast.py``)::
+
+        config = {
+            "enabled": True,
+            "driver": "redis",
+            "url": "redis://localhost:6379",
+            "namespace": "myapp",
+            "mode": "pubsub",     # "pubsub" | "stream"
+            "maxlen": 1000,       # stream only: keep last N messages
+            "group": "backend",   # stream only: consumer group name
+            "consumer": "worker-1",  # stream only: consumer name
+        }
+    """
+
+    enabled: bool = True
+    driver: str = "redis"
+    url: str = "redis://localhost:6379"
+    namespace: str = "forge"
+    mode: str = "pubsub"
+    maxlen: int | None = None
+    group: str = "backend"
+    consumer: str = "worker-1"
+
+
+class SchedulerConfig(BaseModel):
+    """The ``scheduler`` config section (``config/scheduler.py``)::
+
+        config = {
+            "enabled": True,
+            "schedule": "schedule.py",  # path to the schedule definition file
+        }
+    """
+
+    enabled: bool = True
+    schedule: str = "schedule.py"
+
+
+class QueueConfig(BaseModel):
+    """The ``queue`` config section (``config/queue.py``)::
+
+        config = {
+            "enabled": True,
+            "queue": "default",  # default queue name for the worker
+        }
+    """
+
+    enabled: bool = True
+    queue: str = "default"
+
+
 class KitConfig(BaseModel):
     """Validated application config.
 
@@ -156,6 +207,9 @@ class KitConfig(BaseModel):
     database: DatabaseConfig = DatabaseConfig()
     cache: CacheConfig = CacheConfig()
     storage: StorageConfig = StorageConfig()
+    broadcast: BroadcastConfig = BroadcastConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
+    queue: QueueConfig = QueueConfig()
 
     # section names the user actually provided (vs. pure defaults) —
     # feature enablement is decided by presence, e.g. auth boots only

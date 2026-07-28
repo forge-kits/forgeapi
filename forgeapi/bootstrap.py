@@ -48,15 +48,16 @@ class Core:
         self._cfg: KitConfig = config or load_config()
         self._debug = self._cfg.project.debug
 
+        _forge_logger = _logging.getLogger("forgeapi")
         if self._debug:
-            _logging.getLogger("forgeapi").setLevel(_logging.DEBUG)
-            if not _logging.root.handlers:
-                _logging.basicConfig(
-                    level=_logging.DEBUG,
-                    format="%(levelname)s  %(name)s  %(message)s",
-                )
+            _forge_logger.setLevel(_logging.DEBUG)
+            if not _forge_logger.handlers and not _logging.root.handlers:
+                _handler = _logging.StreamHandler()
+                _handler.setFormatter(_logging.Formatter("%(levelname)s  %(name)s  %(message)s"))
+                _forge_logger.addHandler(_handler)
+                _forge_logger.propagate = False
         else:
-            _logging.getLogger("forgeapi").setLevel(_logging.WARNING)
+            _forge_logger.setLevel(_logging.WARNING)
 
         if self._cfg.project.name:
             self._app.title = self._cfg.project.name
@@ -100,6 +101,14 @@ class Core:
 
         from .broadcasting.provider import BroadcastProvider
         add(BroadcastProvider(app, cfg))
+
+        if cfg.provided("scheduler"):
+            from .scheduling.provider import SchedulerProvider
+            add(SchedulerProvider(app, cfg))
+
+        if cfg.provided("queue"):
+            from .queue.provider import QueueProvider
+            add(QueueProvider(app, cfg))
 
         from .policies.provider import PolicyProvider
         add(PolicyProvider(app, cfg))

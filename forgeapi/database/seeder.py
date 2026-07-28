@@ -39,13 +39,6 @@ class Seeder:
         transaction ensures that a mid-seed failure triggers a full rollback
         rather than leaving the database in a partial state.
         """
-        try:
-            from tortoise.transactions import in_transaction
-        except ImportError:
-            from forgeapi.exceptions import ForgeAPIImportError
-            raise ForgeAPIImportError(
-                "Seeder.execute() requires Tortoise ORM.",
-                hint="pip install tortoise-orm",
-            )
+        from tortoise.transactions import in_transaction
         async with in_transaction():
             await self.run()
