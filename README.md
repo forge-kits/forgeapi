@@ -465,28 +465,26 @@ Client sends `window.Telegram.WebApp.initData` via `X-Telegram-Init-Data` header
 
 ## 6. Pagination
 
-Two flavors: **QuerySet `.paginate()`** (recommended), **offset** (classic), and **cursor** (stable on inserts/deletes).
+Three methods on every QuerySet — no dependency injection, no `request` argument. Laravel-style.
 
-### QuerySet .paginate()
+### paginate()
 
-The cleanest way — call `.paginate()` directly on any QuerySet:
+Two queries (COUNT + SELECT). Full meta with `total` and `last_page`:
 
 ```python
-from fastapi import Request
 from forgeapi.controllers import Controller, route
 
 class PostController(Controller):
     prefix = "/posts"
     tags   = ["posts"]
-    schema = PostResponse
 
     @route.get("/", response_model=None)
-    async def index(self, request: Request):
-        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
+    async def index(self):
+        return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.get("/published", response_model=None)
-    async def published(self, request: Request):
-        return await Post.filter(is_published=True).paginate(request, PostResponse)
+    async def published(self):
+        return await Post.filter(is_published=True).paginate(15, PostResponse)
 ```
 
 Query params: `?page=1&per_page=20`. Response:
@@ -496,45 +494,41 @@ Query params: `?page=1&per_page=20`. Response:
   "data": [...],
   "meta": {
     "current_page": 1,
-    "per_page": 20,
+    "per_page": 15,
     "total": 47,
-    "last_page": 3,
+    "last_page": 4,
     "from": 1,
-    "to": 20
+    "to": 15
   },
   "links": {
     "prev": null,
-    "next": "/posts?page=2&per_page=20"
+    "next": "/posts?page=2&per_page=15"
   }
 }
 ```
 
-`schema` is optional — omit to get raw ORM objects.
+`schema` is optional — omit to get raw ORM objects. Explicit `per_page` argument overrides `?per_page` query param.
 
-### Offset pagination
+### simple_paginate()
 
-Classic DI-based pagination:
+One query (SELECT N+1, no COUNT). Only `prev`/`next` links — faster on large tables:
 
 ```python
-from forgeapi.pagination import Pagination
-
-@route.get("/")
-async def index(self, pagination: Pagination, request: Request):
-    return await pagination.paginate(Post.all().order_by("-created_at"), PostResponse, request)
+@route.get("/", response_model=None)
+async def index(self):
+    return await Post.all().order_by("-created_at").simple_paginate(15, PostResponse)
 ```
 
-`pagination.page`, `pagination.limit`, `pagination.offset` are available as attributes.
+Response has no `total` or `last_page` in `meta`.
 
-### Cursor pagination
+### cursor_paginate()
 
-No OFFSET — stable and O(1) on large datasets:
+No OFFSET — stable and O(1) on large datasets, stable on concurrent inserts/deletes:
 
 ```python
-from forgeapi.pagination import CursorPagination
-
-@route.get("/")
-async def index(self, p: CursorPagination, request: Request):
-    return await p.paginate(Post.all(), PostResponse, request, order_by="-id")
+@route.get("/", response_model=None)
+async def index(self):
+    return await Post.all().cursor_paginate(15, PostResponse, order_by="-id")
 ```
 
 Query params: `?cursor=<token>&per_page=20`.
@@ -678,8 +672,8 @@ class PostController(Controller):
     schema = PostResponse   # auto response_model (see below)
 
     @route.get("/", response_model=None)
-    async def index(self, request: Request):
-        return await Post.all().order_by("-created_at").paginate(request, PostResponse)
+    async def index(self):
+        return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.post("/", status_code=201)
     async def create(self, payload: PostCreatePayload, user: CurrentUser):
@@ -712,8 +706,8 @@ class PostController(Controller):
     async def index(self): ...
 
     @route.get("/", response_model=None)   # override: disable for this route
-    async def index(self, request: Request):
-        return await Post.all().paginate(request, PostResponse)
+    async def index(self):
+        return await Post.all().paginate(15, PostResponse)
 
     @route.delete("/{id}", status_code=204)  # skipped: no response body on 204
     async def destroy(self, id: int): ...
@@ -944,20 +938,26 @@ await post.update_from(payload)
 await post.update_from(payload, updated_by=int(user.id))
 ```
 
-### QuerySet .paginate()
+### QuerySet pagination
 
-`ModelMixin` injects `ForgeManager` automatically so `.paginate()` is available on every QuerySet chain:
+`ModelMixin` injects `ForgeManager` automatically so pagination methods are available on every QuerySet chain:
 
 ```python
-# Full paginated response
-result = await Post.all().order_by("-created_at").paginate(request, PostResponse)
+# Full paginated response (COUNT + SELECT)
+result = await Post.all().order_by("-created_at").paginate(15, PostResponse)
+
+# No COUNT — faster on large tables
+result = await Post.all().order_by("-created_at").simple_paginate(15, PostResponse)
+
+# Cursor-based — no OFFSET
+result = await Post.all().cursor_paginate(15, PostResponse, order_by="-created_at")
 
 # With filters
-result = await Post.published().paginate(request, PostResponse)
-result = await Post.by_author(user_id).order_by("-created_at").paginate(request, PostResponse)
+result = await Post.published().paginate(15, PostResponse)
+result = await Post.by_author(user_id).order_by("-created_at").paginate(15, PostResponse)
 
 # Without schema — returns raw ORM objects
-result = await Post.all().paginate(request)
+result = await Post.all().paginate(15)
 ```
 
 ### Before vs after ModelMixin
@@ -1252,11 +1252,11 @@ await Cache.decrement("stock:item:5")
 
 ```python
 @route.get("/popular", response_model=None)
-async def popular(self, request: Request):
+async def popular(self):
     cached = await Cache.get("posts:popular")
     if cached:
         return cached
-    result = await Post.filter(is_published=True).paginate(request, PostResponse)
+    result = await Post.filter(is_published=True).paginate(15, PostResponse)
     await Cache.set("posts:popular", result, ttl=60)
     return result
 ```
