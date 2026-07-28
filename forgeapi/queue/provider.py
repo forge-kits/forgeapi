@@ -65,6 +65,6 @@ class QueueProvider(Provider):
             provider._task = None
             _log.info("QueueProvider: worker stopped")
 
-        self.app.add_event_handler("startup", _startup)
-        self.app.add_event_handler("shutdown", _shutdown)
+        self.app.router.on_startup.append(_startup)
+        self.app.router.on_shutdown.append(_shutdown)
         _log.debug("QueueProvider: lifespan hooks registered")
