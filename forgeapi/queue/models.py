@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import uuid as uuid_module
 from tortoise import Model, fields
+from tortoise.signals import pre_save
 
 
 class JobRecord(Model):
@@ -19,7 +19,7 @@ class JobRecord(Model):
 
 class FailedJob(Model):
     id = fields.BigIntField(primary_key=True)
-    uuid = fields.CharField(max_length=36, default=lambda: str(uuid_module.uuid4()))
+    uuid = fields.UUIDField(unique=True)
     queue = fields.CharField(max_length=255, default="default")
     payload = fields.JSONField()
     exception = fields.TextField()
@@ -27,3 +27,10 @@ class FailedJob(Model):
 
     class Meta:
         table = "failed_jobs"
+
+
+@pre_save(FailedJob)
+async def _set_uuid(sender, instance, using_db, update_fields) -> None:
+    if not instance.uuid:
+        import uuid
+        instance.uuid = uuid.uuid4()
