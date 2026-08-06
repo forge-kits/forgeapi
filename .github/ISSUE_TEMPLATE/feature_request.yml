@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an addition or improvement to forge-kits/forgeapi
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: What are you trying to do that isn't well supported today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: API/CLI shape, config, or behavior you have in mind (code sketch welcome)
+      render: python
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you're using now, or other approaches you ruled out
+    validations:
+      required: false

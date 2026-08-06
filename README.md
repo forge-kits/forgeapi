@@ -1481,7 +1481,7 @@ Str.ends_with("Hello", "lo")          # True
 ### Time
 
 ```python
-Time.now()                            # datetime UTC
+Time.now()                            # datetime in server's local timezone
 Time.now("Europe/Kyiv")               # datetime in timezone
 
 Time.parse("2025-07-14")              # → datetime

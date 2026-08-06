@@ -717,7 +717,7 @@ Str.contains("Hello", "ell")        # True
 
 ## Time
 ```python
-Time.now()                          # datetime UTC
+Time.now()                          # datetime in server's local timezone
 Time.now("Europe/Kyiv")             # datetime in TZ
 Time.parse("2025-07-14")            # → datetime
 Time.format(dt, "%d/%m/%Y")         # "14/07/2025"

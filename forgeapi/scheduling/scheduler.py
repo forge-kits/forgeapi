@@ -177,34 +177,54 @@ class Scheduler:
             log.debug("Scheduler: '%s' synced, next run at %s", job._label, record.next_run_at)
 
     async def run_due(self) -> int:
-        """Execute all currently due tasks. Returns number of tasks run."""
+        """Execute all currently due tasks. Returns number of tasks run.
+
+        Claiming (row lock + advancing ``next_run_at``) happens in its own
+        short transaction before the job runs, so multiple scheduler
+        instances can't pick up and execute the same due task twice.
+        """
+        from tortoise.transactions import in_transaction
+
         from .models import ScheduledTask
 
         registry = self.registry
         now = datetime.now()
 
-        due = await ScheduledTask.filter(is_enabled=True, next_run_at__lte=now).all()
-        if not due:
+        due_ids = await ScheduledTask.filter(
+            is_enabled=True, next_run_at__lte=now
+        ).values_list("id", flat=True)
+        if not due_ids:
             return 0
 
-        for record in due:
-            job = registry.get(record.name)
-            if job is None:
-                log.warning("Scheduler: task '%s' in DB has no registered callable", record.name)
-                continue
+        ran = 0
+        for task_id in due_ids:
+            async with in_transaction():
+                record = await (
+                    ScheduledTask.filter(id=task_id, is_enabled=True, next_run_at__lte=now)
+                    .select_for_update(skip_locked=True)
+                    .first()
+                )
+                if record is None:
+                    continue  # claimed by another instance, or no longer due
+
+                job = registry.get(record.name)
+                if job is None:
+                    log.warning("Scheduler: task '%s' in DB has no registered callable", record.name)
+                    continue
+
+                record.next_run_at = job.compute_next_run(now)
+                await record.save(update_fields=["next_run_at"])
 
             status, error = await job.execute()
             run_at = datetime.now()
             record.last_run_at = run_at
             record.last_status = status
             record.last_error = error
-            record.next_run_at = job.compute_next_run(run_at)
-            await record.save(
-                update_fields=["last_run_at", "last_status", "last_error", "next_run_at"]
-            )
+            await record.save(update_fields=["last_run_at", "last_status", "last_error"])
             log.debug("Scheduler: '%s' %s, next run at %s", record.name, status, record.next_run_at)
+            ran += 1
 
-        return len(due)
+        return ran
 
     async def run_one(self, name: str) -> None:
         """Run a specific task by name, regardless of schedule."""

@@ -30,11 +30,11 @@ def _parse(value: DateTimeInput) -> datetime:
 class Time:
     @staticmethod
     def now(tz: str | None = None) -> datetime:
-        """Current UTC datetime (or in given IANA timezone)."""
+        """Current datetime in the server's local timezone (or in given IANA timezone)."""
         import zoneinfo
         if tz:
             return datetime.now(zoneinfo.ZoneInfo(tz))
-        return datetime.now(timezone.utc)
+        return datetime.now().astimezone()
 
     @staticmethod
     def parse(value: DateTimeInput) -> datetime:

@@ -40,6 +40,7 @@ class Queue:
                     available_at__lte=now,
                     queue=self._name,
                 )
+                .select_for_update(skip_locked=True)
                 .order_by("id")
                 .first()
             )
