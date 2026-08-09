@@ -47,7 +47,7 @@ def require_permission(*permissions: str):
             raise HTTPException(status_code=401, detail="Invalid user identity")
         if user_id <= 0:
             raise HTTPException(status_code=401, detail="Invalid user identity")
-        db_user = await UserModel.get_or_none(id=user_id)
+        db_user = await UserModel.get_or_none(pk=user_id)
         if not db_user:
             raise HTTPException(status_code=401, detail="User not found")
         if not getattr(db_user, "is_active", True):
@@ -99,7 +99,7 @@ def require_role(*roles: str):
             raise HTTPException(status_code=401, detail="Invalid user identity")
         if user_id <= 0:
             raise HTTPException(status_code=401, detail="Invalid user identity")
-        db_user = await UserModel.get_or_none(id=user_id)
+        db_user = await UserModel.get_or_none(pk=user_id)
         if not db_user:
             raise HTTPException(status_code=401, detail="User not found")
         if not getattr(db_user, "is_active", True):
