@@ -105,7 +105,7 @@ class Guard:
         if self._user_model is None:
             return auth_user
 
-        db_user = await self._user_model.get_or_none(id=auth_user.id)
+        db_user = await self._user_model.get_or_none(pk=auth_user.id)
         if db_user is None:
             _log.debug(
                 "Guard '%s': token valid but user id=%s not in DB",
