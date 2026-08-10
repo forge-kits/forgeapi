@@ -247,3 +247,19 @@ class ForgeQuerySet(QuerySet):
 class ForgeManager(Manager):
     def get_queryset(self) -> ForgeQuerySet:
         return ForgeQuerySet(self._model)
+
+
+class SoftDeleteQuerySet(ForgeQuerySet):
+
+    def with_trashed(self) -> ForgeQuerySet:
+        """Return queryset that includes soft-deleted records."""
+        return ForgeQuerySet(self.model)
+
+    def only_trashed(self) -> ForgeQuerySet:
+        """Return queryset of only soft-deleted records."""
+        return ForgeQuerySet(self.model).filter(deleted_at__not_isnull=True)
+
+
+class SoftDeleteManager(Manager):
+    def get_queryset(self) -> SoftDeleteQuerySet:
+        return SoftDeleteQuerySet(self._model).filter(deleted_at__isnull=True)

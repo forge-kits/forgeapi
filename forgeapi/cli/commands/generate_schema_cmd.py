@@ -185,6 +185,26 @@ Examples:
     # ── Model loading ───────────────────────────────────────────────────────────
 
     @staticmethod
+    def _resolve_python_type(cls) -> tuple[str, str | None]:
+        """Resolve a Python type class to (annotation_string, import_line_or_None).
+
+        Handles built-ins, enums, and arbitrary classes from any module.
+        """
+        _BUILTINS = {str: "str", int: "int", float: "float", bool: "bool", bytes: "bytes"}
+        if cls in _BUILTINS:
+            return _BUILTINS[cls], None
+
+        name = getattr(cls, "__name__", None)
+        if not name:
+            return "Any", _EXTRA_IMPORTS["Any"]
+
+        module = getattr(cls, "__module__", "builtins")
+        if module == "builtins":
+            return name, None
+
+        return name, f"from {module} import {name}"
+
+    @staticmethod
     def _load_model_fields(class_name: str, module_dotted: str) -> tuple[list[dict], set[str]]:
         import importlib
         mod = importlib.import_module(module_dotted)
@@ -205,9 +225,20 @@ Examples:
                 nullable = getattr(field, "null", False)
                 fields.append({"name": field_name + "_id", "type": "int", "nullable": nullable, "default": None})
                 continue
-            py_type = _FIELD_TYPE_MAP.get(field_cls, "Any")
+
+            py_type = _FIELD_TYPE_MAP.get(field_cls)
+            if py_type is None:
+                python_type_cls = getattr(field, "python_type", None)
+                if python_type_cls is not None:
+                    py_type, import_line = GenerateSchemaCommand._resolve_python_type(python_type_cls)
+                    if import_line:
+                        extra_imports.add(import_line)
+                else:
+                    py_type = "Any"
+
             if py_type in _EXTRA_IMPORTS:
                 extra_imports.add(_EXTRA_IMPORTS[py_type])
+
             nullable = getattr(field, "null", False)
             default = GenerateSchemaCommand._literal_default(getattr(field, "default", None))
             fields.append({"name": field_name, "type": py_type, "nullable": nullable, "default": default})
@@ -218,6 +249,9 @@ Examples:
     def _literal_default(value) -> str | None:
         if value is None or callable(value):
             return None
+        import enum
+        if isinstance(value, enum.Enum):
+            return f"{type(value).__name__}.{value.name}"
         if isinstance(value, bool):
             return str(value)
         if isinstance(value, (int, float)):

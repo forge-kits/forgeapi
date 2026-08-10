@@ -34,51 +34,53 @@
    - [Schema directories](#schema-directories)
    - [generate:schema](#generateschema)
 10. [Policies](#10-policies)
-11. [ModelMixin](#11-modelmixin)
-12. [Query Scopes](#12-query-scopes)
-13. [Model Observers](#13-model-observers)
-14. [Permissions](#14-permissions)
+11. [Database](#11-database)
+    - [ModelMixin](#modelmixin)
+    - [Soft Deletes](#soft-deletes)
+    - [Query Scopes](#query-scopes)
+    - [Observers](#observers)
+12. [Permissions](#12-permissions)
     - [Setup](#setup)
     - [PermissionsMixin](#permissionsmixin)
     - [Dependencies](#dependencies)
     - [Role and Permission models](#role-and-permission-models)
-15. [Cache](#15-cache)
+13. [Cache](#13-cache)
     - [Basic operations](#basic-operations)
     - [Common patterns](#common-patterns)
     - [Drivers](#drivers)
     - [Configuration](#cache-configuration)
-16. [Storage](#16-storage)
+14. [Storage](#14-storage)
     - [Configuration](#storage-configuration)
     - [Basic operations](#storage-basic-operations)
     - [Multiple disks](#multiple-disks)
     - [S3 / S3-compatible](#s3--s3-compatible)
     - [ImageProcessor](#imageprocessor)
-17. [Support](#17-support)
+15. [Support](#15-support)
     - [Number](#number)
     - [Str](#str)
     - [Time](#time)
-18. [Logger](#18-logger)
-19. [Middleware](#19-middleware)
+16. [Logger](#16-logger)
+17. [Middleware](#17-middleware)
     - [CORS](#cors)
     - [Rate limiting](#rate-limiting)
     - [Request ID](#request-id)
     - [Access logging](#access-logging)
-20. [Settings](#20-settings)
-21. [Seeders](#21-seeders)
-22. [Scheduler](#22-scheduler)
-23. [Queue](#23-queue)
+18. [Settings](#18-settings)
+19. [Seeders](#19-seeders)
+20. [Scheduler](#20-scheduler)
+21. [Queue](#21-queue)
     - [Defining a job](#defining-a-job)
     - [Dispatching](#dispatching)
     - [Running the worker](#running-the-worker)
     - [Failed jobs](#failed-jobs)
-24. [CLI reference](#24-cli-reference)
-25. [Configuration reference (config/)](#25-configuration-reference-config)
-26. [Telescope](#26-telescope)
+22. [CLI reference](#22-cli-reference)
+23. [Configuration reference (config/)](#23-configuration-reference-config)
+24. [Telescope](#24-telescope)
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
     - [Recording jobs](#recording-jobs)
-27. [MCP Server](#27-mcp-server)
+25. [MCP Server](#25-mcp-server)
     - [Install](#install)
     - [Global setup for Claude Code](#global-setup-for-claude-code)
     - [Per-project setup](#per-project-setup)
@@ -880,7 +882,9 @@ gate.discover("app/policies")   # imports all *_policy.py files
 
 ---
 
-## 11. ModelMixin
+## 11. Database
+
+### ModelMixin
 
 `ModelMixin` adds ORM shortcuts and enables `.paginate()` on every QuerySet. Mix it alongside `tortoise.Model`:
 
@@ -910,8 +914,8 @@ class Post(ModelMixin, Model):
         return qs.filter(author_id=author_id)
 ```
 
-Use `@scope` (not `@classmethod`) for reusable filters — see §12 for details.
-`Post.observe(PostObserver)` registers lifecycle hooks — see §13.
+Use `@scope` (not `@classmethod`) for reusable filters — see [Query Scopes](#query-scopes).
+`Post.observe(PostObserver)` registers lifecycle hooks — see [Observers](#observers).
 
 ### Methods
 
@@ -979,9 +983,38 @@ await post.save()
 await post.update_from(payload)
 ```
 
+### Soft Deletes
+
+Use `SoftDeleteMixin` instead of `ModelMixin` to get soft delete support. Sets `deleted_at` instead of issuing a DELETE.
+
+```python
+from forgeapi.database import SoftDeleteMixin
+
+class Post(SoftDeleteMixin, Model):
+    title = fields.CharField(max_length=255)
+```
+
+```python
+await post.delete()        # sets deleted_at — row stays in DB
+await post.restore()       # clears deleted_at
+await post.force_delete()  # permanent DELETE
+post.is_trashed            # True if deleted_at is set
+```
+
+All default queries automatically exclude soft-deleted records:
+
+```python
+Post.all()                        # excludes soft-deleted
+Post.all().with_trashed()         # includes soft-deleted
+Post.all().only_trashed()         # only soft-deleted
+Post.filter(author_id=1).with_trashed().paginate(15, PostResponse)
+```
+
+`find_or_fail()` also excludes soft-deleted records — raises 404 if the record is trashed.
+
 ---
 
-## 12. Query Scopes
+### Query Scopes
 
 Laravel-style query scopes — reusable, chainable filters defined on the model.
 
@@ -1023,7 +1056,7 @@ queryset class change required.
 
 ---
 
-## 13. Model Observers
+### Observers
 
 Lifecycle hooks fired by Tortoise signals — audit logs, cache invalidation,
 notifications — without scattering the logic across controllers.
@@ -1078,7 +1111,7 @@ Register observers at startup (e.g. in `main.py` or a custom Provider's
 
 ---
 
-## 14. Permissions
+## 12. Permissions
 
 Spatie-style roles and permissions using polymorphic pivot tables.
 
@@ -1191,7 +1224,7 @@ users = await (await User.without_role("admin"))
 
 ---
 
-## 15. Cache
+## 13. Cache
 
 Async key-value cache. Two drivers: **memory** (default, no dependencies) and **redis** (persistent, shared across workers).
 
@@ -1290,7 +1323,7 @@ Cache.configure(driver="redis", prefix="myapp:", ttl=3600, redis_url="redis://lo
 
 ---
 
-## 16. Storage
+## 14. Storage
 
 File storage abstraction with Local and S3-compatible drivers. Configured via
 `config/storage.py` — the `Storage` facade boots automatically when the file
@@ -1413,7 +1446,7 @@ Pillow is imported lazily — `ImportError` with a clear hint if not installed.
 
 ---
 
-## 17. Support
+## 15. Support
 
 Utility helpers for formatting numbers, strings, and datetimes.
 
@@ -1513,7 +1546,7 @@ Time.end_of_day(dt)                   # 23:59:59.999999
 
 ---
 
-## 18. Logger
+## 16. Logger
 
 forge-kits includes a structured logger so you don't need to call `logging.getLogger(__name__)` everywhere.
 
@@ -1554,7 +1587,7 @@ auth_log.debug("Token decoded", user_id=42)
 
 ---
 
-## 19. Middleware
+## 17. Middleware
 
 Two extension points: **global middleware** wraps every request, **guards** scope to a route or controller.
 
@@ -1655,7 +1688,7 @@ config = {
 
 ---
 
-## 20. Settings
+## 18. Settings
 
 `BaseAppSettings` wraps `pydantic-settings` with `.env` file loading:
 
@@ -1680,7 +1713,7 @@ Settings(database_url='postgresql://...', cookie_secret='***', debug=True)
 
 ---
 
-## 21. Seeders
+## 19. Seeders
 
 Seeders populate the database with initial or test data.
 
@@ -1711,9 +1744,26 @@ forgeapi db:seed User Post    # run in order
 
 `db:seed` wraps each seeder in a transaction — rollback on error.
 
+**`db:seed` (no arguments) requires `__init__.py` with `__all__`**
+
+`database/seeds/__init__.py` must exist and define `__all__` — without it nothing runs. The list also controls execution order, so put seeders with dependencies first:
+
+```python
+# database/seeds/__init__.py
+from .role_seeder import RoleSeeder
+from .user_seeder import UserSeeder
+from .post_seeder import PostSeeder
+
+__all__ = [
+    "RoleSeeder",    # must run before UserSeeder
+    "UserSeeder",
+    "PostSeeder",
+]
+```
+
 ---
 
-## 22. Scheduler
+## 20. Scheduler
 
 DB-backed task scheduler — Laravel-style. Jobs are defined in code (`schedule.py`);
 state (next run time, last status, errors) is persisted in the `jobs` table via Tortoise.
@@ -1872,7 +1922,7 @@ The `jobs` table columns:
 
 ---
 
-## 23. Queue
+## 21. Queue
 
 DB-backed async job queue. Jobs are stored in the `queued_jobs` table; permanently-failed ones land in `failed_jobs`. No external broker — Tortoise ORM only.
 
@@ -1985,7 +2035,7 @@ forgeapi queue:flush            # delete all failed jobs
 
 ---
 
-## 24. CLI reference
+## 22. CLI reference
 
 ```bash
 forgeapi --help
@@ -2074,7 +2124,7 @@ forgeapi models    # list all Tortoise model classes, tables, and fields
 
 ---
 
-## 25. Configuration reference (config/)
+## 23. Configuration reference (config/)
 
 The only config format is a **`config/` directory of Python dict files**
 (Laravel-style). Each `config/<section>.py` defines a module-level
@@ -2230,7 +2280,7 @@ Known sections are validated by Pydantic models; misconfiguration raises
 
 ---
 
-## 26. Telescope
+## 24. Telescope
 
 Debug-only request inspector activated by `"debug": True` in `config/project.py`. **Never use in production.**
 
@@ -2285,7 +2335,7 @@ No-op when called outside a Telescope request context.
 
 ---
 
-## 27. MCP Server
+## 25. MCP Server
 
 forge-kits ships an MCP server that gives AI assistants (Claude Code, Cursor, etc.) direct access to API docs, code generation tools, and project structure scanning — without reading source files.
 
