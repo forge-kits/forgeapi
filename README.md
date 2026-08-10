@@ -1171,24 +1171,26 @@ forgeapi db:makemigrations && forgeapi db:migrate
 
 ### PermissionsMixin
 
+Guard namespace resolves automatically — no need to pass it when the model is registered in auth config:
+
 ```python
-# Checking
-await user.can("edit:posts")                        # True if has any (direct or via role)
-await user.can("edit:posts", "admin")               # OR logic
+# Guard resolves automatically via auth config (User → "api", Worker → "worker")
+await user.can("edit:posts")                     # checks "api" namespace
+await worker.can("view:tasks")                   # checks "worker" namespace
+await user.can("edit:posts", "admin")            # OR logic
 await user.cannot("delete:users")
-await user.has_all_permissions("read", "write")     # AND logic
+await user.has_all_permissions("read", "write")  # AND logic
 await user.has_role("admin")
 await user.has_all_roles("admin", "editor")
 
-# Granting / revoking (default guard="api")
+# Granting / revoking — guard resolved from model automatically
 await user.give_permission("edit:posts", "delete:posts")
 await user.revoke_permission("delete:posts")
 await user.assign_role("admin", "editor")
 await user.remove_role("editor")
 
-# Non-default guard namespace:
-await worker.give_permission("view:tasks", guard="worker")
-await worker.assign_role("supervisor", guard="worker")
+# Explicit override when needed:
+await user.give_permission("cross:action", guard="worker")
 
 # Listing
 await user.get_all_permissions()   # → ["edit:posts", ...]
@@ -1200,16 +1202,17 @@ await user.get_role_names()        # → ["admin", "editor"]
 ```python
 from forgeapi.permissions import require_permission, require_role
 
+# Guard resolved automatically from the authenticated model's auth config registration:
 @route.delete("/{id}")
 async def destroy(self, id: int, user=require_permission("delete:posts")): ...
 
 @route.post("/")
-async def create(self, payload, user=require_permission("create:posts", "admin")): ...   # OR
+async def create(self, payload, user=require_permission("create:posts", "admin")): ...  # OR
 
 @route.get("/admin/stats")
 async def stats(self, user=require_role("admin")): ...
 
-# Non-default guard — resolves Worker model, checks permissions in the "worker" namespace:
+# Non-default guard — authenticates with "worker" guard, resolves Worker model:
 @route.post("/tasks")
 async def create_task(self, user=require_permission("create:tasks", guard="worker")): ...
 
@@ -1219,23 +1222,23 @@ async def dashboard(self, user=require_role("supervisor", guard="worker")): ...
 
 Both dependencies also check `db_user.is_active` when the field exists — inactive users receive `401`.
 
-The `guard` kwarg controls two things at once: which auth guard authenticates the request (resolving the correct DB model) and which guard namespace the permission/role lookup runs in.
+`guard` in `require_permission`/`require_role` selects which auth guard authenticates the request. The permission/role namespace is then resolved automatically from the returned model's auth config registration.
 
 ### Role and Permission models
 
-`name` is unique **per guard** — you can have `"admin"` for `"api"` and a separate `"admin"` for `"worker"`.
+`name` is unique **per guard** — you can have `"admin"` for `"api"` and a separate `"admin"` for `"worker"`. The `guard` field is always set — never NULL in practice (Python raises `ValueError` if it resolves to empty).
 
 ```python
 from forgeapi.permissions.models import Role, Permission
 
-role = await Role.find_or_create("editor")                    # guard="api" (default)
+role = await Role.find_or_create("editor")                   # uses auth._default
 role = await Role.find_or_create("supervisor", guard="worker")
 
-await role.give_permission("edit:posts", "read:posts")        # inherits role.guard
-await role.has_permission("edit:posts")                       # → bool
+await role.give_permission("edit:posts", "read:posts")       # inherits role.guard
+await role.has_permission("edit:posts")                      # → bool, uses role.guard
 
 # Filtering by role
-users = await (await User.with_role("admin"))
+users = await (await User.with_role("admin"))                # guard resolved from User
 users = await (await User.without_role("admin"))
 ```
 

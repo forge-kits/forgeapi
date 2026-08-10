@@ -74,12 +74,9 @@ def require_permission(*permissions: str, guard: str | None = None):
         async def create_task(self, user=require_permission("create:tasks", guard="worker")):
             ...
     """
-    from forgeapi.auth.facade import auth as _auth
-    _guard_name = guard or _auth._default
-
     async def _check(request: Request) -> Model:
         db_user = await _resolve_db_user(request, guard)
-        if not await db_user.can(*permissions, guard=_guard_name):
+        if not await db_user.can(*permissions):
             raise HTTPException(status_code=403, detail="Forbidden")
         return db_user
 
@@ -93,16 +90,14 @@ def require_role(*roles: str, guard: str | None = None):
     :meth:`~forgeapi.permissions.PermissionsMixin.has_role` (OR logic).
     Returns the DB user instance on success so the endpoint can use it directly.
 
-    The *guard* name is forwarded to :meth:`~forgeapi.permissions.PermissionsMixin.has_role`
-    so role lookups are scoped to the correct namespace.
+    Guard namespace is resolved automatically from the model's auth config registration —
+    no need to pass it explicitly unless overriding.
 
     Args:
         *roles: One or more role names. The user must hold **at least one**
                 of them (OR logic).
         guard:  Named auth guard to authenticate with.  Omit to use the
-                default guard.  Use when the controller uses a non-default
-                guard (e.g. ``guard="worker"`` resolves a ``Worker`` model
-                instead of ``User``).
+                default guard.
 
     Raises:
         HTTPException 401: Missing / invalid credentials, or inactive user.
@@ -114,17 +109,13 @@ def require_role(*roles: str, guard: str | None = None):
         async def stats(self, user=require_role("admin")):
             ...
 
-        # Non-default guard (resolves Worker model, checks roles in "worker" namespace):
         @route.get("/worker/dashboard")
         async def dashboard(self, user=require_role("supervisor", guard="worker")):
             ...
     """
-    from forgeapi.auth.facade import auth as _auth
-    _guard_name = guard or _auth._default
-
     async def _check(request: Request) -> Model:
         db_user = await _resolve_db_user(request, guard)
-        if not await db_user.has_role(*roles, guard=_guard_name):
+        if not await db_user.has_role(*roles):
             raise HTTPException(status_code=403, detail="Forbidden")
         return db_user
 

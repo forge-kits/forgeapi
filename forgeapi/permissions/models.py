@@ -2,13 +2,24 @@ from tortoise import fields
 from tortoise.models import Model
 
 
+def _default_guard() -> str:
+    from forgeapi.auth.facade import auth
+    guard = auth._default
+    if not guard:
+        raise ValueError(
+            "guard must be a non-empty string. "
+            "Configure auth guards or pass guard= explicitly."
+        )
+    return guard
+
+
 class Permission(Model):
     """A named permission that can be attached directly to a model or to a Role.
 
     Attributes:
         id:    Auto-increment primary key.
-        name:  Unique permission identifier, e.g. ``"edit:posts"``.
-        guard: Auth guard namespace (default ``"api"``).
+        name:  Permission identifier, e.g. ``"edit:posts"``.
+        guard: Auth guard namespace. Always set — never NULL in practice.
 
     Example::
 
@@ -18,33 +29,33 @@ class Permission(Model):
 
     id    = fields.IntField(primary_key=True)
     name  = fields.CharField(max_length=255)
-    guard = fields.CharField(max_length=100, default="api")
+    guard = fields.CharField(max_length=100, null=True)
 
     class Meta:
         table           = "permissions"
         unique_together = [("name", "guard")]
 
     def __str__(self) -> str:
-        """Return the permission name, e.g. ``"edit:posts"``."""
         return self.name
 
     @classmethod
-    async def find_or_create(cls, name: str, guard: str = "api") -> "Permission":
+    async def find_or_create(cls, name: str, guard: str | None = None) -> "Permission":
         """Fetch an existing permission or create it if it does not exist.
 
         Args:
             name:  Permission identifier, e.g. ``"delete:comments"``.
-            guard: Auth guard namespace (default ``"api"``).
+            guard: Auth guard namespace. Omit to use ``auth._default``.
 
-        Returns:
-            The existing or newly created :class:`Permission` instance.
+        Raises:
+            ValueError: if *guard* resolves to an empty string.
 
         Example::
 
             perm = await Permission.find_or_create("publish:articles")
             perm = await Permission.find_or_create("admin:panel", guard="web")
         """
-        obj, _ = await cls.get_or_create(name=name, guard=guard)
+        _guard = guard or _default_guard()
+        obj, _ = await cls.get_or_create(name=name, guard=_guard)
         return obj
 
 
@@ -57,8 +68,8 @@ class Role(Model):
 
     Attributes:
         id:          Auto-increment primary key.
-        name:        Unique role identifier, e.g. ``"admin"``.
-        guard:       Auth guard namespace (default ``"api"``).
+        name:        Role identifier, e.g. ``"admin"``.
+        guard:       Auth guard namespace. Always set — never NULL in practice.
         permissions: M2M relation to :class:`Permission`.
 
     Example::
@@ -70,7 +81,7 @@ class Role(Model):
 
     id    = fields.IntField(primary_key=True)
     name  = fields.CharField(max_length=255)
-    guard = fields.CharField(max_length=100, default="api")
+    guard = fields.CharField(max_length=100, null=True)
 
     permissions: fields.ManyToManyRelation["Permission"] = fields.ManyToManyField(
         "models.Permission",
@@ -83,33 +94,32 @@ class Role(Model):
         unique_together = [("name", "guard")]
 
     def __str__(self) -> str:
-        """Return the role name, e.g. ``"admin"``."""
         return self.name
 
     @classmethod
-    async def find_or_create(cls, name: str, guard: str = "api") -> "Role":
+    async def find_or_create(cls, name: str, guard: str | None = None) -> "Role":
         """Fetch an existing role or create it if it does not exist.
 
         Args:
-            name:  Unique role identifier, e.g. ``"moderator"``.
-            guard: Auth guard namespace (default ``"api"``).
+            name:  Role identifier, e.g. ``"moderator"``.
+            guard: Auth guard namespace. Omit to use ``auth._default``.
 
-        Returns:
-            The existing or newly created :class:`Role` instance.
+        Raises:
+            ValueError: if *guard* resolves to an empty string.
 
         Example::
 
-            admin = await Role.find_or_create("admin")
-            web_admin = await Role.find_or_create("admin", guard="web")
+            admin      = await Role.find_or_create("admin")
+            web_admin  = await Role.find_or_create("admin", guard="web")
         """
-        obj, _ = await cls.get_or_create(name=name, guard=guard)
+        _guard = guard or _default_guard()
+        obj, _ = await cls.get_or_create(name=name, guard=_guard)
         return obj
 
     async def give_permission(self, *names: str) -> None:
         """Attach permissions to this role, creating them if they do not exist.
 
-        Missing permissions are bulk-created with ``ignore_conflicts=True``
-        before being linked via the ``role_permissions`` M2M table.
+        Permissions are created in the same guard namespace as this role (``self.guard``).
 
         Args:
             *names: One or more permission names to attach.
@@ -117,10 +127,7 @@ class Role(Model):
         Example::
 
             role = await Role.find_or_create("editor")
-            await role.give_permission("create:posts", "edit:posts", "delete:posts")
-
-            # Works even if "publish:posts" doesn't exist yet — it will be created.
-            await role.give_permission("publish:posts")
+            await role.give_permission("create:posts", "edit:posts")
         """
         name_list = list(names)
         existing = await Permission.filter(name__in=name_list, guard=self.guard).all()
@@ -138,50 +145,37 @@ class Role(Model):
     async def revoke_permission(self, *names: str) -> None:
         """Detach permissions from this role.
 
-        Permissions that are not currently linked are silently ignored.
+        Looks up permissions in the same guard namespace as this role (``self.guard``).
+        Non-linked permissions are silently ignored.
 
         Args:
             *names: One or more permission names to detach.
 
         Example::
 
-            role = await Role.find_or_create("editor")
             await role.revoke_permission("delete:posts")
-
-            # Revoking a non-existent link is a no-op:
-            await role.revoke_permission("does_not_exist")
         """
-        perms = await Permission.filter(name__in=list(names)).all()
+        perms = await Permission.filter(name__in=list(names), guard=self.guard).all()
         if perms:
             await self.permissions.remove(*perms)
 
-    async def has_permission(self, name: str, guard: str = "api") -> bool:
+    async def has_permission(self, name: str) -> bool:
         """Return ``True`` if this role has the given permission.
 
-        Args:
-            name:  Permission name to check, e.g. ``"edit:posts"``.
-            guard: Auth guard namespace (default ``"api"``).
+        Looks up within the role's own guard namespace (``self.guard``).
 
-        Returns:
-            ``True`` if the permission is linked to this role, ``False`` otherwise.
+        Args:
+            name: Permission name to check, e.g. ``"edit:posts"``.
 
         Example::
 
-            role = await Role.find_or_create("editor")
-            await role.give_permission("edit:posts")
-
             assert await role.has_permission("edit:posts") is True
-            assert await role.has_permission("delete:posts") is False
         """
-        return await self.permissions.filter(name=name, guard=guard).exists()
+        return await self.permissions.filter(name=name, guard=self.guard).exists()
 
 
 class ModelHasRole(Model):
-    """Polymorphic model → role pivot.
-
-    ``model_type`` is the lowercase class name (e.g. ``"user"``).
-    ``model_id``   is the PK of that model instance.
-    """
+    """Polymorphic model → role pivot."""
 
     model_type = fields.CharField(max_length=100)
     model_id   = fields.BigIntField()
