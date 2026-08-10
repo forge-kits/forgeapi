@@ -103,7 +103,18 @@ class Controller:
 
         # Wrap guards in Depends if not already wrapped
         from fastapi import Depends
-        deps = [g if hasattr(g, "dependency") else Depends(g) for g in cls.guards]
+        from typing import Annotated, get_args, get_origin
+
+        def _to_dep(g):
+            if hasattr(g, "dependency"):
+                return g
+            if get_origin(g) is Annotated:
+                for meta in get_args(g)[1:]:
+                    if hasattr(meta, "dependency"):
+                        return meta
+            return Depends(g)
+
+        deps = [_to_dep(g) for g in cls.guards]
 
         cls.router = APIRouter(prefix=cls.prefix, tags=cls.tags, dependencies=deps or None)
         cls._registered = False
