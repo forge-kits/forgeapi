@@ -74,7 +74,8 @@ def require_permission(*permissions: str, guard: str | None = None):
         async def create_task(self, user=require_permission("create:tasks", guard="worker")):
             ...
     """
-    _guard_name = guard or "api"
+    from forgeapi.auth.facade import auth as _auth
+    _guard_name = guard or _auth._default
 
     async def _check(request: Request) -> Model:
         db_user = await _resolve_db_user(request, guard)
@@ -118,7 +119,8 @@ def require_role(*roles: str, guard: str | None = None):
         async def dashboard(self, user=require_role("supervisor", guard="worker")):
             ...
     """
-    _guard_name = guard or "api"
+    from forgeapi.auth.facade import auth as _auth
+    _guard_name = guard or _auth._default
 
     async def _check(request: Request) -> Model:
         db_user = await _resolve_db_user(request, guard)
