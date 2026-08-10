@@ -220,7 +220,7 @@ class PermissionsMixin(Model):
 
     # ── Direct permissions ────────────────────────────────────────────────────
 
-    async def give_permission(self, *permissions: str) -> None:
+    async def give_permission(self, *permissions: str, guard: str = "api") -> None:
         """Attach permissions directly to this model instance.
 
         Permissions that do not yet exist in the ``permissions`` table are
@@ -230,25 +230,26 @@ class PermissionsMixin(Model):
 
         Args:
             *permissions: One or more permission name strings.
+            guard:        Auth guard namespace (default ``"api"``).
 
         Example::
 
             await user.give_permission("edit:posts")
             await user.give_permission("create:posts", "delete:posts")
 
-            # New permission names are auto-created:
-            await user.give_permission("brand_new:action")
+            # Worker guard namespace:
+            await worker.give_permission("view:tasks", guard="worker")
         """
         names = list(permissions)
-        existing = await Permission.filter(name__in=names).all()
+        existing = await Permission.filter(name__in=names, guard=guard).all()
         existing_names = {p.name for p in existing}
         missing = [n for n in names if n not in existing_names]
         if missing:
             await Permission.bulk_create(
-                [Permission(name=n) for n in missing],
+                [Permission(name=n, guard=guard) for n in missing],
                 ignore_conflicts=True,
             )
-            existing = await Permission.filter(name__in=names).all()
+            existing = await Permission.filter(name__in=names, guard=guard).all()
         await ModelHasPermission.bulk_create(
             [
                 ModelHasPermission(
@@ -262,7 +263,7 @@ class PermissionsMixin(Model):
         )
         self._clear_permission_cache()
 
-    async def revoke_permission(self, *permissions: str) -> None:
+    async def revoke_permission(self, *permissions: str, guard: str = "api") -> None:
         """Remove direct permissions from this model instance.
 
         Permissions that the model does not hold are silently ignored.
@@ -270,18 +271,18 @@ class PermissionsMixin(Model):
 
         Args:
             *permissions: One or more permission name strings to revoke.
+            guard:        Auth guard namespace (default ``"api"``).
 
         Example::
 
             await user.revoke_permission("delete:posts")
 
-            # Revoking a permission the user never had is a no-op:
-            await user.revoke_permission("nonexistent:action")
-
-            # Revoke multiple at once:
-            await user.revoke_permission("edit:posts", "create:posts")
+            # Worker guard namespace:
+            await worker.revoke_permission("view:tasks", guard="worker")
         """
-        perm_ids = await Permission.filter(name__in=list(permissions)).values_list("id", flat=True)
+        perm_ids = await Permission.filter(
+            name__in=list(permissions), guard=guard
+        ).values_list("id", flat=True)
         if perm_ids:
             await ModelHasPermission.filter(
                 model_type=self._model_type,
@@ -373,7 +374,7 @@ class PermissionsMixin(Model):
             ).values_list("role__name", flat=True)
         )
 
-    async def assign_role(self, *roles: str) -> None:
+    async def assign_role(self, *roles: str, guard: str = "api") -> None:
         """Assign one or more roles to this model instance.
 
         Roles that do not yet exist in the ``roles`` table are created
@@ -383,25 +384,26 @@ class PermissionsMixin(Model):
 
         Args:
             *roles: One or more role name strings to assign.
+            guard:  Auth guard namespace (default ``"api"``).
 
         Example::
 
             await user.assign_role("editor")
             await user.assign_role("admin", "moderator")
 
-            # New role names are auto-created:
-            await user.assign_role("brand_new_role")
+            # Worker guard namespace:
+            await worker.assign_role("supervisor", guard="worker")
         """
         names = list(roles)
-        existing = await Role.filter(name__in=names).all()
+        existing = await Role.filter(name__in=names, guard=guard).all()
         existing_names = {r.name for r in existing}
         missing = [n for n in names if n not in existing_names]
         if missing:
             await Role.bulk_create(
-                [Role(name=n) for n in missing],
+                [Role(name=n, guard=guard) for n in missing],
                 ignore_conflicts=True,
             )
-            existing = await Role.filter(name__in=names).all()
+            existing = await Role.filter(name__in=names, guard=guard).all()
         await ModelHasRole.bulk_create(
             [
                 ModelHasRole(
@@ -415,7 +417,7 @@ class PermissionsMixin(Model):
         )
         self._clear_permission_cache()
 
-    async def remove_role(self, *roles: str) -> None:
+    async def remove_role(self, *roles: str, guard: str = "api") -> None:
         """Remove one or more roles from this model instance.
 
         Roles that are not currently assigned are silently ignored.
@@ -423,18 +425,18 @@ class PermissionsMixin(Model):
 
         Args:
             *roles: One or more role name strings to remove.
+            guard:  Auth guard namespace (default ``"api"``).
 
         Example::
 
             await user.remove_role("editor")
 
-            # No-op when the user doesn't have the role:
-            await user.remove_role("nonexistent_role")
-
-            # Remove multiple at once:
-            await user.remove_role("admin", "moderator")
+            # Worker guard namespace:
+            await worker.remove_role("supervisor", guard="worker")
         """
-        role_ids = await Role.filter(name__in=list(roles)).values_list("id", flat=True)
+        role_ids = await Role.filter(
+            name__in=list(roles), guard=guard
+        ).values_list("id", flat=True)
         if role_ids:
             await ModelHasRole.filter(
                 model_type=self._model_type,

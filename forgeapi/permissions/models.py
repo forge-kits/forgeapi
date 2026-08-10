@@ -17,11 +17,12 @@ class Permission(Model):
     """
 
     id    = fields.IntField(primary_key=True)
-    name  = fields.CharField(max_length=255, unique=True)
+    name  = fields.CharField(max_length=255)
     guard = fields.CharField(max_length=100, default="api")
 
     class Meta:
-        table = "permissions"
+        table           = "permissions"
+        unique_together = [("name", "guard")]
 
     def __str__(self) -> str:
         """Return the permission name, e.g. ``"edit:posts"``."""
@@ -32,7 +33,7 @@ class Permission(Model):
         """Fetch an existing permission or create it if it does not exist.
 
         Args:
-            name:  Unique permission identifier, e.g. ``"delete:comments"``.
+            name:  Permission identifier, e.g. ``"delete:comments"``.
             guard: Auth guard namespace (default ``"api"``).
 
         Returns:
@@ -43,7 +44,7 @@ class Permission(Model):
             perm = await Permission.find_or_create("publish:articles")
             perm = await Permission.find_or_create("admin:panel", guard="web")
         """
-        obj, _ = await cls.get_or_create(name=name, defaults={"guard": guard})
+        obj, _ = await cls.get_or_create(name=name, guard=guard)
         return obj
 
 
@@ -68,7 +69,7 @@ class Role(Model):
     """
 
     id    = fields.IntField(primary_key=True)
-    name  = fields.CharField(max_length=255, unique=True)
+    name  = fields.CharField(max_length=255)
     guard = fields.CharField(max_length=100, default="api")
 
     permissions: fields.ManyToManyRelation["Permission"] = fields.ManyToManyField(
@@ -78,7 +79,8 @@ class Role(Model):
     )
 
     class Meta:
-        table = "roles"
+        table           = "roles"
+        unique_together = [("name", "guard")]
 
     def __str__(self) -> str:
         """Return the role name, e.g. ``"admin"``."""
@@ -100,7 +102,7 @@ class Role(Model):
             admin = await Role.find_or_create("admin")
             web_admin = await Role.find_or_create("admin", guard="web")
         """
-        obj, _ = await cls.get_or_create(name=name, defaults={"guard": guard})
+        obj, _ = await cls.get_or_create(name=name, guard=guard)
         return obj
 
     async def give_permission(self, *names: str) -> None:
@@ -121,15 +123,15 @@ class Role(Model):
             await role.give_permission("publish:posts")
         """
         name_list = list(names)
-        existing = await Permission.filter(name__in=name_list).all()
+        existing = await Permission.filter(name__in=name_list, guard=self.guard).all()
         existing_names = {p.name for p in existing}
         missing = [n for n in name_list if n not in existing_names]
         if missing:
             await Permission.bulk_create(
-                [Permission(name=n) for n in missing],
+                [Permission(name=n, guard=self.guard) for n in missing],
                 ignore_conflicts=True,
             )
-            existing = await Permission.filter(name__in=name_list).all()
+            existing = await Permission.filter(name__in=name_list, guard=self.guard).all()
         if existing:
             await self.permissions.add(*existing)
 

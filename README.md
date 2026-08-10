@@ -1180,11 +1180,15 @@ await user.has_all_permissions("read", "write")     # AND logic
 await user.has_role("admin")
 await user.has_all_roles("admin", "editor")
 
-# Granting / revoking
+# Granting / revoking (default guard="api")
 await user.give_permission("edit:posts", "delete:posts")
 await user.revoke_permission("delete:posts")
 await user.assign_role("admin", "editor")
 await user.remove_role("editor")
+
+# Non-default guard namespace:
+await worker.give_permission("view:tasks", guard="worker")
+await worker.assign_role("supervisor", guard="worker")
 
 # Listing
 await user.get_all_permissions()   # → ["edit:posts", ...]
@@ -1204,18 +1208,31 @@ async def create(self, payload, user=require_permission("create:posts", "admin")
 
 @route.get("/admin/stats")
 async def stats(self, user=require_role("admin")): ...
+
+# Non-default guard — resolves Worker model, checks permissions in the "worker" namespace:
+@route.post("/tasks")
+async def create_task(self, user=require_permission("create:tasks", guard="worker")): ...
+
+@route.get("/dashboard")
+async def dashboard(self, user=require_role("supervisor", guard="worker")): ...
 ```
 
 Both dependencies also check `db_user.is_active` when the field exists — inactive users receive `401`.
 
+The `guard` kwarg controls two things at once: which auth guard authenticates the request (resolving the correct DB model) and which guard namespace the permission/role lookup runs in.
+
 ### Role and Permission models
+
+`name` is unique **per guard** — you can have `"admin"` for `"api"` and a separate `"admin"` for `"worker"`.
 
 ```python
 from forgeapi.permissions.models import Role, Permission
 
-role = await Role.find_or_create("editor")
-await role.give_permission("edit:posts", "read:posts")
-await role.has_permission("edit:posts")   # → bool
+role = await Role.find_or_create("editor")                    # guard="api" (default)
+role = await Role.find_or_create("supervisor", guard="worker")
+
+await role.give_permission("edit:posts", "read:posts")        # inherits role.guard
+await role.has_permission("edit:posts")                       # → bool
 
 # Filtering by role
 users = await (await User.with_role("admin"))
