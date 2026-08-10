@@ -53,7 +53,7 @@ class Core:
             _forge_logger.setLevel(_logging.DEBUG)
             if not _forge_logger.handlers and not _logging.root.handlers:
                 _handler = _logging.StreamHandler()
-                _handler.setFormatter(_logging.Formatter("%(levelname)s  %(name)s  %(message)s"))
+                _handler.setFormatter(_logging.Formatter("%(asctime)s  %(levelname)s  %(name)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
                 _forge_logger.addHandler(_handler)
                 _forge_logger.propagate = False
         else:
