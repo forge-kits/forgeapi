@@ -1,9 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 
 class BroadcastDriver(ABC):
-    """Abstract base for broadcast transport drivers."""
 
     @abstractmethod
     async def connect(self) -> None: ...
@@ -12,13 +11,17 @@ class BroadcastDriver(ABC):
     async def disconnect(self) -> None: ...
 
     @abstractmethod
-    async def emit(self, channel: str, data: Any) -> None: ...
+    async def emit(self, channel: str, payload: dict) -> None: ...
 
     @abstractmethod
-    async def listen_pubsub(self) -> None: ...
-
-    @abstractmethod
-    async def listen_stream(self, group: str, consumer: str) -> None: ...
+    async def listen(self) -> None: ...
 
     @abstractmethod
     def register(self, channel: str, handler: Callable[[dict], Awaitable[None]]) -> None: ...
+
+    @abstractmethod
+    async def wait_bg_tasks(self) -> None: ...
+
+    @property
+    def has_listeners(self) -> bool:
+        return False

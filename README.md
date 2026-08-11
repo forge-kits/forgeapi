@@ -551,25 +551,44 @@ Always configured by `Core` — defaults apply when the file is absent.
 
 ## 7. Broadcasting
 
-`BroadcastManager` is the universal event bus for both in-process and cross-project messaging. It supports two modes and a pluggable driver system (Redis now, RabbitMQ planned).
+`BroadcastManager` is the universal event bus for both in-process and cross-project messaging. Pluggable driver system — Redis now, RabbitMQ/Kafka via `register_driver()`.
 
 ### Config-driven setup (with Core)
 
 Add `config/broadcast.py` — `Core(app)` does the rest: creates the global `broadcast` proxy, imports all listeners, and manages connect/disconnect via FastAPI startup/shutdown hooks.
 
+All driver-specific options go under `driver_options` — the manager itself is driver-agnostic.
+
 ```python
-# config/broadcast.py
+# config/broadcast.py — pubsub mode
 from forgeapi import env
 
 config = {
     "enabled": True,
     "driver": "redis",
-    "url": env("REDIS_URL", "redis://localhost:6379"),
-    "namespace": "shop",
-    "mode": "pubsub",       # "pubsub" | "stream"
-    # "maxlen": 1000,       # stream mode: keep last N messages per key
-    # "group": "backend",   # stream mode: consumer group name
-    # "consumer": "worker-1",
+    "driver_options": {
+        "url": env("REDIS_URL", "redis://localhost:6379"),
+        "namespace": "shop",
+        "mode": "pubsub",
+    },
+}
+```
+
+```python
+# config/broadcast.py — stream mode (persistent, survives restarts)
+from forgeapi import env
+
+config = {
+    "enabled": True,
+    "driver": "redis",
+    "driver_options": {
+        "url": env("REDIS_URL", "redis://localhost:6379"),
+        "namespace": "shop",
+        "mode": "stream",
+        "group": "backend",
+        "consumer": "worker-1",
+        "maxlen": 1000,        # keep last N messages per stream key
+    },
 }
 ```
 
@@ -602,55 +621,48 @@ core = Core(app)
 
 ### Standalone / Cross-project usage
 
-Use `BroadcastManager` directly when broadcasting outside a Core-managed app (e.g. a standalone bot, a worker process, a publisher-only script):
+Use `BroadcastManager` directly outside a Core-managed app (standalone bot, worker process, publisher-only script).
+
+All driver-specific options are keyword arguments — they are forwarded as-is to the driver constructor:
 
 ```python
-from forgeapi import BroadcastManager
+from forgeapi.broadcasting import BroadcastManager
 
+# Publisher only (no listeners registered — starts in emit-only mode)
 broadcast = BroadcastManager(
     driver="redis",
     url="redis://localhost:6379",
     namespace="shop",
-    mode="stream",   # "pubsub" | "stream"
-    maxlen=1000,     # stream mode: keep last N messages per key
+    mode="stream",
 )
-```
 
-| Arg | Default | Description |
-|---|---|---|
-| `driver` | `"redis"` | Transport backend. RabbitMQ planned. |
-| `url` | `"redis://localhost:6379"` | Broker connection URL |
-| `namespace` | `"forge"` | Prefix for all channel/stream keys |
-| `mode` | `"pubsub"` | `"pubsub"` = fire-and-forget, `"stream"` = persistent |
-| `maxlen` | `None` | Stream mode: max messages per stream key |
-
-```python
-# Project A — publisher (e.g. backend API)
-broadcast = BroadcastManager(driver="redis", url="redis://...", namespace="shop", mode="stream")
 await broadcast.connect()
 await broadcast.emit("order:created", {"id": 42, "total": 99.0})
+await broadcast.disconnect()
+```
 
-# Project B — consumer (e.g. Telegram bot, separate service)
-broadcast = BroadcastManager(driver="redis", url="redis://...", namespace="shop", mode="stream")
+```python
+# Consumer (standalone asyncio script)
+broadcast = BroadcastManager(
+    driver="redis",
+    url="redis://localhost:6379",
+    namespace="shop",
+    mode="stream",
+    group="telegram-bot",
+    consumer="worker-1",
+)
 
 @broadcast.on("order:created")
 async def handle(data: dict) -> None:
-    await bot.send(f"New order #{data['id']}")
+    print(f"New order #{data['id']}")
 
-await broadcast.connect(group="telegram-bot", consumer="worker-1")
-await asyncio.sleep(float("inf"))
+async def main() -> None:
+    await broadcast.run()   # connect + listen in foreground, Ctrl+C stops cleanly
+
+asyncio.run(main())
 ```
 
-### Manual lifespan (without Core)
-
-```python
-@asynccontextmanager
-async def lifespan(app):
-    await broadcast.connect(group="backend", consumer="worker-1")  # stream
-    # await broadcast.connect()                                     # pubsub
-    yield
-    await broadcast.disconnect()
-```
+`emit()` accepts a plain `dict` — serialization (datetime, UUID, Decimal) is handled internally by the driver.
 
 ---
 
@@ -2228,13 +2240,16 @@ config = {
 # config/broadcast.py — activates BroadcastProvider (see §7)
 config = {
     "enabled": True,
-    "driver": "redis",
-    "url": env("REDIS_URL", "redis://localhost:6379"),
-    "namespace": "forge",
-    "mode": "pubsub",       # "pubsub" | "stream"
-    # "maxlen": None,       # stream mode: keep last N messages per key
-    # "group": "backend",   # stream mode: consumer group name
-    # "consumer": "worker-1",
+    "driver": "redis",          # driver alias — register custom with register_driver()
+    "driver_options": {
+        "url": env("REDIS_URL", "redis://localhost:6379"),
+        "namespace": "forge",
+        "mode": "pubsub",       # "pubsub" | "stream"
+        # stream mode only:
+        # "maxlen": None,       # keep last N messages per stream key
+        # "group": "backend",   # consumer group name
+        # "consumer": "worker-1",
+    },
 }
 
 # config/scheduler.py — activates SchedulerProvider (see §22)

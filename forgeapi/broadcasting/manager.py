@@ -1,26 +1,32 @@
 import asyncio
+import importlib
 from typing import Any, Awaitable, Callable
 
 from forgeapi.logging import log
 
 _log = log.channel("broadcasting")
 
-_DRIVERS = ("redis",)
+_REGISTRY: dict[str, str] = {
+    "redis": "forgeapi.broadcasting.drivers.redis.RedisDriver",
+}
+
+
+def register_driver(name: str, import_path: str) -> None:
+    """Register a custom broadcast driver.
+
+    Args:
+        name:        Driver alias used in config (e.g. ``"rabbitmq"``).
+        import_path: Dotted path to the driver class
+                     (e.g. ``"myapp.broadcasting.RabbitMQDriver"``).
+    """
+    _REGISTRY[name] = import_path
 
 
 class BroadcastManager:
-    """Universal broadcast manager with pluggable transport drivers.
+    """Driver-agnostic broadcast manager.
 
-    Supports ``mode="pubsub"`` (fire-and-forget) and ``mode="stream"``
-    (persistent, consumer groups) via the Redis driver.  RabbitMQ driver
-    is planned for a future release.
-
-    Args:
-        driver:    Transport backend. Currently only ``"redis"``.
-        url:       Connection URL, e.g. ``"redis://localhost:6379"``.
-        namespace: Prefix for all channel/stream keys.
-        mode:      ``"pubsub"`` or ``"stream"`` (stream mode only for Redis).
-        maxlen:    Max messages to keep per stream key (stream mode only).
+    All driver-specific options (url, mode, group, consumer, etc.) go into
+    ``driver_options`` and are forwarded as-is to the driver constructor.
 
     Example::
 
@@ -29,55 +35,43 @@ class BroadcastManager:
             url="redis://localhost:6379",
             namespace="shop",
             mode="stream",
-            maxlen=1000,
+            group="backend",
+            consumer="worker-1",
         )
 
         @broadcast.on("order:created")
         async def handle(data: dict) -> None:
             print(data["id"])
 
-        # FastAPI lifespan
-        @asynccontextmanager
-        async def lifespan(app):
-            await broadcast.connect(group="backend", consumer="worker-1")
+        async with lifespan(app):
+            await broadcast.connect()
             yield
             await broadcast.disconnect()
     """
 
-    def __init__(
-        self,
-        driver: str = "redis",
-        url: str = "redis://localhost:6379",
-        namespace: str = "forge",
-        mode: str = "pubsub",
-        maxlen: int | None = None,
-    ) -> None:
-        if driver not in _DRIVERS:
-            raise ValueError(f"Unknown driver '{driver}'. Available: {_DRIVERS}")
-        self._mode = mode
-        self._driver = self._make_driver(driver, url, namespace, mode, maxlen)
+    def __init__(self, driver: str = "redis", **driver_options: Any) -> None:
+        self._driver = self._make_driver(driver, **driver_options)
         self._listen_task: asyncio.Task | None = None
 
-    def _make_driver(self, driver: str, url: str, namespace: str, mode: str, maxlen: int | None):
-        if driver == "redis":
-            from .drivers.redis import RedisDriver
-            return RedisDriver(url=url, namespace=namespace, mode=mode, maxlen=maxlen)
-        raise ValueError(f"Unknown driver: {driver}")
+    def _make_driver(self, name: str, **options: Any):
+        if name not in _REGISTRY:
+            raise ValueError(
+                f"Unknown broadcast driver '{name}'. "
+                f"Available: {list(_REGISTRY)}. "
+                "Register custom drivers with register_driver()."
+            )
+        module_path, cls_name = _REGISTRY[name].rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        return getattr(module, cls_name)(**options)
 
     # ── Registration ──────────────────────────────────────────────────────────
 
     def on(
-        self,
-        channel: str,
+        self, channel: str,
     ) -> Callable[[Callable[[dict], Awaitable[None]]], Callable[[dict], Awaitable[None]]]:
         """Register an async handler for *channel*.
 
-        Use as a decorator at module level — registers immediately at import.
-
-        Args:
-            channel: Channel name without namespace, e.g. ``"order:created"``.
-
-        Example::
+        Use as a decorator at module level — registers immediately at import::
 
             @broadcast.on("order:created")
             async def handle(data: dict) -> None:
@@ -88,58 +82,35 @@ class BroadcastManager:
             return func
         return decorator
 
-    # ── Publish ───────────────────────────────────────────────────────────────
+    # ── Emit ──────────────────────────────────────────────────────────────────
 
-    async def emit(self, channel: str, data: Any) -> None:
-        """Publish *data* to *channel*.
-
-        In pubsub mode: Redis PUBLISH (fire-and-forget).
-        In stream mode: Redis XADD (persistent, survives restarts).
+    async def emit(self, channel: str, payload: dict) -> None:
+        """Publish *payload* to *channel*.
 
         Args:
             channel: Channel name without namespace.
-            data:    Plain dict, Tortoise model, or any object with __dict__.
+            payload: Plain dict.
         """
-        await self._driver.emit(channel, data)
+        await self._driver.emit(channel, payload)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    async def connect(self, group: str | None = None, consumer: str | None = None) -> None:
-        """Connect to the broker and start listening.
+    async def connect(self) -> None:
+        """Connect to the broker and start the listener task.
 
-        For **stream mode** pass ``group`` and ``consumer``::
-
-            await broadcast.connect(group="backend", consumer="worker-1")
-
-        For **pubsub mode** no arguments needed::
-
-            await broadcast.connect()
-
-        The listen loop runs as a background task — call :meth:`disconnect`
-        to stop it gracefully on shutdown.
+        No-op if already connected. If no handlers are registered the
+        connection is opened in emit-only mode (no listener task started).
         """
         if self._listen_task and not self._listen_task.done():
             return
         await self._driver.connect()
-
-        if not self._driver._handlers:
-            _log.info("connect(): no handlers registered — emit-only mode, listener not started")
+        if not self._driver.has_listeners:
+            _log.info("connect(): no handlers registered — emit-only mode")
             return
-
-        if self._mode == "stream":
-            if not group or not consumer:
-                raise ValueError(
-                    "stream mode requires group and consumer: "
-                    "broadcast.connect(group='...', consumer='...')"
-                )
-            coro = self._driver.listen_stream(group, consumer)
-            task_name = f"broadcast:stream:{group}:{consumer}"
-        else:
-            coro = self._driver.listen_pubsub()
-            task_name = "broadcast:pubsub"
-
-        self._listen_task = asyncio.create_task(coro, name=task_name)
-        _log.info("listener started  task=%s", task_name)
+        self._listen_task = asyncio.create_task(
+            self._driver.listen(), name="broadcast:listener"
+        )
+        _log.info("listener started")
 
     async def disconnect(self) -> None:
         """Stop the listener task and close the connection."""
@@ -154,20 +125,27 @@ class BroadcastManager:
         await self._driver.disconnect()
         _log.info("disconnected")
 
-    # ── Manual listen (advanced) ──────────────────────────────────────────────
-
-    async def listen(self, group: str | None = None, consumer: str | None = None) -> None:
+    async def listen(self) -> None:
         """Run the listen loop directly (blocking coroutine).
 
-        Use this when you manage the task yourself::
-
-            task = asyncio.create_task(broadcast.listen(group="backend", consumer="worker-1"))
-
-        For most cases prefer :meth:`connect` which handles task creation automatically.
+        For most cases prefer :meth:`run`.
         """
-        if self._mode == "stream":
-            if not group or not consumer:
-                raise ValueError("stream mode requires group and consumer")
-            await self._driver.listen_stream(group, consumer)
-        else:
-            await self._driver.listen_pubsub()
+        await self._driver.listen()
+
+    async def run(self) -> None:
+        """Connect and run the listener in the foreground (blocking).
+
+        Use this in standalone asyncio scripts — errors propagate naturally,
+        Ctrl+C cancels cleanly::
+
+            async def main() -> None:
+                await broadcast.run()
+
+            asyncio.run(main())
+        """
+        await self._driver.connect()
+        try:
+            await self._driver.listen()
+        finally:
+            await self._driver.wait_bg_tasks()
+            await self._driver.disconnect()

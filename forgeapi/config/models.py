@@ -144,23 +144,21 @@ class BroadcastConfig(BaseModel):
         config = {
             "enabled": True,
             "driver": "redis",
-            "url": "redis://localhost:6379",
-            "namespace": "myapp",
-            "mode": "pubsub",     # "pubsub" | "stream"
-            "maxlen": 1000,       # stream only: keep last N messages
-            "group": "backend",   # stream only: consumer group name
-            "consumer": "worker-1",  # stream only: consumer name
+            "driver_options": {
+                "url": "redis://localhost:6379",
+                "namespace": "myapp",
+                "mode": "pubsub",       # "pubsub" | "stream"
+                # stream only:
+                # "maxlen": 1000,
+                # "group": "backend",
+                # "consumer": "worker-1",
+            },
         }
     """
 
     enabled: bool = True
     driver: str = "redis"
-    url: str = "redis://localhost:6379"
-    namespace: str = "forge"
-    mode: str = "pubsub"
-    maxlen: int | None = None
-    group: str = "backend"
-    consumer: str = "worker-1"
+    driver_options: dict = {}
 
 
 class SchedulerConfig(BaseModel):

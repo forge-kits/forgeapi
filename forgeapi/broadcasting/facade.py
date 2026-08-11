@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 _instance: "BroadcastManager | None" = None
 
 
-def configure(**kwargs) -> "BroadcastManager":
+def configure(**kwargs: Any) -> "BroadcastManager":
     """Create and store the global BroadcastManager instance from config."""
     global _instance
     from .manager import BroadcastManager
@@ -38,18 +38,21 @@ class _BroadcastProxy:
     """
 
     def on(
-        self, channel: str
+        self, channel: str,
     ) -> Callable[[Callable[[dict], Awaitable[None]]], Callable[[dict], Awaitable[None]]]:
         return get().on(channel)
 
-    async def emit(self, channel: str, data: Any) -> None:
-        await get().emit(channel, data)
+    async def emit(self, channel: str, payload: dict) -> None:
+        await get().emit(channel, payload)
 
-    async def connect(self, group: str | None = None, consumer: str | None = None) -> None:
-        await get().connect(group=group, consumer=consumer)
+    async def connect(self) -> None:
+        await get().connect()
 
     async def disconnect(self) -> None:
         await get().disconnect()
+
+    async def run(self) -> None:
+        await get().run()
 
     @property
     def is_configured(self) -> bool:
