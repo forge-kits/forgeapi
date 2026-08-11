@@ -121,17 +121,15 @@ class TestBroadcastConfig:
         cfg = BroadcastConfig()
         assert cfg.enabled is True
         assert cfg.driver == "redis"
-        assert cfg.mode == "pubsub"
-        assert cfg.namespace == "forge"
-        assert cfg.maxlen is None
+        assert cfg.driver_options == {}
 
     def test_load_from_file(self, config_dir):
         (config_dir / "broadcast.py").write_text(
-            "config = {'namespace': 'myapp', 'mode': 'stream'}\n"
+            "config = {'driver_options': {'namespace': 'myapp', 'mode': 'stream'}}\n"
         )
         cfg = load_config()
-        assert cfg.broadcast.namespace == "myapp"
-        assert cfg.broadcast.mode == "stream"
+        assert cfg.broadcast.driver_options["namespace"] == "myapp"
+        assert cfg.broadcast.driver_options["mode"] == "stream"
         assert cfg.provided("broadcast")
 
     def test_broadcast_disabled(self, config_dir):

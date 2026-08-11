@@ -24,8 +24,8 @@ config = {
     "cors": ["*"],        # True → all origins; list → specific; False → off
     "allow_credentials": False,
     "rate_limit": 60,     # req/min per IP; False → off
-    "request_id": True,   # inject X-Request-ID header
-    "access_log": True,   # log method/path/status/duration per request
+    "request_id": False,   # inject X-Request-ID header
+    "access_log": False,   # log method/path/status/duration per request
     "middleware": [],     # custom middleware classes or (cls, kwargs) tuples
 }
 '''
@@ -42,20 +42,22 @@ config = {
 }
 '''
 
-_CONFIG_BROADCAST_TEMPLATE = '''\
-from forgeapi import env
+_CONFIG_BROADCAST_TEMPLATE = '''\                                                                                                                                                                                                 
+ from forgeapi import env                                                                                                                                                                                                          
 
-config = {{
-    "enabled": True,
-    "driver": "redis",
-    "url": env("REDIS_URL", "redis://localhost:6379"),
-    "namespace": "{name}",
-    "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent
-    # "maxlen": 1000,       # stream mode: keep last N messages per key
-    # "group": "backend",   # stream mode: consumer group name
-    # "consumer": "worker-1",
-}}
-'''
+ config = {{                                                                                                                                                                                                                       
+     "enabled": True,                                                                                                                                                                                                              
+     "driver": "redis",                                                                                                                                                                                                            
+     "driver_options": {{                                                                                                                                                                                                          
+         "url": env("REDIS_URL", "redis://localhost:6379"),                                                                                                                                                                        
+         "namespace": "{name}",                                                                                                                                                                                                    
+         "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent                                                                                                                                              
+         # "maxlen": 1000,       # stream mode: keep last N messages per key                                                                                                                                                       
+         # "group": "backend",   # stream mode: consumer group name                                                                                                                                                                
+         # "consumer": "worker-1",                                                                                                                                                                                                 
+     }},                                                                                                                                                                                                                           
+ }}                                                                                                                                                                                                                                
+ '''
 
 _CONFIG_SCHEDULER_TEMPLATE = '''\
 config = {

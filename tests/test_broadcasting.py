@@ -10,7 +10,7 @@ import pytest
 
 import forgeapi.broadcasting.facade as _facade_mod
 from forgeapi.broadcasting import BroadcastManager
-from forgeapi.broadcasting.drivers.redis import RedisDriver, _json_default, _serialize
+from forgeapi.broadcasting.drivers.redis import RedisDriver, _json_default
 from forgeapi.broadcasting.facade import broadcast, configure, get
 
 
@@ -110,30 +110,11 @@ class TestJsonDefault:
         val = uuid.UUID("12345678-1234-5678-1234-567812345678")
         assert _json_default(val) == str(val)
 
-    def test_str_fallback(self):
+    def test_unknown_type_raises_type_error(self):
         class Custom:
-            def __str__(self):
-                return "custom_str"
-        assert _json_default(Custom()) == "custom_str"
-
-
-# ---------------------------------------------------------------------------
-# _serialize
-# ---------------------------------------------------------------------------
-
-class TestSerialize:
-    def test_dict_passthrough(self):
-        d = {"a": 1, "b": 2}
-        assert _serialize(d) is d
-
-    def test_plain_object(self):
-        class Obj:
-            def __init__(self):
-                self.x = 10
-                self.y = 20
-                self._private = "hidden"
-        result = _serialize(Obj())
-        assert result == {"x": 10, "y": 20}
+            pass
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            _json_default(Custom())
 
 
 # ---------------------------------------------------------------------------
@@ -146,16 +127,16 @@ class TestBroadcastManagerInit:
         assert isinstance(bm._driver, RedisDriver)
 
     def test_unknown_driver_raises(self):
-        with pytest.raises(ValueError, match="Unknown driver"):
+        with pytest.raises(ValueError, match="Unknown broadcast driver"):
             BroadcastManager(driver="rabbitmq")
 
     def test_pubsub_mode_stored(self):
         bm = BroadcastManager(mode="pubsub")
-        assert bm._mode == "pubsub"
+        assert bm._driver._mode == "pubsub"
 
     def test_stream_mode_stored(self):
-        bm = BroadcastManager(mode="stream")
-        assert bm._mode == "stream"
+        bm = BroadcastManager(mode="stream", group="g", consumer="c")
+        assert bm._driver._mode == "stream"
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +215,7 @@ class TestEmitPubsub:
 class TestEmitStream:
     @pytest.mark.anyio
     async def test_emit_xadd_with_correct_key(self):
-        bm = BroadcastManager(namespace="shop", mode="stream", maxlen=500)
+        bm = BroadcastManager(namespace="shop", mode="stream", group="g", consumer="c", maxlen=500)
         fake = FakeRedis()
         bm._driver._redis = fake
 
@@ -247,7 +228,7 @@ class TestEmitStream:
 
     @pytest.mark.anyio
     async def test_emit_stream_fields_are_json_strings(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="g", consumer="c")
         fake = FakeRedis()
         bm._driver._redis = fake
 
@@ -263,50 +244,43 @@ class TestEmitStream:
 # ---------------------------------------------------------------------------
 
 class TestConnect:
-    @pytest.mark.anyio
-    async def test_stream_connect_requires_group_and_consumer(self):
-        bm = BroadcastManager(mode="stream")
-        bm._driver._redis = FakeRedis()
-
-        @bm.on("ch")
-        async def h(data): pass
-
+    def test_stream_requires_group_and_consumer(self):
         with pytest.raises(ValueError, match="group and consumer"):
-            await bm.connect()
+            BroadcastManager(mode="stream")
 
     @pytest.mark.anyio
     async def test_stream_connect_no_handlers_is_emit_only(self):
-        bm = BroadcastManager(mode="stream")
+        bm = BroadcastManager(mode="stream", group="g", consumer="c")
         bm._driver._redis = FakeRedis()
 
         # no handlers → emit-only mode, connect() returns without starting listener
-        await bm.connect(group="g", consumer="c")
+        await bm.connect()
         assert bm._listen_task is None
 
     @pytest.mark.anyio
     async def test_connect_creates_listen_task(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="g", consumer="c")
         fake = FakeRedis()
         bm._driver._redis = fake
 
         @bm.on("ch")
         async def h(data): pass
 
-        await bm.connect(group="g", consumer="c")
+        await bm.connect()
         assert bm._listen_task is not None
         assert not bm._listen_task.done()
         await bm.disconnect()
 
     @pytest.mark.anyio
     async def test_disconnect_cancels_task(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="g", consumer="c")
         fake = FakeRedis()
         bm._driver._redis = fake
 
         @bm.on("ch")
         async def h(data): pass
 
-        await bm.connect(group="g", consumer="c")
+        await bm.connect()
         task = bm._listen_task
         await bm.disconnect()
         assert task.done()
@@ -320,14 +294,14 @@ class TestConnect:
 class TestStreamGroupCreation:
     @pytest.mark.anyio
     async def test_creates_group_on_connect(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="backend", consumer="w1")
         fake = FakeRedis()
         bm._driver._redis = fake
 
         @bm.on("orders")
         async def h(data): pass
 
-        await bm.connect(group="backend", consumer="w1")
+        await bm.connect()
         await asyncio.sleep(0)
         await bm.disconnect()
 
@@ -338,7 +312,7 @@ class TestStreamGroupCreation:
 
     @pytest.mark.anyio
     async def test_busygroup_does_not_crash(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="g", consumer="c")
 
         class BusyRedis(FakeRedis):
             async def xgroup_create(self, *args, **kwargs):
@@ -349,7 +323,7 @@ class TestStreamGroupCreation:
         @bm.on("orders")
         async def h(data): pass
 
-        await bm.connect(group="g", consumer="c")
+        await bm.connect()
         await asyncio.sleep(0)
         await bm.disconnect()
 
@@ -361,7 +335,7 @@ class TestStreamGroupCreation:
 class TestStreamDispatch:
     @pytest.mark.anyio
     async def test_message_delivered_to_handler(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="g", consumer="c")
         received = []
 
         @bm.on("orders")
@@ -372,7 +346,7 @@ class TestStreamDispatch:
         fake._xread_messages = [_make_stream_entry("orders", "ns", {"id": 42})]
         bm._driver._redis = fake
 
-        await bm.connect(group="g", consumer="c")
+        await bm.connect()
         await asyncio.sleep(0.1)
         await bm.disconnect()
 
@@ -380,7 +354,7 @@ class TestStreamDispatch:
 
     @pytest.mark.anyio
     async def test_xack_called_after_processing(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="g", consumer="c")
 
         @bm.on("orders")
         async def handler(data: dict): pass
@@ -389,7 +363,7 @@ class TestStreamDispatch:
         fake._xread_messages = [_make_stream_entry("orders", "ns", {"id": 1})]
         bm._driver._redis = fake
 
-        await bm.connect(group="g", consumer="c")
+        await bm.connect()
         await asyncio.sleep(0.1)
         await bm.disconnect()
 
@@ -400,7 +374,7 @@ class TestStreamDispatch:
 
     @pytest.mark.anyio
     async def test_xack_called_even_if_handler_raises(self):
-        bm = BroadcastManager(namespace="ns", mode="stream")
+        bm = BroadcastManager(namespace="ns", mode="stream", group="g", consumer="c")
 
         @bm.on("orders")
         async def handler(data: dict):
@@ -410,7 +384,7 @@ class TestStreamDispatch:
         fake._xread_messages = [_make_stream_entry("orders", "ns", {"id": 1})]
         bm._driver._redis = fake
 
-        await bm.connect(group="g", consumer="c")
+        await bm.connect()
         await asyncio.sleep(0.1)
         await bm.disconnect()
 
@@ -553,3 +527,70 @@ class TestBroadcastFacade:
         assert len(fake.published) == 1
         channel, _ = fake.published[0]
         assert channel == "shop:order:created"
+
+
+# ---------------------------------------------------------------------------
+# register_driver
+# ---------------------------------------------------------------------------
+
+class TestRegisterDriver:
+    def test_registers_custom_driver(self):
+        from forgeapi.broadcasting.manager import _REGISTRY, register_driver
+        register_driver("rabbitmq", "myapp.transports.RabbitMQDriver")
+        assert "rabbitmq" in _REGISTRY
+        assert _REGISTRY["rabbitmq"] == "myapp.transports.RabbitMQDriver"
+        del _REGISTRY["rabbitmq"]
+
+    def test_unknown_driver_raises(self):
+        with pytest.raises(ValueError, match="Unknown broadcast driver"):
+            BroadcastManager(driver="unknown_xyz")
+
+    def test_registered_driver_no_longer_raises(self):
+        from forgeapi.broadcasting.manager import _REGISTRY, register_driver
+        register_driver("noop", "forgeapi.broadcasting.drivers.redis.RedisDriver")
+        try:
+            bm = BroadcastManager(driver="noop")
+            assert isinstance(bm._driver, RedisDriver)
+        finally:
+            del _REGISTRY["noop"]
+
+
+# ---------------------------------------------------------------------------
+# BroadcastManager.run()
+# ---------------------------------------------------------------------------
+
+class TestBroadcastManagerRun:
+    @pytest.mark.anyio
+    async def test_run_calls_connect_listen_disconnect_in_order(self):
+        calls = []
+
+        class FakeDriver:
+            _handlers: dict = {}
+
+            async def connect(self): calls.append("connect")
+            async def listen(self): calls.append("listen")
+            async def disconnect(self): calls.append("disconnect")
+            async def wait_bg_tasks(self): calls.append("wait")
+
+        bm = BroadcastManager()
+        bm._driver = FakeDriver()
+        await bm.run()
+        assert calls == ["connect", "listen", "wait", "disconnect"]
+
+    @pytest.mark.anyio
+    async def test_run_disconnects_even_if_listen_raises(self):
+        calls = []
+
+        class ErrorDriver:
+            _handlers: dict = {}
+
+            async def connect(self): calls.append("connect")
+            async def listen(self): raise RuntimeError("connection lost")
+            async def disconnect(self): calls.append("disconnect")
+            async def wait_bg_tasks(self): calls.append("wait")
+
+        bm = BroadcastManager()
+        bm._driver = ErrorDriver()
+        with pytest.raises(RuntimeError, match="connection lost"):
+            await bm.run()
+        assert "disconnect" in calls
