@@ -25,7 +25,7 @@ class ForgeQuerySet(QuerySet):
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
-        model_class = self._model
+        model_class = self.model
         for cls in model_class.__mro__:
             scopes = cls.__dict__.get("_scopes", {})
             if name in scopes:
