@@ -203,47 +203,6 @@ def _scan_schemas(files: list[Path], root: Path) -> list[str]:
     return out
 
 
-def _scan_events(files: list[Path], root: Path) -> list[str]:
-    out: list[str] = []
-    for f in files:
-        tree = _ast_parse_safe(f)
-        if not tree:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            bases = [_node_name(b) for b in node.bases]
-            if "Event" not in bases:
-                continue
-            flags: list[str] = []
-            for item in node.body:
-                if isinstance(item, ast.Assign):
-                    for t in item.targets:
-                        if isinstance(t, ast.Name) and t.id == "background":
-                            if isinstance(item.value, ast.Constant) and item.value.value:
-                                flags.append("background")
-                        if isinstance(t, ast.Name) and t.id == "redis":
-                            if isinstance(item.value, ast.Constant) and item.value.value:
-                                redis_type = "pubsub"
-                                for item2 in node.body:
-                                    if isinstance(item2, ast.Assign):
-                                        for t2 in item2.targets:
-                                            if isinstance(t2, ast.Name) and t2.id == "redis_type":
-                                                if isinstance(item2.value, ast.Constant):
-                                                    redis_type = item2.value.value
-                                flags.append(f"redis/{redis_type}")
-            init_params: list[str] = []
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef) and item.name == "__init__":
-                    for arg in item.args.args[1:]:
-                        init_params.append(arg.arg)
-            flag_str = f" [{', '.join(flags)}]" if flags else ""
-            out.append(f"  {node.name}{flag_str}")
-            if init_params:
-                out.append(f"    fields: {', '.join(init_params)}")
-    return out
-
-
 def _scan_listeners(files: list[Path], root: Path) -> list[str]:
     out: list[str] = []
     for f in files:

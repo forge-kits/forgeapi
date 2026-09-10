@@ -112,67 +112,6 @@ def generate_controller(name: str, routes: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def generate_event(name: str, fields: list[str]) -> str:
-    """Generate an Event class and its listener file.
-
-    Args:
-        name:   Event name in PascalCase without the "Event" suffix,
-                e.g. "UserRegistered", "OrderShipped".
-        fields: List of field definitions in "name:type" format,
-                e.g. ["user_id:int", "email:str", "plan:str"].
-                Supported types: int, str, float, bool, dict, list.
-
-    Returns:
-        Python source containing a TypedDict payload class and a companion listener.
-    """
-    if not re.match(r'^[A-Za-z][A-Za-z0-9]*$', name):
-        return "Error: name must start with a letter and contain only letters and digits."
-
-    parsed: list[tuple[str, str]] = []
-    for f in fields:
-        fname, ftype = (f.split(":", 1) if ":" in f else (f, "str"))
-        fname, ftype = fname.strip(), ftype.strip()
-        if re.match(r'^\w+$', fname):
-            parsed.append((fname, ftype))
-
-    snake = re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
-
-    payload_fields = "\n".join(
-        f"    {fn}: {ft}" for fn, ft in parsed
-    ) if parsed else "    pass  # define payload fields"
-
-    emit_args = ", ".join(f'"{fn}": ...' for fn, _ in parsed)
-    emit_example = f'{{{emit_args}}}' if parsed else '{}'
-
-    event_lines = [
-        f"# app/events/{snake}_event.py",
-        "from typing import TypedDict",
-        "",
-        "",
-        f"class {name}EventData(TypedDict):",
-        payload_fields,
-        "",
-        "",
-        "# Emit from a controller:",
-        "# from app.events import broadcast",
-        f"# await broadcast.emit(\"{snake}:created\", {name}EventData({emit_example}))",
-    ]
-
-    listener_lines = [
-        "",
-        "",
-        f"# app/listeners/{snake}_listener.py",
-        "from app.events import broadcast",
-        "",
-        "",
-        f"@broadcast.on(\"{snake}:created\")",
-        f"async def handle_{snake}(data: dict) -> None:",
-        "    pass",
-    ]
-
-    return "\n".join(event_lines + listener_lines) + "\n"
-
-
 def generate_schema(name: str, fields: list[str], mode: str = "all") -> str:
     """Generate Pydantic schema classes for forge-kits.
 

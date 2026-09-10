@@ -83,7 +83,7 @@ class PostController(Controller):
 "broadcasting_pubsub": '''\
 # BroadcastManager — pub/sub mode (fire-and-forget, fan-out to all running workers)
 
-# app/events/__init__.py
+# app/broadcasting.py
 from forgeapi import BroadcastManager
 
 broadcast = BroadcastManager(
@@ -95,7 +95,7 @@ broadcast = BroadcastManager(
 
 
 # app/listeners/order_listener.py
-from app.events import broadcast
+from app.broadcasting import broadcast
 
 @broadcast.on("order:shipped")
 async def send_confirmation(data: dict) -> None:
@@ -107,7 +107,7 @@ import app.listeners  # noqa: F401 — registers @broadcast.on handlers
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from forgeapi import Core
-from app.events import broadcast
+from app.broadcasting import broadcast
 
 @asynccontextmanager
 async def lifespan(app):
@@ -125,7 +125,7 @@ await broadcast.emit("order:shipped", {"order_id": 42, "email": "alice@example.c
 "broadcasting_stream": '''\
 # BroadcastManager — stream mode (persistent, messages survive worker restart)
 
-# app/events/__init__.py
+# app/broadcasting.py
 from forgeapi import BroadcastManager
 
 broadcast = BroadcastManager(
@@ -138,7 +138,7 @@ broadcast = BroadcastManager(
 
 
 # app/listeners/order_listener.py
-from app.events import broadcast
+from app.broadcasting import broadcast
 
 @broadcast.on("order:created")
 async def handle_order(data: dict) -> None:
@@ -150,7 +150,7 @@ import app.listeners  # noqa: F401 — registers @broadcast.on handlers
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from forgeapi import Core
-from app.events import broadcast
+from app.broadcasting import broadcast
 
 @asynccontextmanager
 async def lifespan(app):

@@ -22,7 +22,9 @@ Migration and seed commands.
   db:init              Init tortoise migration config
   db:makemigrations    Generate migration from model changes
   db:migrate           Apply pending migrations
-  db:downgrade         Revert the last migration
+  db:downgrade <app> <migration>   Roll back to a specific migration (use db:history to list names)
+    --fake             Record rollback without executing SQL
+    --dry-run          Show SQL without applying changes
   db:history           Show migration history
   db:seed              Run all seeders
   db:seed <Name>       Run specific seeder(s) by name
@@ -36,6 +38,8 @@ Examples:
   forgeapi db:init
   forgeapi db:makemigrations -n add_email
   forgeapi db:migrate
+  forgeapi db:downgrade models 0001_init
+  forgeapi db:downgrade models 0001_init --dry-run
   forgeapi db:seed
   forgeapi db:seed User Post
 """

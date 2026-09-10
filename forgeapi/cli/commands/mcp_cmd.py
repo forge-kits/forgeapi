@@ -10,7 +10,7 @@ from forgeapi.cli.base import Command
 
 class McpCommand(Command):
     name = "mcp:install"
-    aliases = ("mcp:remove", "mcp:status")
+    aliases = ("mcp:remove", "mcp:status", "mcp:debug")
     help_text = """\
 Usage:
   forgeapi mcp:install [--global] [--project]
@@ -30,6 +30,9 @@ Examples:
   forgeapi mcp:install --project   # project .mcp.json (commit to git)
   forgeapi mcp:remove --global     # remove from user scope
   forgeapi mcp:status              # show registered MCP servers
+  forgeapi mcp:debug               # dump full MCP context (instructions + tools + cheatsheet)
+  forgeapi mcp:debug --tools       # tools only
+  forgeapi mcp:debug --cheatsheet  # cheatsheet only
 """
 
     def handle(self, cmd: str, args: list[str]) -> None:
@@ -39,7 +42,11 @@ Examples:
         is_project = "--project" in args or "-p" in args
 
         if cmd == "mcp:status":
-            self._run_claude(["mcp", "list"], typer)
+            self._status(typer)
+            return
+
+        if cmd == "mcp:debug":
+            self._debug(args, typer)
             return
 
         scope = self._resolve_scope(is_global, is_project, typer)
@@ -79,6 +86,64 @@ Examples:
             ["mcp", "add", "--scope", scope, "forge-kits", mcp_bin],
             typer,
         )
+
+    def _status(self, typer) -> None:
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            typer.echo("  Error: claude CLI not found in PATH.", err=True)
+            raise typer.Exit(code=1)
+
+        result = subprocess.run(
+            [claude_bin, "mcp", "list"],
+            text=True,
+            capture_output=True,
+        )
+        lines = (result.stdout or "").splitlines()
+        forge_lines = [l for l in lines if "forge-kits" in l]
+
+        if forge_lines:
+            for l in forge_lines:
+                typer.echo(l)
+        else:
+            typer.echo("  forge-kits: not installed")
+            typer.echo("  Run: forgeapi mcp:install")
+
+    @staticmethod
+    def _debug(args: list[str], typer) -> None:
+        from forgeapi.mcp.docs import get_docs, _DOCS
+        from forgeapi.mcp.generators import generate_controller, generate_schema
+        from forgeapi.mcp.scanner import scan_project, project_info
+        from forgeapi.mcp.examples import get_example
+        from forgeapi.mcp.server import mcp
+
+        only_tools = "--tools" in args
+        only_cheatsheet = "--cheatsheet" in args
+
+        sep = "─" * 60
+        tools = [get_docs, get_example, generate_controller, generate_schema, scan_project, project_info]
+
+        if not only_cheatsheet:
+            typer.echo(sep)
+            typer.echo("INSTRUCTIONS (sent to Claude on connect)")
+            typer.echo(sep)
+            typer.echo(mcp.instructions)
+
+            typer.echo(sep)
+            typer.echo(f"TOOLS ({len(tools)} registered)")
+            typer.echo(sep)
+            for fn in tools:
+                doc_first = (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else ""
+                typer.echo(f"  {fn.__name__:<24} {doc_first}")
+            typer.echo("")
+            typer.echo(f"  Available get_docs topics: {', '.join(_DOCS.keys())}")
+
+        if only_tools:
+            return
+
+        typer.echo(sep)
+        typer.echo("CHEATSHEET (get_docs('cheatsheet'))")
+        typer.echo(sep)
+        typer.echo(get_docs("cheatsheet"))
 
     def _remove(self, scope: str, typer) -> None:
         self._run_claude(

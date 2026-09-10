@@ -8,32 +8,43 @@ Or register via the CLI:
     forgeapi mcp:install --global  # all projects
 """
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .docs import get_docs
 from .examples import get_example
-from .generators import generate_controller, generate_event, generate_schema
+from .generators import generate_controller, generate_schema
 from .scanner import scan_project, project_info
 
-mcp = FastMCP(
+mcp = MCPServer(
     "forge-kits",
     instructions="""\
 forge-kits CLI and API toolkit for FastAPI.
 
-RULES — must follow for every forge-kits project:
-- Dev server: `forgeapi runserver --reload` — NEVER uvicorn directly
-- Migrations: `forgeapi db:*` — NEVER aerich, NEVER pip install aerich
-- Code generation: `forgeapi make:*` — prefer CLI over writing files manually
-- Config lives in config/<section>.py files — there is NO forgeapi.toml
+SESSION START — do all three before writing any code:
+1. scan_project('<absolute path>') — read what already exists
+2. get_docs('cheatsheet') — quick-reference for controllers, auth, schemas, queries
+3. get_docs('workflow') — mandatory rules (wrong commands here break the project)
 
-SESSION START — always do this first:
-1. Call scan_project('<absolute path to user project>') — detects root automatically
-   by walking up until it finds a config/ directory. Pass the project folder,
-   NOT the forge-kits package directory.
-2. Call get_docs('cheatsheet') — covers 80% of tasks.
+FETCH DOCS ON DEMAND — call get_docs() as soon as the topic comes up, before answering:
+- migrations / db schema changes → get_docs('cli')
+- auth guards / login / strategies → get_docs('auth')
+- permissions / roles / RBAC → get_docs('permissions')
+- policies / ownership checks → get_docs('policies')
+- caching → get_docs('cache')
+- file upload / storage / S3 → get_docs('storage')
+- scheduler / cron jobs → get_docs('scheduler')
+- background jobs / queue → get_docs('queue')
+- WebSocket / SSE / real-time → get_docs('broadcasting')
+- query scopes / filters → get_docs('scopes')
+- model observers / hooks → get_docs('observers')
+- Tortoise ORM relations / advanced queries → get_docs('tortoise') or get_docs('tortoise_advanced')
+- middleware / CORS / rate limit → get_docs('middleware')
+- config/ files / settings → get_docs('config')
+- controller routing / discovery → get_docs('controllers')
+- Pydantic schemas / response shapes → get_docs('schemas')
 
-For advanced topics call get_docs with: workflow, core, controllers, events,
-auth, permissions, policies, schemas, middleware, cli, config, models,
+All available topics: cheatsheet, workflow, core, cli, controllers, broadcasting,
+auth, permissions, policies, schemas, middleware, config, models,
 cache, storage, scheduler, queue, scopes, observers, support, tortoise, tortoise_advanced.
 """,
 )
@@ -42,7 +53,6 @@ cache, storage, scheduler, queue, scopes, observers, support, tortoise, tortoise
 mcp.tool()(get_docs)
 mcp.tool()(get_example)
 mcp.tool()(generate_controller)
-mcp.tool()(generate_event)
 mcp.tool()(generate_schema)
 mcp.tool()(scan_project)
 mcp.tool()(project_info)

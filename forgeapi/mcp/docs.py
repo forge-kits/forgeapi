@@ -43,7 +43,7 @@ class PostUpdate(BaseUpdateSchema): title: str | None = None  # auto-optional
 user: CurrentUser   # 401 if missing  |  user: OptionalUser  # None if missing
 auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
 
-# app/events/__init__.py
+# app/broadcasting.py
 from forgeapi import BroadcastManager
 broadcast = BroadcastManager(driver="redis", url="redis://localhost:6379",
                               namespace="myapp", mode="stream", maxlen=1000)
@@ -204,7 +204,7 @@ register_tortoise(app, config=TORTOISE_ORM, generate_schemas=False, add_exceptio
 | Auth guards | `config/auth.py` exists |
 | Storage | `config/storage.py` exists |
 | Controllers | `controllers_dir` exists — all `*_controller.py` auto-imported |
-| Event listeners | `listeners_dir` exists |
+| Broadcast listeners | `listeners_dir` exists |
 | Policies | `policies_dir` exists |
 | Permissions | any model inherits `PermissionsMixin` — auto-detected |
 | Telescope | `"debug": True` in `config/project.py` |
@@ -359,7 +359,7 @@ result = await Post.all().order_by("-created_at").paginate(15, PostResponse)
 - The controller file must be named `*_controller.py` for auto-discovery to work.
 """,
 
-"events": """\
+"broadcasting": """\
 # forge-kits: BroadcastManager
 
 ## Setup
@@ -867,48 +867,81 @@ class AdminController(Controller):
 
 Entry point: `forgeapi`
 
+## Dev server — NEVER use uvicorn directly
+```bash
+forgeapi runserver --reload                        # localhost:8000, auto-reload
+forgeapi runserver --port 9000 --host 0.0.0.0     # custom host/port
+```
+
 ## Project scaffolding
 ```bash
-forgeapi init <project-name>
+forgeapi init <project-name>   # interactive: picks auth strategy + DB driver
 ```
 
 ## Code generation
 ```bash
-forgeapi make:controller <Name>
-forgeapi make:model <Name>
-forgeapi make:seed <Name>
+forgeapi make:controller Post              # app/controllers/post_controller.py
+forgeapi make:controller AdminUser         # app/controllers/admin/user_controller.py
+forgeapi make:model Post                   # database/models/post.py
+forgeapi make:seed User                    # database/seeds/user_seeder.py
 forgeapi generate:schema Post --payload --response
 ```
 
-## DB commands (NEVER use aerich directly)
+## Migrations — NEVER use aerich directly, NEVER pip install aerich
+
+### First-time setup (new project or first model)
 ```bash
-forgeapi db:init
-forgeapi db:makemigrations [-n <name>]
-forgeapi db:migrate
-forgeapi db:downgrade
-forgeapi db:history
-forgeapi db:seed
-forgeapi db:fresh
+forgeapi db:init              # create migration config — run once per project
+forgeapi db:makemigrations    # generate migration files from current models
+forgeapi db:migrate           # apply all pending migrations to the DB
+```
+
+### Everyday workflow (after changing a model)
+```bash
+# 1. Edit database/models/your_model.py
+forgeapi db:makemigrations -n describe_the_change   # -n gives the migration a readable name
+forgeapi db:migrate                                  # apply to DB
+```
+
+### Inspect state
+```bash
+forgeapi db:history           # list all migrations and which are applied
+```
+
+### Roll back
+```bash
+forgeapi db:history                              # find the target migration name, e.g. 0003_add_email
+forgeapi db:downgrade models 0002_init           # revert everything after 0002_init
+forgeapi db:downgrade models 0002_init --dry-run # preview SQL without applying
+forgeapi db:downgrade models 0002_init --fake    # record rollback without executing SQL
+```
+`app` in downgrade is the Tortoise app name — almost always `models` (set in config/database.py).
+`migration` is the target name from `db:history` output — you revert TO that version (inclusive).
+
+### Seed data
+```bash
+forgeapi db:seed              # run all seeders in database/seeds/
+forgeapi db:seed User Post    # run specific seeders by class name
+```
+
+### Reset DB (destructive)
+```bash
+forgeapi db:fresh             # TRUNCATE all tables — asks for confirmation
+forgeapi db:fresh --force     # DROP all tables including structure — irreversible
 ```
 
 ## Inspection
 ```bash
-forgeapi routers    # list all routes
-forgeapi models     # list all models
+forgeapi routers    # list all registered routes with methods and paths
+forgeapi models     # list all discovered Tortoise models
 ```
 
 ## Scheduler
 ```bash
-forgeapi schedule:run             # run due tasks once (use from cron)
-forgeapi schedule:run <name>      # run specific task manually
-forgeapi schedule:work            # infinite dev loop
-forgeapi schedule:list            # show all tasks + DB state
-```
-
-## Dev server (NEVER use uvicorn directly)
-```bash
-forgeapi runserver
-forgeapi runserver --port 9000 --host 0.0.0.0 --reload
+forgeapi schedule:work            # dev: infinite loop, wakes on next due task
+forgeapi schedule:run             # cron: run all due tasks once, then exit
+forgeapi schedule:run <name>      # run one task by name immediately
+forgeapi schedule:list            # show all tasks + next/last run + status
 ```
 """,
 
@@ -1534,7 +1567,7 @@ def get_docs(topic: str) -> str:
     Topics (lightest → heaviest):
       cheatsheet, workflow, pagination, config, schemas, middleware,
       core, cli, auth, permissions, policies, cache, storage, scheduler, queue,
-      scopes, observers, support, controllers, events, tortoise, tortoise_advanced, models
+      scopes, observers, support, controllers, broadcasting, tortoise, tortoise_advanced, models
 
     Args:
         topic: One of the topic names listed above (case-insensitive).

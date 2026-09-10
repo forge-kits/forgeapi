@@ -42,22 +42,22 @@ config = {
 }
 '''
 
-_CONFIG_BROADCAST_TEMPLATE = '''\                                                                                                                                                                                                 
- from forgeapi import env                                                                                                                                                                                                          
+_CONFIG_BROADCAST_TEMPLATE = '''\
+from forgeapi import env
 
- config = {{                                                                                                                                                                                                                       
-     "enabled": True,                                                                                                                                                                                                              
-     "driver": "redis",                                                                                                                                                                                                            
-     "driver_options": {{                                                                                                                                                                                                          
-         "url": env("REDIS_URL", "redis://localhost:6379"),                                                                                                                                                                        
-         "namespace": "{name}",                                                                                                                                                                                                    
-         "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent                                                                                                                                              
-         # "maxlen": 1000,       # stream mode: keep last N messages per key                                                                                                                                                       
-         # "group": "backend",   # stream mode: consumer group name                                                                                                                                                                
-         # "consumer": "worker-1",                                                                                                                                                                                                 
-     }},                                                                                                                                                                                                                           
- }}                                                                                                                                                                                                                                
- '''
+config = {{
+    "enabled": True,
+    "driver": "redis",
+    "driver_options": {{
+        "url": env("REDIS_URL", "redis://localhost:6379"),
+        "namespace": "{name}",
+        "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent
+        # "maxlen": 1000,       # stream mode: keep last N messages per key
+        # "group": "backend",   # stream mode: consumer group name
+        # "consumer": "worker-1",
+    }},
+}}
+'''
 
 _CONFIG_SCHEDULER_TEMPLATE = '''\
 config = {

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-kits"
-version = "1.6.1"
+version = "1.6.2"
 description = "FastAPI toolkit — auth, pagination, CLI generator"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,7 @@ dependencies = [
 asyncpg  = ["asyncpg>=0.30"]
 aiomysql = ["aiomysql>=0.2"]
 redis    = ["redis>=4.0"]
-mcp      = ["mcp>=1.0"]
+mcp      = ["mcp>=2.2.0"]
 s3       = ["boto3>=1.26"]
 images   = ["Pillow>=10.0"]
 
