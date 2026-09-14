@@ -7,4 +7,4 @@ backend
 docker-compose.yml
 db_data
 nuxt-api
-nuxt-telescope
+nuxt-telescope.idea/
