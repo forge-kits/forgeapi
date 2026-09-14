@@ -1,3 +1,5 @@
+from pkgutil import extend_path
+__path__ = extend_path(__path__, __name__)
 from .bootstrap import Core
 from .foundation import Provider
 from .config import KitConfig, load_config, config_from_dict, env, StorageConfig
