@@ -51,7 +51,7 @@ def load_controllers(app: FastAPI, controllers_dir: str, base_prefix: str = "") 
             for cls in ctrl_classes:
                 if not cls._registered:
                     cls()
-                app.include_router(cls.router, prefix=base_prefix)
+                app.include_router(cls.router, prefix="" if cls.web else base_prefix)
             continue
 
         # Legacy style: module-level router

@@ -78,6 +78,7 @@ class Controller:
     tags: list[str] | None = None
     guards: list | None = None
     schema: type | None = None
+    web: bool = False
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
