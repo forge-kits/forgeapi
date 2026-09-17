@@ -24,11 +24,17 @@ class _Route:
         @route.put("/{id}")
         @route.delete("/{id}")
         @route.patch("/{id}")
+        @route.websocket("/ws")        # or @route.ws("/ws")
     """
 
     def __call__(self, path: str, methods: list[str], **kwargs):
         def decorator(func):
-            func._route = {"path": path, "methods": [m.upper() for m in methods], "kwargs": kwargs}
+            func._route = {
+                "path": path,
+                "methods": [m.upper() for m in methods],
+                "kwargs": kwargs,
+                "websocket": False,
+            }
             return func
         return decorator
 
@@ -37,6 +43,19 @@ class _Route:
     def put(self, path: str, **kwargs):    return self(path, ["PUT"], **kwargs)
     def delete(self, path: str, **kwargs): return self(path, ["DELETE"], **kwargs)
     def patch(self, path: str, **kwargs):  return self(path, ["PATCH"], **kwargs)
+
+    def websocket(self, path: str, **kwargs):
+        def decorator(func):
+            func._route = {
+                "path": path,
+                "methods": None,
+                "kwargs": kwargs,
+                "websocket": True,
+            }
+            return func
+        return decorator
+
+    ws = websocket
 
 
 route = _Route()
@@ -132,6 +151,15 @@ class Controller:
             if callable(fn) and hasattr(fn, "_route"):
                 meta = fn._route
                 kwargs = dict(meta["kwargs"])
+
+                if meta.get("websocket"):
+                    cls.router.add_api_websocket_route(
+                        meta["path"],
+                        _make_endpoint(cls, name),
+                        **kwargs,
+                    )
+                    continue
+
                 # inject controller schema as response_model when not set explicitly
                 # skip 204 No Content routes — they have no body
                 if (

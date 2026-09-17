@@ -1,6 +1,7 @@
 import pytest
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
+from fastapi.testclient import TestClient
 
 from forgeapi.controllers.base import Controller, _pluralize, route
 
@@ -127,6 +128,32 @@ class TestRouteDecorator:
             pass
         assert handler._route["kwargs"]["summary"] == "List all"
         assert handler._route["kwargs"]["deprecated"] is True
+
+    def test_http_routes_marked_non_websocket(self):
+        @route.get("/")
+        async def handler():
+            pass
+        assert handler._route["websocket"] is False
+
+    def test_websocket(self):
+        @route.websocket("/ws")
+        async def handler():
+            pass
+        assert handler._route["path"] == "/ws"
+        assert handler._route["methods"] is None
+        assert handler._route["websocket"] is True
+
+    def test_ws_is_alias_for_websocket(self):
+        @route.ws("/ws")
+        async def handler():
+            pass
+        assert handler._route["websocket"] is True
+
+    def test_websocket_extra_kwargs_stored(self):
+        @route.websocket("/ws", name="chat")
+        async def handler():
+            pass
+        assert handler._route["kwargs"]["name"] == "chat"
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +288,113 @@ class TestControllerRouteRegistration:
 
         # The instance id must differ across requests
         assert r1.json()["id"] != r2.json()["id"]
+
+
+# ---------------------------------------------------------------------------
+# Websocket routes
+# ---------------------------------------------------------------------------
+
+class TestControllerWebsocketRegistration:
+    def test_websocket_route_registered(self):
+        class ChatController(Controller):
+            @route.websocket("/ws")
+            async def stream(self, websocket: WebSocket):
+                pass
+
+        ctrl = ChatController()
+        assert len(ctrl.router.routes) == 1
+
+    def test_websocket_and_http_routes_coexist(self):
+        class RoomController(Controller):
+            @route.get("/")
+            async def index(self):
+                return []
+
+            @route.websocket("/ws")
+            async def stream(self, websocket: WebSocket):
+                pass
+
+        ctrl = RoomController()
+        assert len(ctrl.router.routes) == 2
+
+    def test_websocket_echo_roundtrip(self):
+        class EchoController(Controller):
+            @route.websocket("/ws")
+            async def stream(self, websocket: WebSocket):
+                await websocket.accept()
+                data = await websocket.receive_text()
+                await websocket.send_text(f"echo: {data}")
+                await websocket.close()
+
+        app = FastAPI()
+        ctrl = EchoController()
+        app.include_router(ctrl.router)
+
+        client = TestClient(app)
+        with client.websocket_connect("/echos/ws") as ws:
+            ws.send_text("hello")
+            assert ws.receive_text() == "echo: hello"
+
+    def test_websocket_with_path_param(self):
+        class RoomWsController(Controller):
+            prefix = "/rooms"
+
+            @route.websocket("/{room_id}/ws")
+            async def stream(self, websocket: WebSocket, room_id: int):
+                await websocket.accept()
+                await websocket.send_json({"room_id": room_id})
+                await websocket.close()
+
+        app = FastAPI()
+        ctrl = RoomWsController()
+        app.include_router(ctrl.router)
+
+        client = TestClient(app)
+        with client.websocket_connect("/rooms/7/ws") as ws:
+            assert ws.receive_json() == {"room_id": 7}
+
+    def test_websocket_ignores_controller_schema(self):
+        """A ``schema`` set on the controller must not be forced onto ws routes
+        (add_api_websocket_route has no response_model/status_code kwargs)."""
+
+        class TypedController(Controller):
+            schema = dict
+
+            @route.websocket("/ws")
+            async def stream(self, websocket: WebSocket):
+                await websocket.accept()
+                await websocket.send_text("ok")
+                await websocket.close()
+
+        app = FastAPI()
+        ctrl = TypedController()
+        app.include_router(ctrl.router)
+
+        client = TestClient(app)
+        with client.websocket_connect("/typeds/ws") as ws:
+            assert ws.receive_text() == "ok"
+
+    def test_each_websocket_connection_gets_fresh_instance(self):
+        # Keep strong references — comparing bare id() is unsafe here since
+        # CPython can reuse a freed instance's address for the next one.
+        instances = []
+
+        class SessionController(Controller):
+            @route.websocket("/ws")
+            async def stream(self, websocket: WebSocket):
+                await websocket.accept()
+                instances.append(self)
+                await websocket.close()
+
+        app = FastAPI()
+        SessionController()
+        app.include_router(SessionController.router)
+
+        client = TestClient(app)
+        with client.websocket_connect("/sessions/ws"):
+            pass
+        with client.websocket_connect("/sessions/ws"):
+            pass
+
+        assert len(instances) == 2
+        assert instances[0] is not instances[1]
