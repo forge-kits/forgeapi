@@ -65,6 +65,18 @@ class _ImagePipeline:
         self._fmt = fmt.upper()
         return self
 
+    def ext(self, extension: str) -> "_ImagePipeline":
+        """Set the output format from a file extension (e.g. ``".png"``,
+        ``".jpg"``) — for callers that keep the caller-supplied filename's
+        extension rather than picking a format explicitly via
+        :meth:`convert`. An unrecognised or empty extension leaves the
+        format untouched (the pipeline's default, ``"JPEG"``).
+        """
+        fmt = _EXT_FMT.get(extension.lower())
+        if fmt:
+            self._fmt = fmt
+        return self
+
     def grayscale(self) -> "_ImagePipeline":
         """Convert to grayscale."""
         self._ops.append(("grayscale",))
@@ -155,6 +167,7 @@ _FMT_EXT = {
     "WEBP": ".webp",
     "GIF": ".gif",
 }
+_EXT_FMT = {v: k for k, v in _FMT_EXT.items()} | {".jpeg": "JPEG"}
 
 
 class ImageProcessor:
