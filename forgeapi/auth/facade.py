@@ -11,7 +11,7 @@ _log = log.channel("auth.facade")
 
 
 class Auth:
-    """Laravel-style auth facade — single entry point for all auth operations.
+    """auth facade — single entry point for all auth operations.
 
     Pure delegation layer: maintains a registry of named
     :class:`~forgeapi.auth.guard.Guard` instances and a registry of strategy
@@ -35,7 +35,7 @@ class Auth:
         CurrentUser  = auth.guard("api").current_user()
         CurrentAdmin = auth.guard("admin").current_user()
 
-    Register a custom strategy (Laravel ``Auth::extend`` equivalent)::
+    Register a custom strategy
 
         auth.extend("apikey", ApiKeyStrategy)
     """
@@ -112,7 +112,7 @@ class Auth:
         return bool(self._guards)
 
     # ------------------------------------------------------------------
-    # Strategy factories — Laravel ``Auth::extend`` equivalent
+    # Strategy factories
     # ------------------------------------------------------------------
 
     def extend(self, name: str, strategy_cls) -> None:

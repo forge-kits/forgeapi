@@ -136,7 +136,7 @@ After `forgeapi init my-project`:
 my-project/
   main.py                    # entry point — FastAPI app + Core(app)
   .env                       # secrets (COOKIE_SECRET, DB_* etc.)
-  config/                    # Laravel-style config directory (see §24)
+  config/                    # config directory (see §24)
     project.py               # name, debug, extra providers
     structure.py             # directory layout + base_prefix
     http.py                  # cors, rate_limit, request_id, access_log, middleware
@@ -467,7 +467,7 @@ Client sends `window.Telegram.WebApp.initData` via `X-Telegram-Init-Data` header
 
 ## 6. Pagination
 
-Three methods on every QuerySet — no dependency injection, no `request` argument. Laravel-style.
+Three methods on every QuerySet — no dependency injection, no `request` argument.
 
 ### paginate()
 
@@ -1027,8 +1027,7 @@ Post.filter(author_id=1).with_trashed().paginate(15, PostResponse)
 ---
 
 ### Query Scopes
-
-Laravel-style query scopes — reusable, chainable filters defined on the model.
+query scopes — reusable, chainable filters defined on the model.
 
 ```python
 from tortoise import Model, fields
@@ -1797,8 +1796,8 @@ __all__ = [
 
 ## 20. Scheduler
 
-DB-backed task scheduler — Laravel-style. Jobs are defined in code (`schedule.py`);
-state (next run time, last status, errors) is persisted in the `jobs` table via Tortoise.
+DB-backed task scheduler —  Jobs are defined in code (`schedule.py`);
+state (next run time, last status, errors) is persisted in the `scheduled_tasks` table via Tortoise.
 No external queue or APScheduler dependency required.
 
 ```bash
@@ -1807,8 +1806,8 @@ pip install forge-kits   # Scheduler is included in the base package
 
 ### Setup
 
-Add `forgeapi.scheduling` to the models list in `config/database.py` so Tortoise
-creates the `jobs` table automatically:
+Add `forgeapi.scheduling.models` to the models list in `config/database.py` so Tortoise
+creates the `scheduled_tasks` table automatically:
 
 ```python
 # config/database.py
@@ -1818,7 +1817,7 @@ TORTOISE_ORM = {
         "models": {
             "models": [
                 "database.models",
-                "forgeapi.scheduling",        # ← add this
+                "forgeapi.scheduling.models",        # ← add this
                 "forgeapi.permissions.models",
             ],
             ...
@@ -1857,6 +1856,12 @@ async def send_daily_report():
 
 ### Timing methods
 
+**Timezone:** schedules run in `timezone` from `config/project.py` (e.g. `env("APP_TIMEZONE", "Europe/Sofia")`),
+or `Scheduler(timezone="Europe/Sofia")`. Without either, the server's local time is used.
+Stored `next_run_at` / `last_run_at` are wall-clock times in that timezone, so changing it shifts existing schedules.
+Daylight saving is not compensated: a job scheduled in an hour that does not exist runs right after the clock jumps.
+
+
 | Method | When it runs |
 |---|---|
 | `.every_minute()` | Every minute |
@@ -1867,9 +1872,18 @@ async def send_daily_report():
 | `.daily_at("HH:MM")` | Daily at the given time |
 | `.weekly()` | Every Monday at midnight |
 | `.weekly_on("day", at="HH:MM")` | Named weekday at the given time |
+| `.monthly()` | 1st of every month, midnight |
+| `.monthly_on(day, at="HH:MM")` | Given day of month (31 clamps to the last day) |
+| `.yearly()` | Every Jan 1, midnight |
+| `.yearly_on(month, day, at="HH:MM")` | Every year on the given date |
+| `.every_two_years(month, day, at="HH:MM")` | Every 2 years on the given date |
+| `.cron("m h dom mon dow")` | Standard 5-field cron: `*/5 * * * *`, `0 9 * * mon-fri` |
+| `.without_overlapping(expires_after=1440)` | Skip a run while the previous one is still running (stale lock ignored after `expires_after` minutes) |
 
 `.name("label")` sets the unique key used in the DB and in CLI commands.
 Defaults to the function name.
+
+**Overlapping:** by default a slow job can start again while the previous run is still going (the next slot is claimed before the job runs). Add `.without_overlapping()` to skip those slots instead. The lock lives in `scheduled_tasks.running_since`, so it works across several scheduler instances. A skipped slot is not made up later. If a process crashes mid-run, the lock expires after `expires_after` minutes (default 24h): set it above the job's longest runtime. `schedule:run <name>` refuses to start a job that is locked.
 
 ### Running via CLI
 
@@ -1939,18 +1953,19 @@ indefinitely — sleeping until the soonest scheduled task, then calling `run_du
 
 ### ScheduledTask model
 
-The `jobs` table columns:
+The `scheduled_tasks` table columns:
 
 | Column | Type | Description |
 |---|---|---|
 | `name` | `VARCHAR(255)` unique | Job name (`.name("label")`) |
-| `schedule_type` | `VARCHAR(20)` | `"interval"` / `"daily"` / `"weekly"` |
+| `schedule_type` | `VARCHAR(20)` | `"interval"` / `"daily"` / `"weekly"` / `"monthly"` / `"yearly"` / `"cron"` |
 | `schedule_config` | `JSON` | Schedule parameters (e.g. `{"minutes": 30}`) |
 | `is_enabled` | `BOOLEAN` | Toggle without removing from code |
 | `next_run_at` | `DATETIME` | When the job will next run |
 | `last_run_at` | `DATETIME` | When it last ran |
 | `last_status` | `VARCHAR(20)` | `"success"` / `"failed"` |
 | `last_error` | `TEXT` | Exception message on failure |
+| `running_since` | `DATETIME` null | Set while a `without_overlapping()` job runs. **Added later: existing projects need a migration** (`db:makemigrations && db:migrate`) |
 
 ---
 
@@ -2047,6 +2062,28 @@ async def lifespan(app):
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
 ```
+
+**Timezone:** `available_at` and retry delays use `timezone` from `config/project.py`
+(or `Queue(timezone="Europe/Sofia")`); without either, the server's local time.
+Pending jobs keep their stored `available_at` when the timezone changes.
+
+### Failed hook
+
+Override `failed()` to react when a job has used up `max_tries` and moved to `failed_jobs`:
+
+```python
+class SendWelcomeEmail(Job):
+    failed_timeout = 30   # seconds, default 30
+
+    async def failed(self, exception: BaseException) -> None:
+        await telegram.send(f"{type(self).__name__} failed: {exception}")
+```
+
+- Runs in the background: it never delays the worker. After `failed_timeout` seconds it is cancelled and logged. An exception inside it is only logged.
+- `def failed(...)` (sync) also works and runs in a thread.
+- Every permanent failure is also logged to the `forgeapi.queue.failed` logger (job class, queue, attempts, error), with or without a hook.
+- If the job class can't be imported, `failed()` is skipped (only the log line is written); the job still lands in `failed_jobs`.
+- `queue:run` waits for pending hooks before exiting; stopping `queue:work` cancels unfinished ones.
 
 ### Failed jobs
 
@@ -2152,6 +2189,7 @@ forgeapi queue:flush              # delete all failed jobs
 ```bash
 forgeapi routers   # list all registered routes (METHOD, PATH, HANDLER)
 forgeapi models    # list all Tortoise model classes, tables, and fields
+forgeapi doctor    # check env, config, Tortoise models, scheduler file, DB connection and tables (--no-db to skip DB)
 ```
 
 ---
@@ -2159,7 +2197,7 @@ forgeapi models    # list all Tortoise model classes, tables, and fields
 ## 23. Configuration reference (config/)
 
 The only config format is a **`config/` directory of Python dict files**
-(Laravel-style). Each `config/<section>.py` defines a module-level
+Each `config/<section>.py` defines a module-level
 `config = {...}`; the filename is the section name. All sections are
 optional — `Core(app)` works with no config files at all.
 (`forgeapi.toml` is no longer supported — `load_config` raises with a
@@ -2183,6 +2221,7 @@ config = {
     "name": "my-app",
     "version": "0.1.0",
     "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name; scheduler runs in this timezone (default: server local time)
     "providers": [],                    # extra Provider classes / dotted paths
 }
 
@@ -2282,6 +2321,8 @@ TORTOISE_ORM = {
     "connections": {
         "default": os.getenv("DATABASE_URL", "sqlite://./db.sqlite3"),
     },
+    "use_tz": True,
+    "timezone": env("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {
         "models": {
             "models": ["database.models", "forgeapi.permissions.models"],
@@ -2291,6 +2332,8 @@ TORTOISE_ORM = {
     },
 }
 ```
+
+`use_tz` / `timezone` are Tortoise options (defaults: `True` / `"UTC"`). Keep `timezone` in sync with `config/project.py` by reading the same `APP_TIMEZONE` from `.env`. Don't name the variable `TIMEZONE`: Tortoise overwrites `os.environ["TIMEZONE"]` on init.
 
 An explicit `config = {"tortoise_orm": "app.settings.TORTOISE_ORM"}` is only
 needed when the dict lives somewhere non-standard.

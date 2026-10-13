@@ -324,14 +324,14 @@ class AdminController(Controller):
 "scheduler": '''\
 # DB-backed scheduler — schedule.py + CLI + lifespan
 
-# config/database.py — add forgeapi.scheduling to models list
+# config/database.py — add forgeapi.scheduling.models to models list
 TORTOISE_ORM = {
     "connections": {"default": {"engine": "tortoise.backends.asyncpg", "credentials": {...}}},
     "apps": {
         "models": {
             "models": [
                 "database.models",
-                "forgeapi.scheduling",          # ← required: creates the jobs table
+                "forgeapi.scheduling.models",          # ← required: creates the scheduled_tasks table
                 "forgeapi.permissions.models",
             ],
             "default_connection": "default",

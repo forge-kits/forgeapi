@@ -934,6 +934,7 @@ forgeapi db:fresh --force     # DROP all tables including structure — irrevers
 ```bash
 forgeapi routers    # list all registered routes with methods and paths
 forgeapi models     # list all discovered Tortoise models
+forgeapi doctor     # diagnose env, config, Tortoise models, schedule.py, DB connection/tables (--no-db skips DB)
 ```
 
 ## Scheduler
@@ -959,6 +960,7 @@ from forgeapi import env
 config = {
     "name": "my-api",
     "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name; scheduler runs in this timezone (default: server local time)
     "providers": [],                    # extra Provider dotted paths
 }
 
@@ -1288,13 +1290,13 @@ async def upload_avatar(self, file: UploadFile, user: CurrentUser) -> dict:
 "scheduler": """\
 # forge-kits: Scheduler (DB-backed)
 
-State (next_run_at, last_run_at, status, errors) is persisted in the `jobs`
+State (next_run_at, last_run_at, status, errors) is persisted in the `scheduled_tasks`
 table via Tortoise. Jobs are defined in code; the DB tracks their lifecycle.
 
 ## Tortoise setup
-Add `forgeapi.scheduling` to `config/database.py` models list:
+Add `forgeapi.scheduling.models` to `config/database.py` models list:
 ```python
-"models": ["database.models", "forgeapi.scheduling", "forgeapi.permissions.models"]
+"models": ["database.models", "forgeapi.scheduling.models", "forgeapi.permissions.models"]
 ```
 The CLI creates the table automatically with `generate_schemas(safe=True)`.
 
@@ -1315,6 +1317,12 @@ scheduler.call(ping).every_minute().name("health")
 `.name("label")` sets the unique key in the DB and in CLI commands.
 
 ## Timing methods
+
+**Timezone:** schedules run in `timezone` from `config/project.py` (e.g. `env("APP_TIMEZONE", "Europe/Sofia")`),
+or `Scheduler(timezone="Europe/Sofia")`. Without either, the server's local time is used.
+Stored `next_run_at` / `last_run_at` are wall-clock times in that timezone, so changing it shifts existing schedules.
+Daylight saving is not compensated: a job scheduled in an hour that does not exist runs right after the clock jumps.
+
 | Method | When |
 |---|---|
 | `.every_minute()` | Every minute |
@@ -1325,6 +1333,13 @@ scheduler.call(ping).every_minute().name("health")
 | `.daily_at("HH:MM")` | Daily at given time |
 | `.weekly()` | Monday midnight |
 | `.weekly_on("day", at="HH:MM")` | Named weekday at given time |
+| `.monthly()` | 1st of every month, midnight |
+| `.monthly_on(day, at="HH:MM")` | Given day of month (31 clamps to the last day) |
+| `.yearly()` | Every Jan 1, midnight |
+| `.yearly_on(month, day, at="HH:MM")` | Every year on the given date |
+| `.every_two_years(month, day, at="HH:MM")` | Every 2 years on the given date |
+| `.cron("m h dom mon dow")` | Standard 5-field cron: `*/5 * * * *`, `0 9 * * mon-fri` |
+| `.without_overlapping(expires_after=1440)` | Skip a run while the previous one is still running (stale lock ignored after `expires_after` minutes) |
 
 Days for weekly_on: monday, tuesday, wednesday, thursday, friday, saturday, sunday
 
@@ -1361,7 +1376,7 @@ loops indefinitely — sleeping until the soonest task, then calling `run_due()`
 
 ## ScheduledTask model fields
 name, schedule_type, schedule_config, is_enabled, next_run_at, last_run_at,
-last_status ("success"/"failed"), last_error. Table: `jobs`.
+last_status ("success"/"failed"), last_error. Table: `scheduled_tasks`.
 """,
 
 "scopes": """\
@@ -1544,7 +1559,19 @@ async def lifespan(app):
 
 ## Retry behaviour
 On failure, the job is retried with exponential backoff (`attempts² × 10s`).
+
+**Timezone:** `available_at` and retry delays use `timezone` from `config/project.py`
+(or `Queue(timezone="Europe/Sofia")`); without either, the server's local time.
+Pending jobs keep their stored `available_at` when the timezone changes.
+
 After `max_tries` attempts it moves to `failed_jobs`.
+
+Failed hook: override `async def failed(self, exception)` (or sync `def`, runs in a thread) on the Job
+to react when it is moved to `failed_jobs`. It runs in the background (never delays the worker), is
+cancelled after `failed_timeout` seconds (class attr, default 30) and its own errors are only logged.
+Every permanent failure is logged to the `forgeapi.queue.failed` logger. If the job class cannot be
+imported, only the log line is written. `queue:run` waits for pending hooks before exiting.
+
 
 ## DB tables
 - `queued_jobs` — pending/reserved jobs (id, queue, payload, attempts, reserved_at, available_at)

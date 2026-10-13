@@ -5,7 +5,7 @@ __all__ = ["env"]
 
 
 def env(key: str, default: Any = None) -> Any:
-    """Read an environment variable — Laravel ``env()`` equivalent.
+    """Read an environment variable
 
     Casts the literal strings ``"true"`` / ``"false"`` / ``"null"`` (any case)
     to ``True`` / ``False`` / ``None``.  Everything else is returned as a

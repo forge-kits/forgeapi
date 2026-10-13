@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 
 class Provider:
-    """Base class for module providers — Laravel Service Provider equivalent.
+    """Base class for module providers
 
     ``Core`` only orchestrates: it collects providers, calls ``register()``
     on all of them, then ``boot()`` on all of them.  Module wiring logic
