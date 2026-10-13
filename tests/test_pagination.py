@@ -60,11 +60,6 @@ def make_app(per_page: int = 5) -> FastAPI:
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
-@pytest.fixture(params=["asyncio"])
-def anyio_backend(request):
-    return request.param
-
-
 @pytest.fixture(autouse=True)
 def reset_paginator():
     default = Paginator.DEFAULT_LIMIT
@@ -171,7 +166,6 @@ class TestCursorResponse:
 
 # ── Integration — paginate() ──────────────────────────────────────────────────
 
-@pytest.mark.anyio
 async def test_paginate_page1(articles):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -189,7 +183,6 @@ async def test_paginate_page1(articles):
     assert data["links"]["next"] is not None
 
 
-@pytest.mark.anyio
 async def test_paginate_page2(articles):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -202,7 +195,6 @@ async def test_paginate_page2(articles):
     assert data["links"]["next"] is not None
 
 
-@pytest.mark.anyio
 async def test_paginate_last_page(articles):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -215,7 +207,6 @@ async def test_paginate_last_page(articles):
     assert data["links"]["next"] is None
 
 
-@pytest.mark.anyio
 async def test_paginate_per_page_from_query(articles):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -226,7 +217,6 @@ async def test_paginate_per_page_from_query(articles):
     assert data["meta"]["last_page"] == 3
 
 
-@pytest.mark.anyio
 async def test_paginate_empty_table(db):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -242,7 +232,6 @@ async def test_paginate_empty_table(db):
 
 # ── Integration — simple_paginate() ──────────────────────────────────────────
 
-@pytest.mark.anyio
 async def test_simple_paginate_page1(articles):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -258,7 +247,6 @@ async def test_simple_paginate_page1(articles):
     assert data["links"]["next"] is not None
 
 
-@pytest.mark.anyio
 async def test_simple_paginate_last_page(articles):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -272,7 +260,6 @@ async def test_simple_paginate_last_page(articles):
 
 # ── Integration — cursor_paginate() ──────────────────────────────────────────
 
-@pytest.mark.anyio
 async def test_cursor_paginate_first_page(articles):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=make_app()), base_url="http://test"
@@ -287,7 +274,6 @@ async def test_cursor_paginate_first_page(articles):
     assert data["links"]["prev"] is None
 
 
-@pytest.mark.anyio
 async def test_cursor_paginate_second_page(articles):
     app = make_app()
     async with httpx.AsyncClient(
@@ -303,7 +289,6 @@ async def test_cursor_paginate_second_page(articles):
     assert second["meta"]["next_cursor"] is not None
 
 
-@pytest.mark.anyio
 async def test_cursor_paginate_last_page(articles):
     app = make_app()
     async with httpx.AsyncClient(

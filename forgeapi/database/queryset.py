@@ -23,7 +23,9 @@ def _decode_cursor(cursor: str) -> dict:
 class ForgeQuerySet(QuerySet):
 
     def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
+        if name.startswith("_") or name == "model":
+            # "model" is a slot set in QuerySet.__init__; looking it up again here
+            # would recurse forever on an instance that has not been initialised.
             raise AttributeError(name)
         model_class = self.model
         for cls in model_class.__mro__:
@@ -94,7 +96,7 @@ class ForgeQuerySet(QuerySet):
     # ------------------------------------------------------------------
 
     async def paginate(self, per_page: int | None = None, schema: type | None = None):
-        """Offset pagination with total count — equivalent to Laravel ``paginate()``.
+        """Offset pagination with total count
 
         Runs two queries: ``COUNT`` + ``SELECT … OFFSET … LIMIT``.
         Returns :class:`~forgeapi.pagination.response.PaginatedResponse` with
@@ -136,7 +138,7 @@ class ForgeQuerySet(QuerySet):
         )
 
     async def simple_paginate(self, per_page: int | None = None, schema: type | None = None):
-        """Offset pagination without total count — equivalent to Laravel ``simplePaginate()``.
+        """Offset pagination without total count
 
         Runs a single ``SELECT … OFFSET … LIMIT+1`` query (no ``COUNT``).
         Returns :class:`~forgeapi.pagination.response.SimplePaginatedResponse`
@@ -175,7 +177,7 @@ class ForgeQuerySet(QuerySet):
         *,
         order_by: str = "id",
     ):
-        """Cursor-based pagination — equivalent to Laravel ``cursorPaginate()``.
+        """Cursor-based pagination
 
         No ``OFFSET``, stable on concurrent inserts/deletes.
         Returns :class:`~forgeapi.pagination.response.CursorResponse`.

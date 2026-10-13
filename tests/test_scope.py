@@ -9,10 +9,10 @@ from forgeapi.database.queryset import ForgeQuerySet
 # ---------------------------------------------------------------------------
 
 class FakeQS(ForgeQuerySet):
-    """Minimal subclass that sets _model without calling Tortoise internals."""
+    """Minimal subclass that sets model without calling Tortoise internals."""
 
     def __init__(self, model):
-        self._model = model
+        self.model = model
 
     def filter(self, **kwargs):
         self._last_filter = kwargs
