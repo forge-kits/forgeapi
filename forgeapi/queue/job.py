@@ -25,9 +25,23 @@ class Job:
 
     queue: str = "default"
     max_tries: int = 3
+    #: Seconds the ``failed()`` hook may run before it is cancelled and logged.
+    failed_timeout: float = 30
 
     async def handle(self) -> None:
         raise NotImplementedError(f"{type(self).__name__} must implement handle()")
+
+    async def failed(self, exception: BaseException) -> None:
+        """Called once after the job exhausted ``max_tries`` and moved to ``failed_jobs``.
+
+        Override to notify someone (Telegram, e-mail, ...). It runs in the background
+        so it never delays the worker, is cancelled after ``failed_timeout`` seconds,
+        and an error inside it is only logged. Not called when the job class could
+        not be loaded (only logged). May be ``def`` (runs in a thread) or ``async def``::
+
+            async def failed(self, exception):
+                await telegram.send(f"{type(self).__name__} failed: {exception}")
+        """
 
     def serialize(self) -> dict:
         cls = type(self)

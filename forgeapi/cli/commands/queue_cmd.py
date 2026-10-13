@@ -63,6 +63,7 @@ Usage: forgeapi queue:<subcommand>
             count = 0
             while await q.run_next():
                 count += 1
+            await q.wait_hooks()
             typer.echo(f"Processed {count} job(s).")
         finally:
             await self._disconnect_db()
@@ -85,7 +86,7 @@ Usage: forgeapi queue:<subcommand>
             await self._disconnect_db()
 
     async def _retry(self, job_id: int) -> None:
-        from datetime import datetime
+        from forgeapi.support.clock import to_db, wall_clock_now
 
         cfg = self._load_config()
         await self._connect_db(cfg)
@@ -99,7 +100,7 @@ Usage: forgeapi queue:<subcommand>
             await JobRecord.create(
                 queue=failed.queue,
                 payload=failed.payload,
-                available_at=datetime.now(),
+                available_at=to_db(wall_clock_now(cfg.project.timezone)),
             )
             await failed.delete()
             typer.echo(f"Job {job_id} re-queued.")
