@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 class ProjectConfig(BaseModel):
@@ -11,8 +11,22 @@ class ProjectConfig(BaseModel):
     #: Never enable in production.
     debug: bool = False
     #: Extra Provider classes to run after the built-in ones —
-    #: Laravel ``config/app.php`` ``providers`` equivalent.
     providers: list[Any] = []
+    #: IANA timezone the scheduler runs in, e.g. ``env("APP_TIMEZONE", "Europe/Sofia")``.
+    #: ``None`` (default) keeps the server's local time.
+    timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _valid_timezone(cls, value: str | None) -> str | None:
+        if value:
+            import zoneinfo
+
+            try:
+                zoneinfo.ZoneInfo(value)
+            except Exception:
+                raise ValueError(f"unknown timezone '{value}' (use an IANA name like 'Europe/Sofia')")
+        return value or None
 
 
 class HttpConfig(BaseModel):
@@ -219,7 +233,7 @@ class KitConfig(BaseModel):
         return section in self._provided
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Dot-notation access — Laravel ``config('auth.default')`` equivalent.
+        """Dot-notation access
 
         Works for typed sections and custom ones alike::
 

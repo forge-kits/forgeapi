@@ -73,7 +73,7 @@ class TestLoadConfig:
 
     def test_provided_tracks_user_sections(self, config_dir):
         (config_dir / "auth.py").write_text(
-            "config = {'guards': {'api': {'strategy': 'jwt', 'secret': 'x' * 32}}}\n"
+            "config = {'guards': {'api': {'strategy': 'cookie', 'secret': 'x' * 32}}}\n"
         )
         cfg = load_config()
         assert cfg.provided("auth")

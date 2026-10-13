@@ -14,6 +14,7 @@ config = {{
     "version": "0.1.0",
     "description": "",
     "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name (e.g. "Europe/Sofia") — scheduler, queue
     # Extra forgeapi.foundation.Provider classes to run on startup:
     "providers": [],
 }}
@@ -129,7 +130,7 @@ config = {
 }
 '''
 
-# config/database.py per driver — TORTOISE_ORM lives here (Laravel-style:
+# config/database.py per driver — TORTOISE_ORM lives here
 # connection params in config/database); the loader derives the dotted
 # path for the tortoise CLI from the file location, no "config" dict needed.
 _CONFIG_DATABASE_TEMPLATES = {
@@ -153,6 +154,8 @@ TORTOISE_ORM = {{
             }},
         }}
     }},
+    "use_tz": True,
+    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {{
         "models": {{
             "models": [
@@ -182,6 +185,8 @@ TORTOISE_ORM = {{
             }},
         }}
     }},
+    "use_tz": True,
+    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {{
         "models": {{
             "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.permissions.models"],
@@ -210,6 +215,8 @@ TORTOISE_ORM = {{
             }},
         }}
     }},
+    "use_tz": True,
+    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {{
         "models": {{
             "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.permissions.models"],
@@ -247,8 +254,8 @@ DB_NAME={name}
 }
 
 _ENV_VARS = {
-    "cookie":   "COOKIE_SECRET={cookie_secret}\n\n{db_env}",
-    "telegram": "TELEGRAM_BOT_TOKEN=\n\n{db_env}",
+    "cookie":   "APP_TIMEZONE=UTC\nCOOKIE_SECRET={cookie_secret}\n\n{db_env}",
+    "telegram": "APP_TIMEZONE=UTC\nTELEGRAM_BOT_TOKEN=\n\n{db_env}",
 }
 
 _MAIN_TEMPLATE = """\
