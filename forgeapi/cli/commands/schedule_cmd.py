@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import importlib.util
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from forgeapi.cli.base import Command
@@ -18,6 +19,15 @@ Usage: forgeapi schedule:<subcommand>
   schedule:run <name>       Run a specific task manually by name
   schedule:work             Run the scheduler loop (dev mode, no cron needed)
   schedule:list             List all registered tasks and their status
+
+Frequencies (define in schedule.py):
+  .every_minute()  .every(n)  .hourly()  .every_hours(n)
+  .daily()  .daily_at("HH:MM")
+  .weekly()  .weekly_on("day", at="HH:MM")
+  .monthly()  .monthly_on(day, at="HH:MM")
+  .yearly()  .yearly_on(month, day, at="HH:MM")
+  .every_two_years(month, day, at="HH:MM")
+  .cron("*/5 * * * *")
 
 Examples:
   forgeapi schedule:run
@@ -102,19 +112,30 @@ Examples:
 
             typer.echo("")
             typer.echo(
-                f"  {'NAME':<{col_name}}  {'SCHEDULE':<22}  {'LAST RUN':<19}  {'NEXT RUN':<19}  STATUS"
+                f"  {'NAME':<{col_name}}  {'SCHEDULE':<22}  {'LAST RUN':<32}  {'NEXT RUN':<32}  STATUS"
             )
-            typer.echo("  " + "-" * (col_name + 22 + 19 + 19 + 14))
+            typer.echo("  " + "-" * (col_name + 22 + 32 + 32 + 14))
 
             for record in records:
                 job = registry.get(record.name)
                 schedule_str = self._describe_schedule(job) if job else "—"
-                last_run = record.last_run_at.strftime("%Y-%m-%d %H:%M:%S") if record.last_run_at else "never"
-                next_run = record.next_run_at.strftime("%Y-%m-%d %H:%M:%S") if record.next_run_at else "—"
+                from forgeapi.support.clock import naive_wall
+
+                now = scheduler.now()
+                last_at = naive_wall(record.last_run_at) if record.last_run_at else None
+                next_at = naive_wall(record.next_run_at) if record.next_run_at else None
+                last_run = (
+                    f"{last_at:%Y-%m-%d %H:%M:%S} ({self._humanize(now - last_at)} ago)"
+                    if last_at else "never"
+                )
+                next_run = (
+                    f"{next_at:%Y-%m-%d %H:%M:%S} ({self._humanize(next_at - now, future=True)})"
+                    if next_at else "—"
+                )
                 status = record.last_status or "—"
 
                 typer.echo(
-                    f"  {record.name:<{col_name}}  {schedule_str:<22}  {last_run:<19}  {next_run:<19}  {status}"
+                    f"  {record.name:<{col_name}}  {schedule_str:<22}  {last_run:<32}  {next_run:<32}  {status}"
                 )
 
             typer.echo("")
@@ -122,6 +143,20 @@ Examples:
             await self._disconnect_db()
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _humanize(delta: timedelta, future: bool = False) -> str:
+        """Format a duration as e.g. ``2d 3h``, ``5m 10s``. Keeps the two largest units."""
+        total = int(delta.total_seconds())
+        if total <= 0:
+            return "now" if future else "just now"
+        parts = []
+        for unit, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+            value, total = divmod(total, size)
+            if value:
+                parts.append(f"{value}{unit}")
+        text = " ".join(parts[:2])
+        return f"in {text}" if future else text
 
     def _load(self):
         """Import schedule.py and return (scheduler, cfg)."""
@@ -196,4 +231,12 @@ Examples:
         if t == "weekly":
             days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
             return f"weekly {days[c['weekday']]} {c['hour']:02d}:{c['minute']:02d}"
+        if t == "cron":
+            return f"cron {c['expression']}"
+        if t == "monthly":
+            return f"monthly on day {c['day']} {c['hour']:02d}:{c['minute']:02d}"
+        if t == "yearly":
+            n = c.get("years", 1)
+            every = "yearly" if n == 1 else f"every {n} years"
+            return f"{every} on {c['day']:02d}.{c['month']:02d} {c['hour']:02d}:{c['minute']:02d}"
         return "—"

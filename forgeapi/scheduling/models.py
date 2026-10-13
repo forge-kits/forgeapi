@@ -10,6 +10,7 @@ class ScheduledTask(Model):
     last_run_at = fields.DatetimeField(null=True)
     last_status = fields.CharField(max_length=20, null=True)
     last_error = fields.TextField(null=True)
+    running_since = fields.DatetimeField(null=True)  # set while a without_overlapping() job runs
 
     class Meta:
         table = "scheduled_tasks"

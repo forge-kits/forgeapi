@@ -221,3 +221,190 @@ class TestScheduler:
         await asyncio.sleep(0.05)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+class TestMonthlyYearly:
+    def test_monthly_clamps_to_last_day(self):
+        job = make_job().monthly_on(31, at="02:00")
+        assert job.compute_next_run(datetime(2025, 1, 31, 3, 0)) == datetime(2025, 2, 28, 2, 0)
+
+    def test_monthly_this_month_if_not_passed(self):
+        job = make_job().monthly_on(15)
+        assert job.compute_next_run(datetime(2025, 3, 1)) == datetime(2025, 3, 15)
+
+    def test_monthly_december_rolls_year(self):
+        job = make_job().monthly()
+        assert job.compute_next_run(datetime(2025, 12, 1, 1, 0)) == datetime(2026, 1, 1)
+
+    def test_yearly(self):
+        job = make_job().yearly_on(6, 1, at="09:00")
+        assert job.compute_next_run(datetime(2025, 7, 1)) == datetime(2026, 6, 1, 9, 0)
+
+    def test_every_two_years(self):
+        job = make_job().every_two_years(1, 1)
+        assert job.compute_next_run(datetime(2025, 1, 1, 0, 1)) == datetime(2027, 1, 1)
+
+    def test_leap_day_falls_back(self):
+        job = make_job().yearly_on(2, 29)
+        assert job.compute_next_run(datetime(2024, 3, 1)) == datetime(2025, 2, 28)
+
+    def test_invalid_values(self):
+        with pytest.raises(ValueError):
+            make_job().monthly_on(32)
+        with pytest.raises(ValueError):
+            make_job().yearly_on(13, 1)
+
+
+class TestCron:
+    def test_every_five_minutes(self):
+        job = make_job().cron("*/5 * * * *")
+        assert job.compute_next_run(datetime(2025, 1, 1, 10, 3, 30)) == datetime(2025, 1, 1, 10, 5)
+        assert job.compute_next_run(datetime(2025, 1, 1, 10, 5)) == datetime(2025, 1, 1, 10, 10)
+
+    def test_weekdays_at_nine(self):
+        job = make_job().cron("0 9 * * mon-fri")
+        # Friday 2025-01-03 10:00 -> Monday 2025-01-06 09:00
+        assert job.compute_next_run(datetime(2025, 1, 3, 10, 0)) == datetime(2025, 1, 6, 9, 0)
+
+    def test_sunday_zero_and_seven(self):
+        for expr in ("0 0 * * 0", "0 0 * * 7"):
+            nxt = make_job().cron(expr).compute_next_run(datetime(2025, 1, 1))
+            assert nxt == datetime(2025, 1, 5)  # Sunday
+
+    def test_month_rollover_and_list(self):
+        job = make_job().cron("30 6 1,15 * *")
+        assert job.compute_next_run(datetime(2025, 12, 15, 7, 0)) == datetime(2026, 1, 1, 6, 30)
+
+    def test_dom_or_dow_when_both_restricted(self):
+        job = make_job().cron("0 0 13 * fri")
+        assert job.compute_next_run(datetime(2025, 1, 1)) == datetime(2025, 1, 3)  # Friday
+
+    def test_leap_day(self):
+        job = make_job().cron("0 0 29 2 *")
+        assert job.compute_next_run(datetime(2025, 1, 1)) == datetime(2028, 2, 29)
+
+    @pytest.mark.parametrize("bad", ["* * * *", "60 * * * *", "*/0 * * * *", "a * * * *", "5-1 * * * *"])
+    def test_invalid(self, bad):
+        with pytest.raises(ValueError):
+            make_job().cron(bad)
+
+
+class TestTimezone:
+    def test_now_uses_configured_timezone(self):
+        from datetime import timezone as _tz
+        s = Scheduler(timezone="Asia/Tokyo")
+        diff = s.now() - datetime.now(_tz.utc).replace(tzinfo=None)
+        assert timedelta(hours=8, minutes=59) < diff < timedelta(hours=9, minutes=1)
+        assert s.now().tzinfo is None
+
+    def test_default_uses_project_config(self, monkeypatch, tmp_path):
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "project.py").write_text('config = {"timezone": "Asia/Tokyo"}\n')
+        monkeypatch.chdir(tmp_path)
+        assert Scheduler().timezone == "Asia/Tokyo"
+
+    def test_no_config_means_local(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        assert Scheduler().timezone is None
+
+    def test_invalid_timezone_in_config(self):
+        from forgeapi.config import config_from_dict
+        from forgeapi.exceptions import ForgeAPIConfigError
+        with pytest.raises(ForgeAPIConfigError):
+            config_from_dict({"project": {"timezone": "Mars/Base"}})
+        assert config_from_dict({"project": {"timezone": "Europe/Sofia"}}).project.timezone == "Europe/Sofia"
+
+
+class TestQueueTimezone:
+    def test_queue_now_uses_timezone(self):
+        from datetime import timezone as _tz
+        from forgeapi.queue.queue import Queue
+        diff = Queue(timezone="Asia/Tokyo").now() - datetime.now(_tz.utc).replace(tzinfo=None)
+        assert timedelta(hours=8, minutes=59) < diff < timedelta(hours=9, minutes=1)
+
+    def test_queue_default_reads_project_config(self, monkeypatch, tmp_path):
+        from forgeapi.queue.queue import Queue
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "project.py").write_text('config = {"timezone": "Asia/Tokyo"}\n')
+        monkeypatch.chdir(tmp_path)
+        assert Queue().timezone == "Asia/Tokyo"
+
+
+class TestNaiveWall:
+    def test_naive_unchanged(self):
+        from forgeapi.support.clock import naive_wall
+        d = datetime(2025, 1, 1, 9, 0)
+        assert naive_wall(d) == d
+
+    def test_aware_converted_to_utc_wall(self):
+        from datetime import timezone as _tz
+        from forgeapi.support.clock import naive_wall
+        import zoneinfo
+        d = datetime(2025, 1, 1, 12, 0, tzinfo=zoneinfo.ZoneInfo("Europe/Sofia"))  # 10:00 UTC
+        assert naive_wall(d) == datetime(2025, 1, 1, 10, 0)
+        assert naive_wall(datetime(2025, 1, 1, 9, 0, tzinfo=_tz.utc)) == datetime(2025, 1, 1, 9, 0)
+
+
+class TestWithoutOverlapping:
+    def test_flag_and_validation(self):
+        assert make_job().without_overlapping()._overlap_ttl == 1440
+        assert make_job().without_overlapping(expires_after=5)._overlap_ttl == 5
+        assert make_job()._overlap_ttl is None
+        with pytest.raises(ValueError):
+            make_job().without_overlapping(expires_after=0)
+
+    def test_skips_while_running_then_releases(self):
+        from tortoise import Tortoise
+        import tortoise.timezone as tt
+        from forgeapi.scheduling.models import ScheduledTask
+        from forgeapi.support.clock import to_db
+
+        async def scenario():
+            await Tortoise.init(config={
+                "connections": {"default": "sqlite://:memory:"},
+                "apps": {"models": {"models": ["forgeapi.scheduling.models"], "default_connection": "default"}},
+            })
+            await Tortoise.generate_schemas()
+            try:
+                runs, gate = [], asyncio.Event()
+
+                async def slow():
+                    runs.append(1)
+                    await gate.wait()
+
+                s = Scheduler(timezone="UTC")
+                s.call(slow).every_minute().without_overlapping().name("slow")
+                await s.sync()
+
+                async def make_due():
+                    await ScheduledTask.filter(name="slow").update(
+                        next_run_at=to_db(s.now() - timedelta(seconds=5)))
+
+                await make_due()
+                first = asyncio.create_task(s.run_due())
+                await asyncio.sleep(0.1)
+                await make_due()
+                assert await s.run_due() == 0           # slot skipped while running
+                with pytest.raises(ValueError, match="already running"):
+                    await s.run_one("slow")
+                gate.set()
+                assert await first == 1
+                assert (await ScheduledTask.get(name="slow")).running_since is None
+                await make_due()
+                assert await s.run_due() == 1           # lock released -> runs again
+                assert len(runs) == 2
+            finally:
+                await Tortoise.close_connections()
+                tt._reset_timezone_cache()
+
+        asyncio.run(scenario())
+
+    def test_expired_lock_is_ignored(self):
+        job = make_job().without_overlapping(expires_after=10)
+
+        class R:
+            running_since = datetime(2025, 1, 1, 10, 0)
+
+        s = Scheduler(timezone="UTC")
+        assert s._is_locked(R, job, datetime(2025, 1, 1, 10, 5)) is True
+        assert s._is_locked(R, job, datetime(2025, 1, 1, 10, 11)) is False
