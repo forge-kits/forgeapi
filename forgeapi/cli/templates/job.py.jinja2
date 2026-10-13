@@ -1,0 +1,18 @@
+from forgeapi.queue import Job
+
+
+class {{ class_name }}(Job):
+    queue = "default"
+    max_tries = 3
+
+    def __init__(self) -> None:
+        # Keep only JSON-serialisable values: they are stored in the queue table.
+        # e.g. def __init__(self, user_id: int): self.user_id = user_id
+        pass
+
+    async def handle(self) -> None:
+        # TODO: do the work
+        pass
+
+    # async def failed(self, exception: BaseException) -> None:
+    #     """Runs once after max_tries is exhausted (in the background)."""

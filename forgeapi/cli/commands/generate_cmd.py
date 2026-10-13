@@ -15,9 +15,13 @@ _ALLOWED_EXTRA: dict[str, set[str]] = {
     "model":      {"controller", "schema"},
     "schema":     {"model", "controller"},
     "seed":       set(),
+    "job":        set(),
+    "policy":     set(),
+    "observer":   set(),
+    "provider":   set(),
 }
 
-_MAKE_KINDS = ("controller", "model", "schema", "seed")
+_MAKE_KINDS = ("controller", "model", "schema", "seed", "job", "policy", "observer", "provider")
 
 
 class MakeCommand(Command):
@@ -28,6 +32,11 @@ make: commands
   make:controller <Name>   Generate controller  (-m -s)
   make:model <Name>        Generate model       (-c -s)
   make:schema <Name>       Generate stub schemas (-m -c)
+  make:seed <Name>         Generate a seeder
+  make:job <Name>          Generate a queue job
+  make:policy <Model>      Generate a policy for a model
+  make:observer <Model>    Generate a model observer
+  make:provider <Name>     Generate a provider
 
 Namespace controllers — each CamelCase word becomes a path segment:
   AdminUser      → controllers/admin/user_controller.py   /admin/users
@@ -90,6 +99,47 @@ Flags:
 Examples:
   forgeapi make:schema Post
   forgeapi make:schema Post --mc
+""",
+        "job": """\
+Usage: forgeapi make:job <Name>
+
+Generates a queue Job in jobs_dir (default: app/jobs/).
+
+Example:
+  forgeapi make:job SendWelcomeEmail
+  # → app/jobs/send_welcome_email.py   (class SendWelcomeEmail)
+""",
+        "policy": """\
+Usage: forgeapi make:policy <Model>
+
+Generates <Model>Policy in policies_dir (default: app/policies/), registered
+with @gate.policy(<Model>) and picked up by gate.discover().
+Import the model from models_dir, so create the model first (make:model).
+
+Example:
+  forgeapi make:policy Post
+  # → app/policies/post_policy.py
+""",
+        "observer": """\
+Usage: forgeapi make:observer <Model>
+
+Generates <Model>Observer in observers_dir (default: app/observers/).
+Observers are not auto-discovered: register with <Model>.observe(<Model>Observer)
+at startup.
+
+Example:
+  forgeapi make:observer Post
+  # → app/observers/post_observer.py
+""",
+        "provider": """\
+Usage: forgeapi make:provider <Name>
+
+Generates <Name>Provider in providers_dir (default: app/providers/).
+Enable it by adding the dotted path to "providers" in config/project.py.
+
+Example:
+  forgeapi make:provider Metrics
+  # → app/providers/metrics_provider.py   (class MetricsProvider)
 """,
         "seed": """\
 Usage: forgeapi make:seed <Name>
@@ -172,6 +222,11 @@ Example:
 
         if kind == "seed":
             self._gen_seed(class_name, module_name, st)
+            typer.echo("Done.")
+            return
+
+        if kind in ("job", "policy", "observer", "provider"):
+            self._gen_simple(kind, class_name, st)
             typer.echo("Done.")
             return
 
@@ -280,6 +335,44 @@ Example:
         content = self._render("seeder.py.jinja2", class_name=class_name)
         seeds_dir = getattr(st, "seeds_dir", "database/seeds")
         self._write(Path(seeds_dir) / f"{module_name}_seeder.py", content)
+
+    _SIMPLE_SUFFIX = {"policy": "Policy", "observer": "Observer", "provider": "Provider"}
+
+    def _gen_simple(self, kind: str, class_name: str, st) -> None:
+        """job / policy / observer / provider: one file, no flags."""
+        suffix = self._SIMPLE_SUFFIX.get(kind, "")
+        if suffix and class_name.endswith(suffix) and len(class_name) > len(suffix):
+            class_name = class_name[: -len(suffix)]
+        module_name = self._to_snake(class_name)
+        directory = {
+            "job": st.jobs_dir,
+            "policy": st.policies_dir,
+            "observer": st.observers_dir,
+            "provider": st.providers_dir,
+        }[kind]
+        file_name = f"{module_name}_{kind}.py" if suffix else f"{module_name}.py"
+
+        context: dict = {"class_name": class_name}
+        if kind == "policy":
+            context["models_module"] = self._relative_import(directory, st.models_dir)
+            context["var_name"] = module_name
+        elif kind == "observer":
+            context["models_import"] = ".".join(Path(st.models_dir).parts)
+            context["observer_import"] = ".".join([*Path(directory).parts, file_name[:-3]])
+        elif kind == "provider":
+            context["dotted_path"] = ".".join([*Path(directory).parts, file_name[:-3], f"{class_name}Provider"])
+
+        for i in range(1, len(Path(directory).parts) + 1):
+            self._ensure_init(Path(*Path(directory).parts[:i]))
+        created = self._write(Path(directory) / file_name, self._render(f"{kind}.py.jinja2", **context))
+
+        if created and kind == "provider":
+            typer.echo(f'  next     add "{context["dotted_path"]}" to "providers" in config/project.py')
+        if created and kind == "observer":
+            typer.echo(
+                f"  next     {class_name}.observe({class_name}Observer) at startup (main.py or a Provider); "
+                f"{class_name} must use ModelMixin"
+            )
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
 

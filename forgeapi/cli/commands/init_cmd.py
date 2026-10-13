@@ -38,6 +38,9 @@ config = {
     "schemas_dir": "app/schemas",
     "listeners_dir": "app/listeners",
     "policies_dir": "app/policies",
+    "jobs_dir": "app/jobs",
+    "observers_dir": "app/observers",
+    "providers_dir": "app/providers",
     "seeds_dir": "database/seeds",
     "base_prefix": "/api/v1",
 }

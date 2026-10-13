@@ -57,6 +57,9 @@ class StructureConfig(BaseModel):
     schemas_dir: str = "app/schemas"
     listeners_dir: str = "app/listeners"
     policies_dir: str = "app/policies"
+    jobs_dir: str = "app/jobs"
+    observers_dir: str = "app/observers"
+    providers_dir: str = "app/providers"
     seeds_dir: str = "database/seeds"
     base_prefix: str = "/api/v1"
     schedule_file: str = "schedule.py"
@@ -194,11 +197,15 @@ class QueueConfig(BaseModel):
         config = {
             "enabled": True,
             "queue": "default",  # default queue name for the worker
+            "retry_after": 300,  # seconds before a reserved (stuck) job is picked up again
         }
     """
 
     enabled: bool = True
     queue: str = "default"
+    #: A job reserved longer than this is treated as stuck (worker died) and re-queued.
+    #: Must be longer than your slowest job, or it may run twice.
+    retry_after: int = 300
 
 
 class KitConfig(BaseModel):

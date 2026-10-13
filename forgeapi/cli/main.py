@@ -38,6 +38,10 @@ Commands:
   forgeapi generate:schema <ModelName> --payload [--crud/-cru/-cu/-d]
   forgeapi generate:schema <ModelName> --response
   forgeapi make:seed <Name>
+  forgeapi make:job <Name>
+  forgeapi make:policy <Model>
+  forgeapi make:observer <Model>
+  forgeapi make:provider <Name>
   forgeapi db:init
   forgeapi db:makemigrations [-n <name>]
   forgeapi db:migrate
@@ -46,8 +50,8 @@ Commands:
   forgeapi schedule:run [<name>]
   forgeapi schedule:work
   forgeapi schedule:list
-  forgeapi queue:work
-  forgeapi queue:run
+  forgeapi queue:work [--queue=a,b]
+  forgeapi queue:run [--queue=a,b]
   forgeapi queue:failed
   forgeapi queue:retry <id>
   forgeapi queue:flush

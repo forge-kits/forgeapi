@@ -1,0 +1,23 @@
+from forgeapi import gate
+from forgeapi.policies import Policy
+
+from {{ models_module }} import {{ class_name }}
+
+
+@gate.policy({{ class_name }})
+class {{ class_name }}Policy(Policy):
+    async def before(self, user, action: str) -> bool | None:
+        # Return True/False to decide for every action, None to continue.
+        return None
+
+    async def view(self, user, {{ var_name }}) -> bool:
+        return True
+
+    async def create(self, user) -> bool:
+        return user is not None
+
+    async def update(self, user, {{ var_name }}) -> bool:
+        return False
+
+    async def delete(self, user, {{ var_name }}) -> bool:
+        return False

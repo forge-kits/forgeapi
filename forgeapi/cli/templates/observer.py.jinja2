@@ -1,0 +1,25 @@
+from forgeapi.database import ModelObserver
+
+
+class {{ class_name }}Observer(ModelObserver):
+    """Override only the hooks you need.
+
+    {{ class_name }} must use ModelMixin (forgeapi.database) to get .observe().
+    Register once at startup (main.py or a Provider's boot()):
+
+        from {{ models_import }} import {{ class_name }}
+        from {{ observer_import }} import {{ class_name }}Observer
+
+        {{ class_name }}.observe({{ class_name }}Observer)
+    """
+
+    async def created(self, instance, **kw) -> None:
+        pass
+
+    async def updated(self, instance, **kw) -> None:
+        pass
+
+    async def deleted(self, instance, **kw) -> None:
+        pass
+
+    # Also available: creating, updating, saving, saved, deleting

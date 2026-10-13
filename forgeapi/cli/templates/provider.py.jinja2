@@ -1,0 +1,16 @@
+from forgeapi import Provider
+
+
+class {{ class_name }}Provider(Provider):
+    """Enable in config/project.py:
+
+        config = {"providers": ["{{ dotted_path }}"]}
+    """
+
+    def register(self) -> None:
+        # Module wiring. Must not import user code.
+        pass
+
+    def boot(self) -> None:
+        # Runs after every provider's register(). User code may be imported here.
+        pass

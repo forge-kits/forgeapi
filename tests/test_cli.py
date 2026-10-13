@@ -1,3 +1,4 @@
+import pytest
 from forgeapi.cli.commands.generate_cmd import MakeCommand
 from forgeapi.cli.commands.generate_schema_cmd import GenerateSchemaCommand
 from forgeapi.scheduling.scheduler import ScheduledJob
@@ -277,3 +278,57 @@ def test_doctor_engine_detection():
     assert "mysql" in DoctorCommand._engine(cfg)
     assert "mysql" in DoctorCommand._engine({"connections": {"default": "MySQL://u@h/db"}})
     assert "mysql" not in DoctorCommand._engine({"connections": {"default": {"engine": "tortoise.backends.sqlite"}}})
+
+
+# ── make:job / policy / observer / provider ──────────────────────────────────
+
+@pytest.fixture
+def mk_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").touch()
+    return tmp_path
+
+
+def _run_make(kind, name):
+    MakeCommand().handle(f"make:{kind}", [name])
+
+
+def test_make_job(mk_project):
+    _run_make("job", "SendWelcomeEmail")
+    src = (mk_project / "app/jobs/send_welcome_email.py").read_text()
+    assert "class SendWelcomeEmail(Job):" in src
+    assert (mk_project / "app/jobs/__init__.py").exists()
+    compile(src, "job.py", "exec")
+
+
+@pytest.mark.parametrize("name", ["Post", "PostPolicy"])
+def test_make_policy_strips_suffix(mk_project, name):
+    _run_make("policy", name)
+    src = (mk_project / "app/policies/post_policy.py").read_text()
+    assert "class PostPolicy(Policy):" in src and "@gate.policy(Post)" in src
+    assert "from database.models import Post" in src
+    assert not (mk_project / "app/policies/post_policy_policy.py").exists()
+    compile(src, "policy.py", "exec")
+
+
+def test_make_observer_and_provider(mk_project, capsys):
+    _run_make("observer", "Post")
+    _run_make("provider", "Metrics")
+    obs = (mk_project / "app/observers/post_observer.py").read_text()
+    prov = (mk_project / "app/providers/metrics_provider.py").read_text()
+    assert "class PostObserver(ModelObserver):" in obs
+    assert "from app.observers.post_observer import PostObserver" in obs
+    assert "class MetricsProvider(Provider):" in prov
+    assert "app.providers.metrics_provider.MetricsProvider" in capsys.readouterr().out
+    compile(obs, "o.py", "exec"); compile(prov, "p.py", "exec")
+
+
+def test_make_does_not_overwrite_and_validates_name(mk_project):
+    _run_make("job", "Same")
+    f = mk_project / "app/jobs/same.py"
+    f.write_text("# edited\n")
+    _run_make("job", "Same")
+    assert f.read_text() == "# edited\n"
+    with pytest.raises(Exception):
+        _run_make("job", "1bad")
