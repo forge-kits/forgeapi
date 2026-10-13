@@ -230,3 +230,50 @@ def test_scheduler_registry():
     assert "job-b" in registry
     assert registry["job-a"]._schedule_config == {"minutes": 5}
     assert registry["job-b"]._schedule_config == {"hour": 10, "minute": 0}
+
+
+# ── doctor ────────────────────────────────────────────────────────────────────
+
+def _doctor_schedule(tmp_path, monkeypatch, body):
+    from forgeapi.cli.commands.doctor_cmd import DoctorCommand
+    from forgeapi.config import KitConfig
+
+    f = tmp_path / "schedule.py"
+    f.write_text(body)
+    monkeypatch.chdir(tmp_path)
+    doc = DoctorCommand()
+    doc._check_scheduler(KitConfig())
+    return doc.results
+
+
+def test_doctor_schedule_valid(tmp_path, monkeypatch):
+    res = _doctor_schedule(tmp_path, monkeypatch, (
+        "from forgeapi import Scheduler\nscheduler = Scheduler()\n"
+        "scheduler.call(lambda: None).cron('*/5 * * * *').name('a')\n"
+    ))
+    assert [r[0] for r in res] == ["ok"]
+
+
+def test_doctor_schedule_missing_schedule_and_dupes(tmp_path, monkeypatch):
+    res = _doctor_schedule(tmp_path, monkeypatch, (
+        "from forgeapi import Scheduler\nscheduler = Scheduler()\n"
+        "scheduler.call(lambda: None).name('a')\n"
+        "scheduler.call(lambda: None).daily().name('b')\n"
+        "scheduler.call(lambda: None).daily().name('b')\n"
+    ))
+    titles = " ".join(r[1] for r in res)
+    assert all(r[0] == "fail" for r in res)
+    assert "without a schedule: a" in titles and "duplicate job names: b" in titles
+
+
+def test_doctor_schedule_no_scheduler_var(tmp_path, monkeypatch):
+    res = _doctor_schedule(tmp_path, monkeypatch, "x = 1\n")
+    assert res[0][0] == "fail"
+
+
+def test_doctor_engine_detection():
+    from forgeapi.cli.commands.doctor_cmd import DoctorCommand
+    cfg = {"connections": {"default": {"engine": "tortoise.backends.mysql"}}}
+    assert "mysql" in DoctorCommand._engine(cfg)
+    assert "mysql" in DoctorCommand._engine({"connections": {"default": "MySQL://u@h/db"}})
+    assert "mysql" not in DoctorCommand._engine({"connections": {"default": {"engine": "tortoise.backends.sqlite"}}})

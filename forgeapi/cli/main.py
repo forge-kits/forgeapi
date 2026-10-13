@@ -23,6 +23,7 @@ from forgeapi.cli.commands.queue_cmd import QueueCommand
 from forgeapi.cli.commands.models_cmd import ModelsCommand
 from forgeapi.cli.commands.runserver_cmd import RunserverCommand
 from forgeapi.cli.commands.mcp_cmd import McpCommand
+from forgeapi.cli.commands.doctor_cmd import DoctorCommand
 
 
 _HELP = """\
@@ -52,6 +53,7 @@ Commands:
   forgeapi queue:flush
   forgeapi routers
   forgeapi models
+  forgeapi doctor [--no-db]
   forgeapi runserver [--port 8000] [--host 127.0.0.1] [--reload]
   forgeapi mcp:install [--global] [--project] [--force]
   forgeapi mcp:remove  [--global] [--project]
@@ -105,6 +107,7 @@ _registry = CommandRegistry([
     _schedule_cmd,
     _queue_cmd,
     _mcp_cmd,
+    DoctorCommand(),
 ])
 _registry.register_prefix("make:", _make_cmd)
 _registry.register_prefix("db:", _db_cmd)
@@ -139,7 +142,7 @@ def main(ctx: typer.Context) -> None:
     cmd_name = args[0]
     rest = args[1:]
 
-    if "-h" in rest or "-H" in rest:
+    if any(a in rest for a in ("-h", "-H", "--help", "--h")):
         cmd = _registry.find(cmd_name)
         if cmd:
             cmd.show_help(cmd_name)
