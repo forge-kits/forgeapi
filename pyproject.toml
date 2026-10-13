@@ -17,7 +17,6 @@ dependencies = [
     "rich>=15.0",
     "tortoise-orm>=0.21",
     "aiosqlite>=0.21",
-    "pyjwt>=2.13",
 ]
 
 [project.optional-dependencies]

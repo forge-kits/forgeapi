@@ -97,7 +97,7 @@ class TestConventions:
         (in_tmp_cwd / "config").mkdir()
         (in_tmp_cwd / "config" / "auth.py").write_text(
             "config = {'guards': {'api': "
-            "{'strategy': 'jwt', 'secret': 'conv_secret_key_for_tests!!!!!!'}}}\n"
+            "{'strategy': 'cookie', 'secret': 'conv_secret_key_for_tests!!!!!!'}}}\n"
         )
         core = Core(FastAPI())
         assert core.auth is not None
@@ -190,8 +190,8 @@ class TestMultiGuardConfig:
             "config = {\n"
             "    'default': 'api',\n"
             "    'guards': {\n"
-            "        'api':   {'strategy': 'jwt', 'secret': 'api_secret_key_for_tests!!!!!'},\n"
-            "        'admin': {'strategy': 'jwt', 'secret': 'admin_secret_key_for_tests!!!'},\n"
+            "        'api':   {'strategy': 'cookie', 'secret': 'api_secret_key_for_tests!!!!!'},\n"
+            "        'admin': {'strategy': 'cookie', 'secret': 'admin_secret_key_for_tests!!!'},\n"
             "    },\n"
             "}\n"
         )
@@ -202,8 +202,9 @@ class TestMultiGuardConfig:
 
         # guards are isolated — different secrets
         from forgeapi.auth.models import AuthUser
-        from forgeapi.exceptions import TokenInvalidError
-        user = AuthUser(id="1", auth_method="jwt")
+        from forgeapi.exceptions import SessionInvalidError
+        user = AuthUser(id="1", auth_method="cookie")
         token = isolated_auth.token(user, guard="api")
-        with pytest.raises(TokenInvalidError):
-            isolated_auth.decode(token, guard="admin")
+        isolated_auth.guard("api").strategy._verify(token)  # own secret: valid
+        with pytest.raises(SessionInvalidError):
+            isolated_auth.guard("admin").strategy._verify(token)

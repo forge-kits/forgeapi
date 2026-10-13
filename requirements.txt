@@ -1,6 +1,5 @@
 # forgeapi — core dependencies
 fastapi==0.138.0
-pyjwt==2.13.0
 pydantic==2.13.4
 pydantic-settings==2.14.2
 tortoise-orm==1.1.7
