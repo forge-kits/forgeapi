@@ -79,7 +79,6 @@
     - [What Telescope captures](#what-telescope-captures)
     - [WebSocket live stream](#websocket-live-stream)
     - [Sensitive data masking](#sensitive-data-masking)
-    - [Recording jobs](#recording-jobs)
 25. [MCP Server](#25-mcp-server)
     - [Install](#install)
     - [Global setup for Claude Code](#global-setup-for-claude-code)
@@ -2023,8 +2022,17 @@ await dispatch(SendWelcomeEmail(user_id=user.id), queue="high")  # override queu
 **CLI (recommended for production):**
 
 ```bash
-forgeapi queue:work        # start infinite worker loop (press Ctrl+C to stop)
+forgeapi queue:work        # start infinite worker loop (press Ctrl+C to stop), see --queue below
 forgeapi queue:run         # process all currently pending jobs once (use from cron)
+```
+
+A worker only processes the queue(s) it is told to. A Job goes to the queue named in its `queue` attribute (default `"default"`), so start a worker per queue:
+
+```bash
+forgeapi queue:work                        # queue from config/queue.py ("queue"), default "default"
+forgeapi queue:work --queue=emails         # only "emails"
+forgeapi queue:work --queue=high,default   # several; earlier ones are drained first
+forgeapi queue:run --queue=emails
 ```
 
 **In-process with Core (config-driven):**
@@ -2066,6 +2074,12 @@ async def lifespan(app):
 **Timezone:** `available_at` and retry delays use `timezone` from `config/project.py`
 (or `Queue(timezone="Europe/Sofia")`); without either, the server's local time.
 Pending jobs keep their stored `available_at` when the timezone changes.
+
+### Stuck jobs
+
+A job reserved by a worker that then dies (crash, `kill -9`, deploy) is picked up again once its reservation is older than `retry_after` seconds (`config/queue.py`, default 300; or `Queue(retry_after=...)`). Each pickup counts as an attempt. If all `max_tries` were used up this way, the job moves to `failed_jobs` without running again (`MaxAttemptsExceeded`) and `failed()` is called.
+
+Set `retry_after` above your slowest job's runtime, otherwise a long job still running may be started a second time by another worker.
 
 ### Failed hook
 
@@ -2126,6 +2140,10 @@ forgeapi make:controller Post --ms     # + model + schema stubs
 forgeapi make:model Post
 forgeapi make:model Post -cs           # + controller + schema
 forgeapi make:seed User                # database/seeds/user_seeder.py
+forgeapi make:job SendWelcomeEmail      # app/jobs/send_welcome_email.py
+forgeapi make:policy Post               # app/policies/post_policy.py (@gate.policy(Post))
+forgeapi make:observer Post             # app/observers/post_observer.py (register with Post.observe(...))
+forgeapi make:provider Metrics          # app/providers/metrics_provider.py (add to "providers")
 forgeapi make:schema Post              # stub schemas (3 classes with pass)
 ```
 
@@ -2177,8 +2195,8 @@ forgeapi schedule:list            # show all tasks and their DB state
 ### Queue
 
 ```bash
-forgeapi queue:work               # start infinite worker loop
-forgeapi queue:run                # process all pending jobs once (use from cron)
+forgeapi queue:work [--queue=a,b] # start infinite worker loop (queue names; default from config/queue.py)
+forgeapi queue:run  [--queue=a,b] # process all pending jobs once (use from cron)
 forgeapi queue:failed             # list failed jobs
 forgeapi queue:retry <id>         # move a failed job back to the queue
 forgeapi queue:flush              # delete all failed jobs
@@ -2368,7 +2386,7 @@ from forgeapi import env
 config = {"debug": env("APP_DEBUG", False)}
 ```
 
-Captures per request: SQL queries, log output, dispatched events, custom jobs. Up to **200** entries in a circular buffer.
+Captures per request: SQL queries, log output, broadcast messages and cache operations. Up to **200** entries in a circular buffer.
 
 ### What Telescope captures
 
@@ -2381,8 +2399,8 @@ Captures per request: SQL queries, log output, dispatched events, custom jobs. U
 | `duration_ms` | Handler time |
 | `queries` | SQL queries: text, params, duration, source location |
 | `logs` | All `logging` calls during the request |
-| `events` | Events dispatched during the request |
-| `jobs` | Custom jobs recorded via `record_job()` |
+| `broadcasts` | Broadcast messages published during the request (channel, payload, duration) |
+| `caches` | Cache operations: `get` / `set` / `forget` / `flush`, key, hit or miss, duration |
 
 ### WebSocket live stream
 
@@ -2399,17 +2417,6 @@ Connect to `ws://<host>/_forge/telescope/ws`:
 Headers `Authorization`, `Cookie`, `X-API-Key`, `X-Telegram-Init-Data` → `"***"`
 
 Body fields containing: `password`, `secret`, `token`, `key`, `auth`, `credential`, `access_token`, `refresh_token` → `"***"`
-
-### Recording jobs
-
-```python
-from forgeapi.telescope import record_job
-
-record_job("ProcessPayment", status="done", duration_ms=45.2)
-record_job("SendEmail", status="failed", error=str(exc))
-```
-
-No-op when called outside a Telescope request context.
 
 ---
 

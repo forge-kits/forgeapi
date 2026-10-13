@@ -884,6 +884,10 @@ forgeapi make:controller Post              # app/controllers/post_controller.py
 forgeapi make:controller AdminUser         # app/controllers/admin/user_controller.py
 forgeapi make:model Post                   # database/models/post.py
 forgeapi make:seed User                    # database/seeds/user_seeder.py
+forgeapi make:job SendWelcomeEmail      # app/jobs/send_welcome_email.py
+forgeapi make:policy Post               # app/policies/post_policy.py (@gate.policy(Post))
+forgeapi make:observer Post             # app/observers/post_observer.py (register with Post.observe(...))
+forgeapi make:provider Metrics          # app/providers/metrics_provider.py (add to "providers")
 forgeapi generate:schema Post --payload --response
 ```
 
@@ -1536,8 +1540,8 @@ await dispatch(SendWelcomeEmail(user_id=user.id), queue="high")  # override queu
 
 ## CLI commands
 ```bash
-forgeapi queue:work               # start infinite worker loop
-forgeapi queue:run                # process all pending jobs once
+forgeapi queue:work [--queue=a,b] # start infinite worker loop; queue(s) comma-separated, first = highest priority, default from config/queue.py
+forgeapi queue:run  [--queue=a,b] # process all pending jobs once
 forgeapi queue:failed             # list failed jobs
 forgeapi queue:retry <id>         # move a failed job back to the queue
 forgeapi queue:flush              # delete all failed jobs
@@ -1565,6 +1569,11 @@ On failure, the job is retried with exponential backoff (`attempts² × 10s`).
 Pending jobs keep their stored `available_at` when the timezone changes.
 
 After `max_tries` attempts it moves to `failed_jobs`.
+
+Stuck jobs: a job reserved by a worker that died is re-queued once `reserved_at` is older than
+`retry_after` seconds (config/queue.py `retry_after`, default 300, or `Queue(retry_after=...)`). Each pickup counts
+as an attempt; when all `max_tries` are used up this way the job goes to `failed_jobs` without running
+(`MaxAttemptsExceeded`). Keep `retry_after` above the slowest job's runtime, or it may run twice.
 
 Failed hook: override `async def failed(self, exception)` (or sync `def`, runs in a thread) on the Job
 to react when it is moved to `failed_jobs`. It runs in the background (never delays the worker), is
