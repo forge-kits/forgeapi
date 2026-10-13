@@ -1,0 +1,79 @@
+site_name: ForgeAPI
+site_description: FastAPI toolkit — auth, pagination, queue, scheduler, CLI generators
+site_url: https://forge-kits.github.io/forgeapi/
+repo_url: https://github.com/forge-kits/forgeapi
+repo_name: forge-kits/forgeapi
+edit_uri: ''
+
+# build helpers live in docs/ but are not pages
+exclude_docs: |
+  gen_pages.py
+  requirements.txt
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_pages.py
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+
+nav:
+  - Home: index.md
+  - "1. Quick start": 01-quick-start.md
+  - "2. Project structure": 02-project-structure.md
+  - "3. Core": 03-core.md
+  - "4. Exceptions": 04-exceptions.md
+  - "5. Auth": 05-auth.md
+  - "6. Pagination": 06-pagination.md
+  - "7. Broadcasting": 07-broadcasting.md
+  - "8. Controllers": 08-controllers.md
+  - "9. Schemas": 09-schemas.md
+  - "10. Policies": 10-policies.md
+  - "11. Database": 11-database.md
+  - "12. Permissions": 12-permissions.md
+  - "13. Cache": 13-cache.md
+  - "14. Storage": 14-storage.md
+  - "15. Support": 15-support.md
+  - "16. Logger": 16-logger.md
+  - "17. Middleware": 17-middleware.md
+  - "18. Settings": 18-settings.md
+  - "19. Seeders": 19-seeders.md
+  - "20. Scheduler": 20-scheduler.md
+  - "21. Queue": 21-queue.md
+  - "22. CLI reference": 22-cli-reference.md
+  - "23. Configuration reference (config/)": 23-configuration-reference-config.md
+  - "24. Telescope": 24-telescope.md
+  - "25. MCP Server": 25-mcp-server.md
+  - Changelog: changelog.md

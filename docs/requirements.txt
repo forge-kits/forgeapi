@@ -1,0 +1,5 @@
+# MkDocs 2.0 is announced as incompatible with current themes/plugins: stay on 1.x.
+# (ProperDocs is a drop-in continuation of 1.x if MkDocs 1.x stops working.)
+mkdocs>=1.6,<2
+mkdocs-material>=9.5
+mkdocs-gen-files>=0.5
