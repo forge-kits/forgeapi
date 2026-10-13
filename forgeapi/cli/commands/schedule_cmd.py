@@ -109,12 +109,15 @@ Examples:
 
             col_name   = max(len(r.name) for r in records)
             col_name   = max(col_name, 4)
+            col_sched  = max(
+                [8] + [len(self._describe_schedule(registry[r.name])) for r in records if r.name in registry]
+            )
 
             typer.echo("")
             typer.echo(
-                f"  {'NAME':<{col_name}}  {'SCHEDULE':<22}  {'LAST RUN':<32}  {'NEXT RUN':<32}  STATUS"
+                f"  {'NAME':<{col_name}}  {'SCHEDULE':<{col_sched}}  {'LAST RUN':<32}  {'NEXT RUN':<32}  STATUS"
             )
-            typer.echo("  " + "-" * (col_name + 22 + 32 + 32 + 14))
+            typer.echo("  " + "-" * (col_name + col_sched + 32 + 32 + 14))
 
             for record in records:
                 job = registry.get(record.name)
@@ -125,7 +128,7 @@ Examples:
                 last_at = naive_wall(record.last_run_at) if record.last_run_at else None
                 next_at = naive_wall(record.next_run_at) if record.next_run_at else None
                 last_run = (
-                    f"{last_at:%Y-%m-%d %H:%M:%S} ({self._humanize(now - last_at)} ago)"
+                    f"{last_at:%Y-%m-%d %H:%M:%S} ({self._humanize(now - last_at)})"
                     if last_at else "never"
                 )
                 next_run = (
@@ -135,7 +138,7 @@ Examples:
                 status = record.last_status or "—"
 
                 typer.echo(
-                    f"  {record.name:<{col_name}}  {schedule_str:<22}  {last_run:<32}  {next_run:<32}  {status}"
+                    f"  {record.name:<{col_name}}  {schedule_str:<{col_sched}}  {last_run:<32}  {next_run:<32}  {status}"
                 )
 
             typer.echo("")
@@ -146,7 +149,7 @@ Examples:
 
     @staticmethod
     def _humanize(delta: timedelta, future: bool = False) -> str:
-        """Format a duration as e.g. ``2d 3h``, ``5m 10s``. Keeps the two largest units."""
+        """Format a duration as ``in 2d 3h`` / ``5m 10s ago``. Keeps the two largest units."""
         total = int(delta.total_seconds())
         if total <= 0:
             return "now" if future else "just now"
@@ -156,7 +159,7 @@ Examples:
             if value:
                 parts.append(f"{value}{unit}")
         text = " ".join(parts[:2])
-        return f"in {text}" if future else text
+        return f"in {text}" if future else f"{text} ago"
 
     def _load(self):
         """Import schedule.py and return (scheduler, cfg)."""

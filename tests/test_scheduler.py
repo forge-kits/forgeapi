@@ -408,3 +408,25 @@ class TestWithoutOverlapping:
         s = Scheduler(timezone="UTC")
         assert s._is_locked(R, job, datetime(2025, 1, 1, 10, 5)) is True
         assert s._is_locked(R, job, datetime(2025, 1, 1, 10, 11)) is False
+
+
+class TestToDb:
+    def test_labels_utc_on_timestamptz_backend_even_without_use_tz(self, monkeypatch):
+        from datetime import timezone as _tz
+        import forgeapi.support.clock as clock
+        import tortoise.timezone as tt
+
+        monkeypatch.setattr(tt, "get_use_tz", lambda: False)
+        monkeypatch.setattr(clock, "_timestamptz_backend", lambda: True)
+        d = datetime(2025, 1, 1, 9, 0)
+        assert clock.to_db(d) == d.replace(tzinfo=_tz.utc)
+        assert clock.to_db(d.replace(tzinfo=_tz.utc)).tzinfo is _tz.utc
+
+    def test_unchanged_on_naive_backend_without_use_tz(self, monkeypatch):
+        import forgeapi.support.clock as clock
+        import tortoise.timezone as tt
+
+        monkeypatch.setattr(tt, "get_use_tz", lambda: False)
+        monkeypatch.setattr(clock, "_timestamptz_backend", lambda: False)
+        d = datetime(2025, 1, 1, 9, 0)
+        assert clock.to_db(d) is d

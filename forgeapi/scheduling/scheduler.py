@@ -279,21 +279,24 @@ class Scheduler:
                     f"Job '{job._label}' has no schedule. "
                     "Call .every(), .daily_at(), .weekly_on(), etc."
                 )
+            # next_run_at is assigned after creation, not passed to get_or_create(): Model.__init__
+            # strips tzinfo when use_tz=False, which PostgreSQL then reads as host-local time.
             record, created = await ScheduledTask.get_or_create(
                 name=job._label,
                 defaults={
                     "schedule_type": job._schedule_type,
                     "schedule_config": job._schedule_config,
-                    "next_run_at": to_db(job.compute_next_run(now)),
                     "is_enabled": True,
                 },
             )
+            fields = ["schedule_type", "schedule_config"]
             if not created:
                 record.schedule_type = job._schedule_type
                 record.schedule_config = job._schedule_config
-                if record.next_run_at is None:
-                    record.next_run_at = to_db(job.compute_next_run(now))
-                await record.save(update_fields=["schedule_type", "schedule_config", "next_run_at"])
+            if record.next_run_at is None:
+                record.next_run_at = to_db(job.compute_next_run(now))
+                fields.append("next_run_at")
+            await record.save(update_fields=fields)
 
             log.debug("Scheduler: '%s' synced, next run at %s", job._label, record.next_run_at)
 
