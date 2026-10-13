@@ -5,6 +5,7 @@ import inspect
 import logging
 import traceback
 from datetime import datetime, timedelta
+from typing import Iterable
 
 from forgeapi.support.clock import to_db
 
@@ -14,10 +15,26 @@ log = logging.getLogger("forgeapi.queue")
 failed_log = logging.getLogger("forgeapi.queue.failed")
 
 
+class MaxAttemptsExceeded(RuntimeError):
+    """Every attempt was used up by workers that died or timed out mid-job."""
+
+
 class Queue:
-    def __init__(self, name: str = "default", max_tries: int = 3, timezone: str | None = None) -> None:
-        self._name = name
+    def __init__(
+        self,
+        name: str | Iterable[str] = "default",
+        max_tries: int = 3,
+        timezone: str | None = None,
+        retry_after: int | None = None,
+    ) -> None:
+        names = [n.strip() for n in name.split(",")] if isinstance(name, str) else [n.strip() for n in name]
+        names = [n for n in names if n]
+        if not names:
+            raise ValueError("Queue needs at least one queue name.")
+        self._names = names  # priority order: earlier queues are drained first
+        self._name = names[0]
         self._max_tries = max_tries
+        self._retry_after = retry_after
         self._timezone = timezone
         self._tz_resolved = timezone is not None
         self._hook_tasks: set[asyncio.Task] = set()
@@ -33,6 +50,16 @@ class Queue:
             self._timezone = config_timezone()
         return self._timezone
 
+    @property
+    def retry_after(self) -> int:
+        """Seconds after which a reserved job counts as stuck: ``Queue(retry_after=...)``,
+        else ``queue.retry_after`` from ``config/queue.py`` (default 300)."""
+        if self._retry_after is None:
+            from forgeapi.support.clock import config_queue_retry_after
+
+            self._retry_after = config_queue_retry_after()
+        return self._retry_after
+
     def now(self) -> datetime:
         """Current wall-clock time in the queue timezone (naive datetime)."""
         from forgeapi.support.clock import wall_clock_now
@@ -43,26 +70,42 @@ class Queue:
         from .models import JobRecord
 
         available_at = self.now() + timedelta(seconds=delay)
-        await JobRecord.create(
+        # assign available_at after construction: Model.__init__ strips tzinfo when use_tz=False,
+        # which PostgreSQL then reads as host-local time (see support.clock.to_db)
+        record = JobRecord(
             queue=getattr(job, "queue", self._name),
             payload=job.serialize(),
-            available_at=to_db(available_at),
         )
+        record.available_at = to_db(available_at)
+        await record.save()
         log.debug("Queue: dispatched '%s'", job.serialize()["class"])
 
     async def run_next(self) -> bool:
-        """Pick up and execute one pending job. Returns True if a job was processed."""
+        """Pick up and execute one pending job. Returns True if a job was processed.
+
+        With several queues (``Queue(["high", "default"])``) they are tried in the given order,
+        so a job from an earlier queue is always taken before one from a later queue.
+        """
+        for queue_name in self._names:
+            if await self._run_next_from(queue_name):
+                return True
+        return False
+
+    async def _run_next_from(self, queue_name: str) -> bool:
         from .models import FailedJob, JobRecord
+        from tortoise.expressions import Q
         from tortoise.transactions import in_transaction
 
         now = self.now()
 
         async with in_transaction():
+            # free jobs, plus jobs whose reservation expired (worker died mid-job)
+            stuck_before = to_db(now - timedelta(seconds=self.retry_after))
             record = await (
                 JobRecord.filter(
-                    reserved_at__isnull=True,
+                    Q(reserved_at__isnull=True) | Q(reserved_at__lte=stuck_before),
                     available_at__lte=to_db(now),
-                    queue=self._name,
+                    queue=queue_name,
                 )
                 .select_for_update(skip_locked=True)
                 .order_by("id")
@@ -72,6 +115,11 @@ class Queue:
             if not record:
                 return False
 
+            if record.reserved_at is not None:
+                log.warning(
+                    "Queue: job %s was reserved but never finished, retrying (attempt %d)",
+                    record.id, record.attempts + 1,
+                )
             record.reserved_at = to_db(now)
             record.attempts += 1
             await record.save(update_fields=["reserved_at", "attempts"])
@@ -81,6 +129,11 @@ class Queue:
 
         try:
             job = Job.deserialize(record.payload)
+            if record.attempts > getattr(job, "max_tries", self._max_tries):
+                raise MaxAttemptsExceeded(
+                    f"Job was attempted {record.attempts - 1} time(s) and never finished "
+                    "(worker died or ran longer than retry_after)."
+                )
             await job.handle()
             await record.delete()
             log.info("Queue: '%s' completed", job_class)
@@ -150,7 +203,7 @@ class Queue:
 
     async def work(self) -> None:
         """Infinite loop — use via ``forgeapi queue:work`` or FastAPI lifespan."""
-        log.info("Queue worker started on queue '%s'", self._name)
+        log.info("Queue worker started on queue(s) '%s'", ",".join(self._names))
         try:
             while True:
                 processed = await self.run_next()

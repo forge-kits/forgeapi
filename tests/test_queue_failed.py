@@ -149,3 +149,132 @@ def test_unloadable_job_is_logged_without_hook(caplog):
 
     with caplog.at_level(logging.ERROR, logger="forgeapi.queue.failed"):
         run(body)
+
+
+# ── stuck job recovery ────────────────────────────────────────────────────────
+
+class Counted(Job):
+    max_tries = 3
+
+    async def handle(self):
+        CALLS.append("ran")
+
+
+class Exhausted(Job):
+    max_tries = 2
+
+    async def handle(self):
+        CALLS.append("ran")
+
+    async def failed(self, exception):
+        CALLS.append(("failed", type(exception).__name__))
+
+
+async def _reserved(job, *, seconds_ago, attempts):
+    from datetime import datetime, timedelta
+    from forgeapi.support.clock import to_db
+
+    q = Queue(timezone="UTC", retry_after=60)
+    await q.dispatch(job)
+    rec = await JobRecord.first()
+    rec.reserved_at = to_db(q.now() - timedelta(seconds=seconds_ago))
+    rec.attempts = attempts
+    await rec.save(update_fields=["reserved_at", "attempts"])
+    return q
+
+
+def test_stuck_job_is_retried_after_retry_after():
+    async def body():
+        q = await _reserved(Counted(), seconds_ago=120, attempts=1)
+        assert await q.run_next() is True
+        assert CALLS == ["ran"]
+        assert await JobRecord.all().count() == 0
+
+    run(body)
+
+
+def test_recently_reserved_job_is_left_alone():
+    async def body():
+        q = await _reserved(Counted(), seconds_ago=10, attempts=1)
+        assert await q.run_next() is False
+        assert CALLS == []
+        assert await JobRecord.all().count() == 1
+
+    run(body)
+
+
+def test_stuck_job_out_of_attempts_goes_to_failed_without_running():
+    async def body():
+        q = await _reserved(Exhausted(), seconds_ago=120, attempts=2)  # both tries died mid-job
+        assert await q.run_next() is True
+        await q.wait_hooks()
+        assert "ran" not in CALLS
+        assert CALLS == [("failed", "MaxAttemptsExceeded")]
+        assert await FailedJob.all().count() == 1
+        assert await JobRecord.all().count() == 0
+
+    run(body)
+
+
+# ── several queues / --queue ──────────────────────────────────────────────────
+
+class Emails(Job):
+    queue = "emails"
+
+    async def handle(self):
+        CALLS.append("emails")
+
+
+class High(Job):
+    queue = "high"
+
+    async def handle(self):
+        CALLS.append("high")
+
+
+class Normal(Job):
+    async def handle(self):
+        CALLS.append("default")
+
+
+def test_queue_names_parsing():
+    assert Queue(name="a, b")._names == ["a", "b"]
+    assert Queue(name=["x"])._names == ["x"]
+    assert Queue()._names == ["default"]
+    with pytest.raises(ValueError):
+        Queue(name=" , ")
+
+
+def test_worker_only_takes_its_own_queues():
+    async def body():
+        q = Queue(name="emails", timezone="UTC")
+        await q.dispatch(Normal()); await q.dispatch(Emails())
+        assert await q.run_next() is True
+        assert await q.run_next() is False
+        assert CALLS == ["emails"]
+        assert await JobRecord.filter(queue="default").count() == 1
+
+    run(body)
+
+
+def test_earlier_queue_has_priority():
+    async def body():
+        q = Queue(name="high,default", timezone="UTC")
+        await q.dispatch(Normal()); await q.dispatch(Normal()); await q.dispatch(High())
+        while await q.run_next():
+            pass
+        assert CALLS == ["high", "default", "default"]
+
+    run(body)
+
+
+def test_cli_parse_queue():
+    from forgeapi.cli.commands.queue_cmd import QueueCommand
+    c = QueueCommand()
+    assert c._parse_queue(["--queue=emails"]) == "emails"
+    assert c._parse_queue(["--queue", "high,default"]) == "high,default"
+    assert c._parse_queue([]) is None
+    with pytest.raises(Exception):
+        c._parse_queue(["--bogus"])
+    with pytest.raises(Exception):
+        c._parse_queue(["--queue="])

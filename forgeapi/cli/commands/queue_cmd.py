@@ -15,20 +15,28 @@ class QueueCommand(Command):
     help_text = """\
 Usage: forgeapi queue:<subcommand>
 
-  queue:work              Start the queue worker (infinite loop)
-  queue:run               Process all pending jobs once
+  queue:work [--queue=a,b]  Start the queue worker (infinite loop)
+  queue:run  [--queue=a,b]  Process all pending jobs once
   queue:failed            List failed jobs
   queue:retry <id>        Move a failed job back to the queue
   queue:flush             Delete all failed jobs
+
+--queue takes one or more queue names (comma-separated, highest priority first).
+Default: "queue" from config/queue.py (or "default"). A Job goes to the queue named
+in its `queue` attribute, so run a worker for every queue you use.
+
+Examples:
+  forgeapi queue:work --queue=emails
+  forgeapi queue:work --queue=high,default
 """
 
     def handle(self, cmd: str, args: list[str]) -> None:
         sub = cmd.split(":", 1)[1] if ":" in cmd else ""
 
         if sub == "work":
-            asyncio.run(self._work())
+            asyncio.run(self._work(self._parse_queue(args)))
         elif sub == "run":
-            asyncio.run(self._run())
+            asyncio.run(self._run(self._parse_queue(args)))
         elif sub == "failed":
             asyncio.run(self._failed())
         elif sub == "retry":
@@ -42,24 +50,41 @@ Usage: forgeapi queue:<subcommand>
 
     # ── subcommands ───────────────────────────────────────────────────────────
 
-    async def _work(self) -> None:
+    def _parse_queue(self, args: list[str]) -> str | None:
+        """``--queue=a,b`` / ``--queue a,b`` -> "a,b"; None when absent (config default applies)."""
+        for i, arg in enumerate(args):
+            if arg.startswith("--queue="):
+                value = arg.split("=", 1)[1]
+            elif arg == "--queue" and i + 1 < len(args):
+                value = args[i + 1]
+            else:
+                continue
+            if not [n for n in value.split(",") if n.strip()]:
+                self.abort("--queue needs a name.  Example: --queue=emails")
+            return value
+        if any(a.startswith("-") for a in args):
+            self.abort(f"unknown option(s): {' '.join(a for a in args if a.startswith('-'))}")
+        return None
+
+    async def _work(self, queue: str | None = None) -> None:
         cfg = self._load_config()
         await self._connect_db(cfg)
-        typer.echo("Queue worker started. Press Ctrl+C to stop.")
+        queue = queue or cfg.queue.queue
+        typer.echo(f"Queue worker started on '{queue}'. Press Ctrl+C to stop.")
         try:
             from forgeapi.queue.queue import Queue
-            await Queue().work()
+            await Queue(name=queue).work()
         except KeyboardInterrupt:
             pass
         finally:
             await self._disconnect_db()
 
-    async def _run(self) -> None:
+    async def _run(self, queue: str | None = None) -> None:
         cfg = self._load_config()
         await self._connect_db(cfg)
         try:
             from forgeapi.queue.queue import Queue
-            q = Queue()
+            q = Queue(name=queue or cfg.queue.queue)
             count = 0
             while await q.run_next():
                 count += 1
@@ -97,11 +122,9 @@ Usage: forgeapi queue:<subcommand>
             if not failed:
                 self.abort(f"No failed job with id={job_id}.")
 
-            await JobRecord.create(
-                queue=failed.queue,
-                payload=failed.payload,
-                available_at=to_db(wall_clock_now(cfg.project.timezone)),
-            )
+            record = JobRecord(queue=failed.queue, payload=failed.payload)
+            record.available_at = to_db(wall_clock_now(cfg.project.timezone))
+            await record.save()
             await failed.delete()
             typer.echo(f"Job {job_id} re-queued.")
         finally:
