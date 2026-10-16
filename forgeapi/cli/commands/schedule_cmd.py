@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from forgeapi.cli.base import Command
+from forgeapi.exceptions import ForgeAPIError
 
 
 class ScheduleCommand(Command):
@@ -39,18 +40,21 @@ Examples:
     def handle(self, cmd: str, args: list[str]) -> None:
         subcmd = cmd.split(":", 1)[1] if ":" in cmd else ""
 
-        if subcmd == "run":
-            task_name = next((a for a in args if not a.startswith("-")), None)
-            asyncio.run(self._run(task_name))
-        elif subcmd == "work":
-            asyncio.run(self._work())
-        elif subcmd == "list":
-            asyncio.run(self._list())
-        else:
-            self.abort(
-                f"unknown schedule command '{cmd}'.\n"
-                "  Available: schedule:run, schedule:work, schedule:list"
-            )
+        try:
+            if subcmd == "run":
+                task_name = next((a for a in args if not a.startswith("-")), None)
+                asyncio.run(self._run(task_name))
+            elif subcmd == "work":
+                asyncio.run(self._work())
+            elif subcmd == "list":
+                asyncio.run(self._list())
+            else:
+                self.abort(
+                    f"unknown schedule command '{cmd}'.\n"
+                    "  Available: schedule:run, schedule:work, schedule:list"
+                )
+        except ForgeAPIError as exc:  # unreachable database, invalid config, ...
+            self.abort(str(exc))
 
     # ── Subcommand handlers ─────────────────────────────────────────────────────
 
@@ -198,7 +202,6 @@ Examples:
 
     @staticmethod
     async def _connect_db(cfg) -> None:
-        from tortoise import Tortoise
         module_dotted, attr = cfg.database.tortoise_orm.rsplit(".", 1)
         mod = importlib.import_module(module_dotted)
         tortoise_config = getattr(mod, attr)
@@ -209,8 +212,7 @@ Examples:
             if "forgeapi.scheduling.models" not in models_list:
                 models_list.append("forgeapi.scheduling.models")
 
-        await Tortoise.init(config=tortoise_config)
-        await Tortoise.generate_schemas(safe=True)
+        await Command.connect_database(tortoise_config)
 
     @staticmethod
     async def _disconnect_db() -> None:

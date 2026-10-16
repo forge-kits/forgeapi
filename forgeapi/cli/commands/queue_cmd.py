@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 
 from forgeapi.cli.base import Command
+from forgeapi.exceptions import ForgeAPIError
 
 
 class QueueCommand(Command):
@@ -33,20 +34,23 @@ Examples:
     def handle(self, cmd: str, args: list[str]) -> None:
         sub = cmd.split(":", 1)[1] if ":" in cmd else ""
 
-        if sub == "work":
-            asyncio.run(self._work(self._parse_queue(args)))
-        elif sub == "run":
-            asyncio.run(self._run(self._parse_queue(args)))
-        elif sub == "failed":
-            asyncio.run(self._failed())
-        elif sub == "retry":
-            if not args:
-                self.abort("Usage: forgeapi queue:retry <id>")
-            asyncio.run(self._retry(int(args[0])))
-        elif sub == "flush":
-            asyncio.run(self._flush())
-        else:
-            self.show_help(cmd)
+        try:
+            if sub == "work":
+                asyncio.run(self._work(self._parse_queue(args)))
+            elif sub == "run":
+                asyncio.run(self._run(self._parse_queue(args)))
+            elif sub == "failed":
+                asyncio.run(self._failed())
+            elif sub == "retry":
+                if not args:
+                    self.abort("Usage: forgeapi queue:retry <id>")
+                asyncio.run(self._retry(int(args[0])))
+            elif sub == "flush":
+                asyncio.run(self._flush())
+            else:
+                self.show_help(cmd)
+        except ForgeAPIError as exc:  # unreachable database, invalid config, ...
+            self.abort(str(exc))
 
     # ── subcommands ───────────────────────────────────────────────────────────
 
@@ -153,8 +157,6 @@ Examples:
             self.abort(f"Could not load config: {exc}")
 
     async def _connect_db(self, cfg) -> None:
-        from tortoise import Tortoise
-
         module_dotted, attr = cfg.database.tortoise_orm.rsplit(".", 1)
         mod = importlib.import_module(module_dotted)
         tortoise_config = getattr(mod, attr)
@@ -164,8 +166,7 @@ Examples:
             if "forgeapi.queue.models" not in models_list:
                 models_list.append("forgeapi.queue.models")
 
-        await Tortoise.init(config=tortoise_config)
-        await Tortoise.generate_schemas(safe=True)
+        await self.connect_database(tortoise_config)
 
     @staticmethod
     async def _disconnect_db() -> None:

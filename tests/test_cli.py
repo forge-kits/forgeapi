@@ -332,3 +332,55 @@ def test_make_does_not_overwrite_and_validates_name(mk_project):
     assert f.read_text() == "# edited\n"
     with pytest.raises(Exception):
         _run_make("job", "1bad")
+
+
+# ── unreachable database: one-line error, no traceback ───────────────────────
+
+@pytest.fixture
+def broken_db_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "database.py").write_text('config = {"tortoise_orm": "broken_orm_module.TORTOISE_ORM"}\n')
+    (tmp_path / "broken_orm_module.py").write_text(
+        "TORTOISE_ORM = {\n"
+        '    "connections": {"default": {"engine": "tortoise.backends.sqlite",\n'
+        '                                "credentials": {"file_path": "/nonexistent_dir_for_forgeapi_test/db.sqlite3"}}},\n'
+        '    "apps": {"models": {"models": [], "default_connection": "default"}},\n'
+        "}\n"
+    )
+    (tmp_path / "schedule.py").write_text(
+        "from forgeapi import Scheduler\nscheduler = Scheduler()\nscheduler.call(lambda: None).daily().name('t')\n"
+    )
+    return tmp_path
+
+
+@pytest.mark.parametrize("cmd", ["schedule:list", "schedule:run", "queue:run", "queue:work"])
+def test_unreachable_database_gives_readable_error(broken_db_project, capsys, cmd):
+    import typer
+    from forgeapi.cli.commands.queue_cmd import QueueCommand
+    from forgeapi.cli.commands.schedule_cmd import ScheduleCommand
+
+    command = ScheduleCommand() if cmd.startswith("schedule") else QueueCommand()
+    with pytest.raises(typer.Exit) as info:
+        command.handle(cmd, [])
+    err = capsys.readouterr().err
+    assert info.value.exit_code == 1
+    assert err.startswith("Error: Cannot connect to the database")
+    assert "Hint:" in err and "forgeapi doctor" in err
+    assert "Traceback" not in err
+
+
+def test_connect_database_chains_original_error(broken_db_project):
+    import asyncio
+    from forgeapi.cli.base import Command
+    from forgeapi.exceptions import ForgeAPIError
+
+    cfg = {
+        "connections": {"default": {"engine": "tortoise.backends.sqlite",
+                                    "credentials": {"file_path": "/nonexistent_dir_for_forgeapi_test/db.sqlite3"}}},
+        "apps": {"models": {"models": [], "default_connection": "default"}},
+    }
+    with pytest.raises(ForgeAPIError) as info:
+        asyncio.run(Command.connect_database(cfg))
+    assert info.value.__cause__ is not None   # `from exc`: the real reason is kept
