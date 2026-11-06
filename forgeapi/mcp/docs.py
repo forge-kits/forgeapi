@@ -207,7 +207,6 @@ register_tortoise(app, config=TORTOISE_ORM, generate_schemas=False, add_exceptio
 | Broadcast listeners | `listeners_dir` exists |
 | Policies | `policies_dir` exists |
 | Permissions | any model inherits `PermissionsMixin` — auto-detected |
-| Telescope | `"debug": True` in `config/project.py` |
 | Pagination, Cache | always configured (defaults or from their sections) |
 | Custom providers | `"providers"` list in `config/project.py` |
 
@@ -963,7 +962,7 @@ Section name = filename. All sections optional. `forgeapi.toml` is NOT supported
 from forgeapi import env
 config = {
     "name": "my-api",
-    "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
     "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name; scheduler runs in this timezone (default: server local time)
     "providers": [],                    # extra Provider dotted paths
 }

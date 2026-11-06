@@ -13,7 +13,7 @@ config = {{
     "name": "{name}",
     "version": "0.1.0",
     "description": "",
-    "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
     "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name (e.g. "Europe/Sofia") — scheduler, queue
     # Extra forgeapi.foundation.Provider classes to run on startup:
     "providers": [],

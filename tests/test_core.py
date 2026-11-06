@@ -110,13 +110,6 @@ class TestConventions:
         with pytest.raises(ForgeAPIConfigError, match="no guards"):
             Core(FastAPI())
 
-    def test_debug_from_config_adds_telescope(self, in_tmp_cwd):
-        (in_tmp_cwd / "config").mkdir()
-        (in_tmp_cwd / "config" / "project.py").write_text("config = {'debug': True}\n")
-        core = Core(FastAPI())
-        names = [type(p).__name__ for p in core.providers]
-        assert "TelescopeProvider" in names
-
     def test_http_section_configures_middleware(self, in_tmp_cwd):
         (in_tmp_cwd / "config").mkdir()
         (in_tmp_cwd / "config" / "http.py").write_text(

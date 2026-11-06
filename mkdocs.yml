@@ -74,6 +74,5 @@ nav:
   - "21. Queue": 21-queue.md
   - "22. CLI reference": 22-cli-reference.md
   - "23. Configuration reference (config/)": 23-configuration-reference-config.md
-  - "24. Telescope": 24-telescope.md
-  - "25. MCP Server": 25-mcp-server.md
+  - "24. MCP Server": 24-mcp-server.md
   - Changelog: changelog.md

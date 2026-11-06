@@ -24,7 +24,6 @@ class Core:
     * middleware stack        — ``config/http.py`` (cors, rate_limit, ...)
     * auth guards             — boot when ``config/auth.py`` exists
     * storage                 — boot when ``config/storage.py`` exists
-    * Telescope               — ``"debug": True`` in ``config/project.py``
     * permissions             — boot when a model in ``models_dir`` inherits ``PermissionsMixin``
     * controllers / listeners / policies — boot when their directory exists
     * pagination and cache    — always configured (from their sections or defaults)
@@ -77,10 +76,6 @@ class Core:
         app, cfg = self._app, self._cfg
         providers: list[Provider] = []
         add = providers.append
-
-        if self._debug:
-            from .telescope.provider import TelescopeProvider
-            add(TelescopeProvider(app, cfg))
 
         from .middleware.provider import MiddlewareProvider
         add(MiddlewareProvider(app, cfg))

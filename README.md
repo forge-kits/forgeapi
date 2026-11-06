@@ -75,11 +75,7 @@
     - [Failed jobs](#failed-jobs)
 22. [CLI reference](#22-cli-reference)
 23. [Configuration reference (config/)](#23-configuration-reference-config)
-24. [Telescope](#24-telescope)
-    - [What Telescope captures](#what-telescope-captures)
-    - [WebSocket live stream](#websocket-live-stream)
-    - [Sensitive data masking](#sensitive-data-masking)
-25. [MCP Server](#25-mcp-server)
+24. [MCP Server](#24-mcp-server)
     - [Install](#install)
     - [Global setup for Claude Code](#global-setup-for-claude-code)
     - [Per-project setup](#per-project-setup)
@@ -203,7 +199,6 @@ core = Core(app)
 | Event listeners | `config/broadcast.py` exists — all files in `listeners_dir` imported |
 | Policies | `policies_dir` exists — all `*_policy.py` imported |
 | Permissions | a model in `models_dir` inherits `PermissionsMixin` (no config needed) |
-| Telescope | `"debug": True` in `config/project.py` — **never in production** |
 | Pagination, Cache | always configured (from their sections or defaults) |
 | Custom providers | `"providers"` list in `config/project.py` |
 
@@ -248,7 +243,7 @@ from forgeapi import env
 config = {"debug": env("APP_DEBUG", False)}
 ```
 
-Debug mode enables Telescope; all debug activity is logged as `WARNING`.
+Debug mode turns on verbose forgeapi logging (`DEBUG` level).
 **Never enable in production.**
 
 ---
@@ -2238,7 +2233,7 @@ from forgeapi import env
 config = {
     "name": "my-app",
     "version": "0.1.0",
-    "debug": env("APP_DEBUG", False),   # enables Telescope — never in production
+    "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
     "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name; scheduler runs in this timezone (default: server local time)
     "providers": [],                    # extra Provider classes / dotted paths
 }
@@ -2376,51 +2371,7 @@ Known sections are validated by Pydantic models; misconfiguration raises
 
 ---
 
-## 24. Telescope
-
-Debug-only request inspector activated by `"debug": True` in `config/project.py`. **Never use in production.**
-
-```python
-# config/project.py
-from forgeapi import env
-config = {"debug": env("APP_DEBUG", False)}
-```
-
-Captures per request: SQL queries, log output, broadcast messages and cache operations. Up to **200** entries in a circular buffer.
-
-### What Telescope captures
-
-| Field | Description |
-|---|---|
-| `method`, `path`, `status` | HTTP basics |
-| `headers` | All headers — sensitive ones replaced with `"***"` |
-| `payload` | Request body — sensitive fields masked |
-| `response_body` | Response body — same masking, capped at 64 KB |
-| `duration_ms` | Handler time |
-| `queries` | SQL queries: text, params, duration, source location |
-| `logs` | All `logging` calls during the request |
-| `broadcasts` | Broadcast messages published during the request (channel, payload, duration) |
-| `caches` | Cache operations: `get` / `set` / `forget` / `flush`, key, hit or miss, duration |
-
-### WebSocket live stream
-
-Connect to `ws://<host>/_forge/telescope/ws`:
-
-| Direction | Message |
-|---|---|
-| Server → Client | `{"type": "init", "data": [...]}` — all current entries on connect |
-| Server → Client | `{"type": "entry", "data": {...}}` — after each request |
-| Client → Server | `{"type": "clear"}` — clear the store |
-
-### Sensitive data masking
-
-Headers `Authorization`, `Cookie`, `X-API-Key`, `X-Telegram-Init-Data` → `"***"`
-
-Body fields containing: `password`, `secret`, `token`, `key`, `auth`, `credential`, `access_token`, `refresh_token` → `"***"`
-
----
-
-## 25. MCP Server
+## 24. MCP Server
 
 forge-kits ships an MCP server that gives AI assistants (Claude Code, Cursor, etc.) direct access to API docs, code generation tools, and project structure scanning — without reading source files.
 

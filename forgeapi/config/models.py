@@ -7,7 +7,7 @@ class ProjectConfig(BaseModel):
     name: str = "my-app"
     version: str = "0.1.0"
     description: str = ""
-    #: Enables Telescope. Set via env: ``"debug": env("APP_DEBUG", False)``.
+    #: Verbose forgeapi logging. Set via env: ``"debug": env("APP_DEBUG", False)``.
     #: Never enable in production.
     debug: bool = False
     #: Extra Provider classes to run after the built-in ones —
