@@ -2,6 +2,26 @@
 
 Generated from git history by `scripts/gen_changelog.py` (Conventional Commits). Do not edit by hand.
 
+## [1.8.0](https://github.com/forge-kits/forgeapi/releases/tag/v1.8.0) - 2026-11-06
+
+### Features
+
+- **cli:** Add db:migrate --force ([`1ff0ba1`](https://github.com/forge-kits/forgeapi/commit/1ff0ba1))
+- **cli:** Artisan-style output, styled help and a project guard ([`ce20040`](https://github.com/forge-kits/forgeapi/commit/ce20040))
+- **BREAKING** **telescope:** Remove the Telescope debug inspector ([`d7e5e11`](https://github.com/forge-kits/forgeapi/commit/d7e5e11))
+
+### Tests
+
+- **cli:** Cover db:migrate --force, the project guard, help and status output ([`ee0662c`](https://github.com/forge-kits/forgeapi/commit/ee0662c))
+
+### Maintenance
+
+- **docs:** Deploy Pages only from main ([`166164b`](https://github.com/forge-kits/forgeapi/commit/166164b))
+
+### Other
+
+- Add connect exceptions schedule_cmd queue_cmd ([`39dd709`](https://github.com/forge-kits/forgeapi/commit/39dd709))
+
 ## [1.7.1](https://github.com/forge-kits/forgeapi/releases/tag/v1.7.1) - 2026-10-13
 
 ### Features
