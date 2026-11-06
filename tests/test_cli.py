@@ -366,7 +366,8 @@ def test_unreachable_database_gives_readable_error(broken_db_project, capsys, cm
         command.handle(cmd, [])
     err = capsys.readouterr().err
     assert info.value.exit_code == 1
-    assert err.startswith("Error: Cannot connect to the database")
+    first_line = err.strip().splitlines()[0]
+    assert "ERROR" in first_line and "Cannot connect to the database" in first_line
     assert "Hint:" in err and "forgeapi doctor" in err
     assert "Traceback" not in err
 
@@ -384,3 +385,292 @@ def test_connect_database_chains_original_error(broken_db_project):
     with pytest.raises(ForgeAPIError) as info:
         asyncio.run(Command.connect_database(cfg))
     assert info.value.__cause__ is not None   # `from exc`: the real reason is kept
+
+
+# ── db:fresh / db:migrate --force ────────────────────────────────────────────
+
+@pytest.fixture
+def sqlite_orm(tmp_path):
+    """A SQLite file with a model-less table, a many-to-many-style table and migration history."""
+    import sqlite3
+
+    db = tmp_path / "t.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY);"
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));"
+        "CREATE TABLE post_tags (post_id INTEGER REFERENCES posts(id));"
+        "CREATE TABLE tortoise_migrations (app TEXT, name TEXT);"
+        "INSERT INTO users VALUES (1); INSERT INTO posts VALUES (1, 1); INSERT INTO post_tags VALUES (1);"
+        "INSERT INTO tortoise_migrations VALUES ('models', '0001_initial');"
+    )
+    conn.commit(); conn.close()
+    config = {
+        "connections": {"default": {"engine": "tortoise.backends.sqlite", "credentials": {"file_path": str(db)}}},
+        "apps": {"models": {"models": ["forgeapi.queue.models"], "default_connection": "default"}},
+    }
+    return db, config
+
+
+def _tables(db):
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+
+
+def test_fresh_drop_removes_every_table_and_history(sqlite_orm):
+    import asyncio
+    from forgeapi.cli.commands.fresh_cmd import FreshCommand, _DROP_SQL
+
+    db, config = sqlite_orm
+    done, failed = asyncio.run(FreshCommand()._apply(config, _DROP_SQL, include_history=True))
+    assert failed == []
+    assert set(done) == {"users", "posts", "post_tags", "tortoise_migrations"}
+    assert _tables(db) - {"sqlite_sequence"} == set()
+
+
+def test_fresh_truncate_keeps_history(sqlite_orm):
+    import asyncio
+    import sqlite3
+    from forgeapi.cli.commands.fresh_cmd import FreshCommand, _TRUNCATE_SQL
+
+    db, config = sqlite_orm
+    done, failed = asyncio.run(FreshCommand()._apply(config, _TRUNCATE_SQL, include_history=False))
+    assert failed == [] and "tortoise_migrations" not in done
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM tortoise_migrations").fetchone()[0] == 1
+    conn.close()
+
+
+def _force_project(monkeypatch, calls):
+    from forgeapi.cli.commands import db_cmd, fresh_cmd
+
+    class Cfg:
+        class database:
+            tortoise_orm = "x.TORTOISE_ORM"
+
+    monkeypatch.setattr("forgeapi.config.load_config", lambda: Cfg)
+    monkeypatch.setattr(db_cmd.DbCommand, "_find_tortoise_bin", staticmethod(lambda: "tortoise"))
+    monkeypatch.setattr(
+        fresh_cmd.FreshCommand, "drop_everything",
+        lambda self, *, assume_yes=False: calls.append(("drop", assume_yes)),
+    )
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(db_cmd.subprocess, "run", lambda command, env=None: calls.append(("run", command)) or Result)
+
+
+def test_migrate_force_drops_then_runs_migrate_without_force_flags(monkeypatch):
+    from forgeapi.cli.commands.db_cmd import DbCommand
+
+    calls = []
+    _force_project(monkeypatch, calls)
+    with pytest.raises(SystemExit) as info:
+        DbCommand().handle("db:migrate", ["--force", "-y"])
+    assert info.value.code == 0
+    assert calls == [("drop", True), ("run", ["tortoise", "-c", "x.TORTOISE_ORM", "migrate"])]
+
+
+@pytest.mark.parametrize("flag", ["--dry-run", "--fake"])
+def test_migrate_force_rejects_dry_run_and_fake(monkeypatch, flag):
+    import typer
+    from forgeapi.cli.commands.db_cmd import DbCommand
+
+    calls = []
+    _force_project(monkeypatch, calls)
+    with pytest.raises(typer.Exit):
+        DbCommand().handle("db:migrate", ["--force", flag])
+    assert calls == []   # nothing was dropped
+
+
+def test_migrate_without_force_does_not_drop(monkeypatch):
+    from forgeapi.cli.commands.db_cmd import DbCommand
+
+    calls = []
+    _force_project(monkeypatch, calls)
+    with pytest.raises(SystemExit):
+        DbCommand().handle("db:migrate", [])
+    assert [c[0] for c in calls] == ["run"]
+
+
+# ── ui ───────────────────────────────────────────────────────────────────────
+
+def test_help_lists_every_registered_group(capsys):
+    from forgeapi.cli.main import _COMMAND_GROUPS, _show_help
+
+    _show_help()
+    out = capsys.readouterr().out
+    assert "ForgeAPI" in out
+    assert "███████╗" in out                      # the big logo lives only in the command list
+    for _, rows in _COMMAND_GROUPS:
+        for usage, _ in rows:
+            assert usage.split(" ")[0] in out
+    assert "db:migrate" in out and "--force" in out
+    assert "\x1b[" not in out                    # no colour codes when not a terminal
+
+
+def test_help_commands_all_resolve_to_a_command():
+    from forgeapi.cli.main import _COMMAND_GROUPS, _registry
+
+    for _, rows in _COMMAND_GROUPS:
+        for usage, _ in rows:
+            assert _registry.find(usage.split(" ")[0]) is not None, usage
+
+
+def test_unknown_command_is_an_error(capsys):
+    import typer
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    result = CliRunner().invoke(app, ["nope"])
+    assert result.exit_code == 1
+    assert "not defined" in result.output
+
+
+def test_ui_leader_fills_width(capsys):
+    from forgeapi.cli import ui
+
+    ui.leader("users", "DONE")
+    line = capsys.readouterr().out.rstrip()
+    assert line.startswith("  users ...") and line.endswith("DONE")
+    assert len(line) <= ui.console.width
+
+
+def test_runserver_shows_url_without_logo(monkeypatch, capsys):
+    import sys
+    import types
+    from forgeapi.cli.commands.runserver_cmd import RunserverCommand
+
+    started = {}
+    fake = types.SimpleNamespace(run=lambda app, **kw: started.update(app=app, **kw))
+    monkeypatch.setitem(sys.modules, "uvicorn", fake)
+    RunserverCommand().handle("runserver", ["--port", "9000", "--reload"])
+    out = capsys.readouterr().out
+    assert "███████╗" not in out
+    assert "http://127.0.0.1:9000" in out
+    assert started == {"app": "main:app", "host": "127.0.0.1", "port": 9000, "reload": True}
+
+
+# ── help texts and bare group commands ───────────────────────────────────────
+
+@pytest.mark.parametrize("group", ["db", "schedule", "queue", "mcp", "make"])
+def test_bare_group_command_shows_styled_help(group, capsys):
+    from forgeapi.cli.main import _registry
+
+    _registry.find(group).handle(group, [])
+    out = capsys.readouterr().out
+    assert " Usage:" in out
+    assert "Traceback" not in out and "ERROR" not in out
+
+
+def test_help_renderer_keeps_text_and_adds_no_codes_off_tty(capsys):
+    from forgeapi.cli import ui
+
+    ui.render_help("Usage: forgeapi x <a>\n\nOptions:\n  --go   Do it   # note\n\nExamples:\n  forgeapi x 1\n")
+    out = capsys.readouterr().out
+    assert "Usage: forgeapi x <a>" in out and "--go" in out and "Do it" in out and "forgeapi x 1" in out
+    assert "\x1b[" not in out
+
+
+def test_help_renderer_styles_by_role():
+    from forgeapi.cli.ui import _help_line
+
+    assert _help_line("Usage: forgeapi db:<sub>").plain == " Usage: forgeapi db:<sub>"
+    heading = _help_line("Options:")
+    assert heading.plain == " Options:" and heading.style == "bold yellow"
+    row = _help_line("  --force   Drop it")
+    assert [s.style for s in row.spans] == ["green"] and row.plain[row.spans[0].start:row.spans[0].end] == "--force"
+    example = _help_line("  forgeapi make:job X   # → file")
+    assert [s.style for s in example.spans] == ["green", "dim"]
+
+
+def test_mcp_status_renders_connected_line(monkeypatch, capsys):
+    import subprocess
+    import types
+    from forgeapi.cli.commands import mcp_cmd
+
+    monkeypatch.setattr(mcp_cmd.shutil, "which", lambda name: "/bin/claude")
+    out_text = "Checking...\nforge-kits: /x/y/forgeapi-mcp  - ✔ Connected\nother: foo - ✗ Failed to connect\n"
+    monkeypatch.setattr(
+        mcp_cmd.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(stdout=out_text, returncode=0),
+    )
+    mcp_cmd.McpCommand()._status(__import__("typer"))
+    out = capsys.readouterr().out
+    assert "forge-kits ..." in out and "CONNECTED" in out
+    assert "/x/y/forgeapi-mcp" in out
+    assert "other" not in out        # only the forge-kits server is reported
+
+
+# ── project guard: file-writing commands never guess a location ──────────────
+
+def test_find_project_root_walks_up(tmp_path):
+    from forgeapi.support.project import find_project_root
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "project.py").write_text("config = {}\n")
+    deep = tmp_path / "app" / "x"
+    deep.mkdir(parents=True)
+    assert find_project_root(deep) == tmp_path.resolve()
+    assert find_project_root(tmp_path) == tmp_path.resolve()
+
+
+def test_find_project_root_ignores_unrelated_config_dir(tmp_path):
+    from forgeapi.support.project import find_project_root
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.ini").write_text("x")
+    assert find_project_root(tmp_path) is None
+
+
+def test_make_outside_project_writes_nothing(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["make:job", "SendX"])
+    assert result.exit_code == 1
+    assert "No ForgeAPI project found" in result.output and "forgeapi init" in result.output
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_make_in_project_subdirectory_uses_project_root(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "project.py").write_text("config = {}\n")
+    sub = tmp_path / "app" / "deep"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    result = CliRunner().invoke(app, ["make:job", "Deep"])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "app" / "jobs" / "deep.py").exists()
+    assert list(sub.iterdir()) == []                 # nothing created next to the caller
+
+
+@pytest.mark.parametrize("args", [["make"], ["db"], ["queue"], ["make:job", "-h"], ["mcp"]])
+def test_commands_that_need_no_project_run_anywhere(tmp_path, monkeypatch, args):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, args)
+    assert "No ForgeAPI project found" not in result.output
+    assert result.exit_code == 0, result.output
+
+
+def test_doctor_is_not_blocked_outside_a_project(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["doctor", "--no-db"])
+    assert "No ForgeAPI project found" not in result.output
+    assert "config/ directory not found" in result.output     # it reports the problem instead
