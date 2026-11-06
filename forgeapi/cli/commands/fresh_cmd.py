@@ -7,10 +7,40 @@ from pathlib import Path
 
 import typer
 
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 from forgeapi.config import load_config
 
-_SKIP_TABLES = {"aerich"}
+# Applied-migrations bookkeeping (tortoise.migrations.recorder.MigrationRecorder). Dropping it
+# along with the data tables is what makes a later db:migrate start from the first migration;
+# truncating must leave it alone or the applied state would be lost.
+_HISTORY_TABLES = {"tortoise_migrations", "aerich"}
+
+_LIST_TABLES_SQL = {
+    "sqlite": (
+        "SELECT '' AS schema_name, name AS table_name FROM sqlite_master "
+        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ),
+    "mysql": (
+        "SELECT '' AS schema_name, table_name AS table_name FROM information_schema.tables "
+        "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'"
+    ),
+    "postgres": (
+        "SELECT schemaname AS schema_name, tablename AS table_name FROM pg_tables "
+        "WHERE schemaname = current_schema()"
+    ),
+}
+
+_DROP_SQL = {
+    "postgres": "DROP TABLE IF EXISTS {ref} CASCADE",
+    "mysql": "DROP TABLE IF EXISTS {ref}",
+    "sqlite": "DROP TABLE IF EXISTS {ref}",
+}
+_TRUNCATE_SQL = {
+    "postgres": "TRUNCATE TABLE {ref} RESTART IDENTITY CASCADE",
+    "mysql": "TRUNCATE TABLE {ref}",
+    "sqlite": "DELETE FROM {ref}",
+}
 
 
 class FreshCommand(Command):
@@ -18,6 +48,18 @@ class FreshCommand(Command):
 
     def handle(self, cmd: str, args: list[str]) -> None:
         force = "--force" in args
+        if force:
+            self.drop_everything(assume_yes=_wants_yes(args))
+            ui.info("Run `forgeapi db:migrate` to recreate the tables.")
+            return
+
+        user_config = self.load_orm_config()
+        if not _wants_yes(args):
+            typer.confirm("This will TRUNCATE every table in the database (data only). Continue?", abort=True)
+        done, failed = asyncio.run(self._apply(user_config, _TRUNCATE_SQL, include_history=False))
+        self._report("Truncated", done, failed)
+
+    def load_orm_config(self) -> dict:
         cfg = load_config()
         orm_path = cfg.database.tortoise_orm
 
@@ -28,26 +70,34 @@ class FreshCommand(Command):
         module_path, var_name = orm_path.rsplit(".", 1)
         try:
             mod = importlib.import_module(module_path)
-            user_config: dict = getattr(mod, var_name)
+            return getattr(mod, var_name)
         except (ImportError, AttributeError) as exc:
             self.abort(f"cannot import {orm_path}: {exc}")
 
-        if force:
-            typer.echo(
-                "WARNING: --force will DROP all tables (structure + data).\n"
-                "You will need to run migrations again before the app can start.",
-            )
-            typer.confirm("This will DROP all tables. Continue?", abort=True)
-            tables = asyncio.run(self._drop_all(user_config))
-            for table in tables:
-                typer.echo(f"  dropped: {table}")
-            typer.echo(f"\nDone — {len(tables)} table(s) dropped.")
+    def drop_everything(self, *, assume_yes: bool = False) -> None:
+        """Drop every model table and the migration history. Asks first unless *assume_yes*."""
+        user_config = self.load_orm_config()
+        ui.warn("This will DROP every table in the database (structure + data) and the migration history.")
+        if not assume_yes:
+            typer.confirm("Continue?", abort=True)
+        done, failed = asyncio.run(self._apply(user_config, _DROP_SQL, include_history=True))
+        self._report("Dropped", done, failed)
+        if failed:
+            self.abort("not every table could be dropped — fix the errors above and re-run.")
+
+    @staticmethod
+    def _report(verb: str, done: list[str], failed: list[tuple[str, str]]) -> None:
+        ui.blank()
+        for label in done:
+            ui.leader(label, "DONE")
+        for label, reason in failed:
+            ui.leader(label, "FAIL", kind="error")
+            ui.console.print(f"    {reason}", style="dim")
+        ui.blank()
+        if failed:
+            ui.warn(f"{verb} {len(done)} table(s), {len(failed)} failed.")
         else:
-            typer.confirm("This will TRUNCATE all tables (data only). Continue?", abort=True)
-            tables = asyncio.run(self._truncate_all(user_config))
-            for table in tables:
-                typer.echo(f"  truncated: {table}")
-            typer.echo(f"\nDone — {len(tables)} table(s) cleared.")
+            ui.success(f"{verb} {len(done)} table(s).")
 
     @staticmethod
     def _detect_engine(config: dict) -> str:
@@ -67,103 +117,70 @@ class FreshCommand(Command):
         return "postgres"
 
     @staticmethod
-    def _sql_ref(model, engine: str = "postgres") -> str:
-        schema = getattr(model._meta, "schema", None)
-        table = model._meta.db_table
-        if engine == "mysql":
-            return f"`{table}`"
-        return f'"{schema}"."{table}"' if schema else f'"{table}"'
+    def _quote(name: str, engine: str) -> str:
+        return f"`{name}`" if engine == "mysql" else f'"{name}"'
 
-    @staticmethod
-    def _label(model) -> str:
-        schema = getattr(model._meta, "schema", None)
-        table = model._meta.db_table
-        return f"{schema}.{table}" if schema else table
+    async def _list_tables(self, conn, engine: str) -> list[tuple[str, str]]:
+        """Every base table the connection can see, as ``(schema, table)``.
 
-    async def _drop_all(self, config: dict) -> list[str]:
+        Asks the database rather than the models: many-to-many through tables and tables that
+        belong to no model would otherwise survive and break the next ``db:migrate``.
+        """
+        _, rows = await conn.execute_query(_LIST_TABLES_SQL[engine])
+        return [(row["schema_name"], row["table_name"]) for row in rows]
+
+    async def _apply(
+        self,
+        config: dict,
+        templates: dict[str, str],
+        *,
+        include_history: bool,
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        """Run ``templates[engine]`` for every table in the database.
+
+        The migration history table is skipped unless *include_history*. Returns
+        ``(done, failed)`` — *failed* holds ``(table, reason)`` so a statement that did not go
+        through is reported instead of silently leaving the table behind.
+        """
         from tortoise import Tortoise
 
         await Tortoise.init(config=config)
         conn = Tortoise.get_connection("default")
         engine = self._detect_engine(config)
+        template = templates[engine]
 
-        model_list = [
-            model
-            for app_models in Tortoise.apps.values()
-            for model in app_models.values()
-            if model._meta.db_table not in _SKIP_TABLES
-        ]
+        targets = []
+        for schema, table in await self._list_tables(conn, engine):
+            if table in _HISTORY_TABLES and not include_history:
+                continue
+            ref = self._quote(table, engine)
+            if schema:
+                ref = f"{self._quote(schema, engine)}.{ref}"
+            targets.append((f"{schema}.{table}" if schema else table, ref))
 
-        dropped = []
-        if engine == "mysql":
-            await conn.execute_query("SET FOREIGN_KEY_CHECKS = 0")
-            for model in model_list:
+        # Children and parents are removed in arbitrary order: let the engine skip FK checks.
+        guard_off, guard_on = {
+            "mysql": ("SET FOREIGN_KEY_CHECKS = 0", "SET FOREIGN_KEY_CHECKS = 1"),
+            "sqlite": ("PRAGMA foreign_keys = OFF", "PRAGMA foreign_keys = ON"),
+        }.get(engine, (None, None))
+
+        done: list[str] = []
+        failed: list[tuple[str, str]] = []
+        try:
+            if guard_off:
+                await conn.execute_query(guard_off)
+            for label, ref in targets:
                 try:
-                    await conn.execute_query(f"DROP TABLE IF EXISTS {self._sql_ref(model, engine)}")
-                    dropped.append(self._label(model))
-                except Exception:
-                    pass
-            await conn.execute_query("SET FOREIGN_KEY_CHECKS = 1")
-        elif engine == "sqlite":
-            for model in model_list:
-                try:
-                    await conn.execute_query(f"DROP TABLE IF EXISTS {self._sql_ref(model, engine)}")
-                    dropped.append(self._label(model))
-                except Exception:
-                    pass
-        else:
-            for model in model_list:
-                try:
-                    await conn.execute_query(
-                        f"DROP TABLE IF EXISTS {self._sql_ref(model, engine)} CASCADE"
-                    )
-                    dropped.append(self._label(model))
-                except Exception:
-                    pass
+                    await conn.execute_query(template.format(ref=ref))
+                    done.append(label)
+                except Exception as exc:
+                    failed.append((label, str(exc)))
+            if guard_on:
+                await conn.execute_query(guard_on)
+        finally:
+            await Tortoise.close_connections()
+        return done, failed
 
-        await Tortoise.close_connections()
-        return dropped
 
-    async def _truncate_all(self, config: dict) -> list[str]:
-        from tortoise import Tortoise
-
-        await Tortoise.init(config=config)
-        conn = Tortoise.get_connection("default")
-        engine = self._detect_engine(config)
-
-        model_list = [
-            model
-            for app_models in Tortoise.apps.values()
-            for model in app_models.values()
-            if model._meta.db_table not in _SKIP_TABLES
-        ]
-
-        truncated = []
-        if engine == "mysql":
-            await conn.execute_query("SET FOREIGN_KEY_CHECKS = 0")
-            for model in model_list:
-                try:
-                    await conn.execute_query(f"TRUNCATE TABLE {self._sql_ref(model, engine)}")
-                    truncated.append(self._label(model))
-                except Exception:
-                    pass
-            await conn.execute_query("SET FOREIGN_KEY_CHECKS = 1")
-        elif engine == "sqlite":
-            for model in model_list:
-                try:
-                    await conn.execute_query(f"DELETE FROM {self._sql_ref(model, engine)}")
-                    truncated.append(self._label(model))
-                except Exception:
-                    pass
-        else:
-            for model in model_list:
-                try:
-                    await conn.execute_query(
-                        f"TRUNCATE TABLE {self._sql_ref(model, engine)} RESTART IDENTITY CASCADE"
-                    )
-                    truncated.append(self._label(model))
-                except Exception:
-                    pass
-
-        await Tortoise.close_connections()
-        return truncated
+def _wants_yes(args: list[str]) -> bool:
+    return "--yes" in args or "-y" in args

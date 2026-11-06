@@ -2161,6 +2161,7 @@ forgeapi db:init
 forgeapi db:makemigrations
 forgeapi db:makemigrations -n add_email_field
 forgeapi db:migrate
+forgeapi db:migrate --force   # DROP every table + migration history, then migrate from scratch (asks confirmation, -y skips)
 forgeapi db:downgrade
 forgeapi db:history
 forgeapi db:seed

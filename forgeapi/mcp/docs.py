@@ -931,7 +931,12 @@ forgeapi db:seed User Post    # run specific seeders by class name
 ```bash
 forgeapi db:fresh             # TRUNCATE all tables — asks for confirmation
 forgeapi db:fresh --force     # DROP all tables including structure — irreversible
+forgeapi db:migrate --force   # DROP every table + migration history, then run all migrations again
+forgeapi db:migrate --force -y   # same, without the confirmation prompt
 ```
+`db:migrate --force` wipes EVERY table in the database (not only the models' tables) and the
+migration history, so the migrations replay from the first one. It cannot be combined with
+`--dry-run` or `--fake`.
 
 ## Inspection
 ```bash

@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 
 
@@ -14,6 +15,7 @@ _DB_SUBCOMMANDS = ("init", "makemigrations", "migrate", "downgrade", "history", 
 
 class DbCommand(Command):
     name = "db"
+    is_group = True
     help_text = """\
 Usage: forgeapi db:<subcommand>
 
@@ -22,6 +24,8 @@ Migration and seed commands.
   db:init              Init tortoise migration config
   db:makemigrations    Generate migration from model changes
   db:migrate           Apply pending migrations
+    --force            DROP every table + the migration history, then migrate from scratch
+    --yes, -y          Skip the confirmation prompt (with --force)
   db:downgrade <app> <migration>   Roll back to a specific migration (use db:history to list names)
     --fake             Record rollback without executing SQL
     --dry-run          Show SQL without applying changes
@@ -38,6 +42,7 @@ Examples:
   forgeapi db:init
   forgeapi db:makemigrations -n add_email
   forgeapi db:migrate
+  forgeapi db:migrate --force
   forgeapi db:downgrade models 0001_init
   forgeapi db:downgrade models 0001_init --dry-run
   forgeapi db:seed
@@ -46,6 +51,10 @@ Examples:
 
     def handle(self, cmd: str, args: list[str]) -> None:
         from forgeapi.config import load_config
+
+        if ":" not in cmd:
+            self.show_help(cmd)
+            return
 
         subcmd = cmd.split(":", 1)[1]
 
@@ -72,6 +81,15 @@ Examples:
         tortoise_bin = self._find_tortoise_bin()
         if tortoise_bin is None:
             self.abort("tortoise binary not found. Install tortoise-orm.")
+
+        if subcmd == "migrate" and "--force" in args:
+            if "--dry-run" in args or "--fake" in args:
+                self.abort("--force cannot be combined with --dry-run or --fake: it really drops the tables.")
+            from .fresh_cmd import FreshCommand
+
+            FreshCommand().drop_everything(assume_yes="--yes" in args or "-y" in args)
+            args = [a for a in args if a not in ("--force", "--yes", "-y")]
+            ui.info("Running migrations.")
 
         command = [tortoise_bin, "-c", orm_path, subcmd] + args
         env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
