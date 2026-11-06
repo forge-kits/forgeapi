@@ -13,6 +13,7 @@ from forgeapi.exceptions import ForgeAPIError
 
 class ScheduleCommand(Command):
     name = "schedule"
+    is_group = True
     help_text = """\
 Usage: forgeapi schedule:<subcommand>
 
@@ -39,6 +40,9 @@ Examples:
 
     def handle(self, cmd: str, args: list[str]) -> None:
         subcmd = cmd.split(":", 1)[1] if ":" in cmd else ""
+        if not subcmd:
+            self.show_help(cmd)
+            return
 
         try:
             if subcmd == "run":
@@ -59,7 +63,7 @@ Examples:
     # ── Subcommand handlers ─────────────────────────────────────────────────────
 
     async def _run(self, task_name: str | None) -> None:
-        import typer
+        from forgeapi.cli import ui
 
         scheduler, cfg = self._load()
         await self._connect_db(cfg)
@@ -68,34 +72,36 @@ Examples:
             await scheduler.sync()
 
             if task_name:
-                typer.echo(f"Running '{task_name}'...")
                 try:
-                    await scheduler.run_one(task_name)
-                    typer.echo("Done.")
+                    with ui.task(task_name):
+                        await scheduler.run_one(task_name)
                 except ValueError as exc:
                     self.abort(str(exc))
             else:
                 count = await scheduler.run_due()
-                typer.echo(f"Ran {count} due task(s).")
+                ui.success(f"Ran {count} due task(s).")
         finally:
             await self._disconnect_db()
 
     async def _work(self) -> None:
-        import typer
+        from forgeapi.cli import ui
 
         scheduler, cfg = self._load()
         await self._connect_db(cfg)
 
-        typer.echo(f"Scheduler running ({len(scheduler._jobs)} job(s)). Press Ctrl+C to stop.")
+        ui.info(f"Scheduler running ({len(scheduler._jobs)} job(s)). Press Ctrl+C to stop.")
         try:
             await scheduler.run()
         except KeyboardInterrupt:
-            typer.echo("\nStopped.")
+            ui.blank()
+            ui.info("Scheduler stopped.")
         finally:
             await self._disconnect_db()
 
     async def _list(self) -> None:
-        import typer
+        from rich.text import Text
+
+        from forgeapi.cli import ui
 
         scheduler, cfg = self._load()
         await self._connect_db(cfg)
@@ -108,48 +114,41 @@ Examples:
             registry = scheduler.registry
 
             if not records:
-                typer.echo("No scheduled tasks found.")
+                ui.info("No scheduled tasks found.")
                 return
 
-            col_name   = max(len(r.name) for r in records)
-            col_name   = max(col_name, 4)
-            col_sched  = max(
-                [8] + [len(self._describe_schedule(registry[r.name])) for r in records if r.name in registry]
-            )
+            from forgeapi.support.clock import naive_wall
 
-            typer.echo("")
-            typer.echo(
-                f"  {'NAME':<{col_name}}  {'SCHEDULE':<{col_sched}}  {'LAST RUN':<32}  {'NEXT RUN':<32}  STATUS"
-            )
-            typer.echo("  " + "-" * (col_name + col_sched + 32 + 32 + 14))
-
+            now = scheduler.now()
+            narrow = ui.console.width < 100
+            rows = []
             for record in records:
                 job = registry.get(record.name)
-                schedule_str = self._describe_schedule(job) if job else "—"
-                from forgeapi.support.clock import naive_wall
-
-                now = scheduler.now()
                 last_at = naive_wall(record.last_run_at) if record.last_run_at else None
                 next_at = naive_wall(record.next_run_at) if record.next_run_at else None
-                last_run = (
-                    f"{last_at:%Y-%m-%d %H:%M:%S} ({self._humanize(now - last_at)})"
-                    if last_at else "never"
-                )
-                next_run = (
-                    f"{next_at:%Y-%m-%d %H:%M:%S} ({self._humanize(next_at - now, future=True)})"
-                    if next_at else "—"
-                )
+                last_run = self._when(last_at, now, narrow, future=False) if last_at else "never"
+                next_run = self._when(next_at, now, narrow, future=True) if next_at else "—"
                 status = record.last_status or "—"
-
-                typer.echo(
-                    f"  {record.name:<{col_name}}  {schedule_str:<{col_sched}}  {last_run:<32}  {next_run:<32}  {status}"
-                )
-
-            typer.echo("")
+                status_style = {"success": "green", "failed": "bold red"}.get(status, "dim")
+                rows.append([
+                    Text(record.name, style="green"),
+                    self._describe_schedule(job) if job else "—",
+                    last_run,
+                    next_run,
+                    Text(status, style=status_style),
+                ])
+            ui.blank()
+            ui.table(["NAME", "SCHEDULE", "LAST RUN", "NEXT RUN", "STATUS"], rows)
+            ui.blank()
         finally:
             await self._disconnect_db()
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
+
+    def _when(self, at: datetime, now: datetime, narrow: bool, *, future: bool) -> str:
+        """Relative time, plus the clock time when the terminal is wide enough for it."""
+        relative = self._humanize(at - now if future else now - at, future=future)
+        return relative if narrow else f"{at:%m-%d %H:%M} ({relative})"
 
     @staticmethod
     def _humanize(delta: timedelta, future: bool = False) -> str:

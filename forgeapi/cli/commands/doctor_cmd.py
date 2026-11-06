@@ -7,6 +7,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -27,6 +28,7 @@ _FEATURE_MODELS = {
 
 class DoctorCommand(Command):
     name = "doctor"
+    requires_project = False
     help_text = """\
 Usage: forgeapi doctor [--no-db]
 
@@ -70,17 +72,19 @@ Exit code is 1 when any check fails (warnings do not fail).
             if tortoise_config is not None and "--no-db" not in args:
                 asyncio.run(self._check_database(tortoise_config))
 
-        icons = {OK: "ok  ", WARN: "warn", FAIL: "FAIL"}
-        typer.echo("")
+        ui.blank()
         for level, title, hint in self.results:
-            typer.echo(f"  [{icons[level]}] {title}")
-            if hint and level != OK:
-                typer.echo(f"         -> {hint}")
+            ui.check(level, title, hint)
         fails = sum(1 for r in self.results if r[0] == FAIL)
         warns = sum(1 for r in self.results if r[0] == WARN)
-        typer.echo(f"\n  {len(self.results) - fails - warns} ok, {warns} warning(s), {fails} failed\n")
+        summary = f"{len(self.results) - fails - warns} ok, {warns} warning(s), {fails} failed"
+        ui.blank()
         if fails:
+            ui.error(summary)
+            ui.blank()
             raise typer.Exit(code=1)
+        (ui.warn if warns else ui.success)(summary)
+        ui.blank()
 
     # ── checks ──────────────────────────────────────────────────────────────────
 

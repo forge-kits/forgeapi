@@ -5,6 +5,7 @@ from pathlib import Path
 
 import typer
 
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 
 
@@ -26,8 +27,9 @@ _MAKE_KINDS = ("controller", "model", "schema", "seed", "job", "policy", "observ
 
 class MakeCommand(Command):
     name = "make"
+    is_group = True
     help_text = """\
-make: commands
+Usage: forgeapi make:<command> <Name> [flags]
 
   make:controller <Name>   Generate controller  (-m -s)
   make:model <Name>        Generate model       (-c -s)
@@ -157,12 +159,12 @@ Example:
 
     def show_help(self, cmd: str = "") -> None:
         kind = cmd.split(":", 1)[1] if ":" in cmd else ""
-        typer.echo(self._KIND_HELP.get(kind, self.help_text))
+        ui.render_help(self._KIND_HELP.get(kind, self.help_text))
 
     def handle(self, cmd: str, args: list[str]) -> None:
         # cmd = "make" → show group help; "make:controller" → kind = "controller"
         if ":" not in cmd:
-            typer.echo(self.help_text)
+            ui.render_help(self.help_text)
             return
 
         kind = cmd.split(":", 1)[1]
@@ -222,12 +224,12 @@ Example:
 
         if kind == "seed":
             self._gen_seed(class_name, module_name, st)
-            typer.echo("Done.")
+            ui.success("Done.")
             return
 
         if kind in ("job", "policy", "observer", "provider"):
             self._gen_simple(kind, class_name, st)
-            typer.echo("Done.")
+            ui.success("Done.")
             return
 
         gen_model      = (kind == "model")      or flags.get("model",      False)
@@ -265,7 +267,7 @@ Example:
                 namespace=namespace,
             )
 
-        typer.echo("Done.")
+        ui.success("Done.")
 
     # ── Generators ─────────────────────────────────────────────────────────────
 
@@ -277,17 +279,17 @@ Example:
         append_mode   = bool(existing_text.strip())
 
         if append_mode and f"class {class_name}(Model):" in existing_text:
-            typer.echo(f"  exists   {file_path} (class {class_name} already defined)")
+            ui.file_event("exists", str(file_path), f"(class {class_name} already defined)")
         elif append_mode:
             chunk = self._render("model.py.jinja2", class_name=class_name, table_name=plural, append=True)
             with open(file_path, "a", encoding="utf-8", newline="") as f:
                 f.write("\n\n" + chunk)
-            typer.echo(f"  updated  {file_path}")
+            ui.file_event("updated", str(file_path))
         else:
             content = self._render("model.py.jinja2", class_name=class_name, table_name=plural, append=False)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            typer.echo(f"  created  {file_path}")
+            ui.file_event("created", str(file_path))
 
         init_file   = Path(st.models_dir) / "__init__.py"
         import_line = f"from .{file_name} import {class_name}\n"
@@ -295,7 +297,7 @@ Example:
         if import_line not in existing:
             with open(init_file, "a", encoding="utf-8", newline="") as f:
                 f.write(import_line)
-            typer.echo(f"  updated  {init_file}")
+            ui.file_event("updated", str(init_file))
 
     def _gen_schema(self, class_name: str, module_name: str, st) -> None:
         content = self._render("schema.py.jinja2", class_name=class_name)
@@ -367,11 +369,12 @@ Example:
         created = self._write(Path(directory) / file_name, self._render(f"{kind}.py.jinja2", **context))
 
         if created and kind == "provider":
-            typer.echo(f'  next     add "{context["dotted_path"]}" to "providers" in config/project.py')
+            ui.file_event("next", f'add "{context["dotted_path"]}" to "providers" in config/project.py')
         if created and kind == "observer":
-            typer.echo(
-                f"  next     {class_name}.observe({class_name}Observer) at startup (main.py or a Provider); "
-                f"{class_name} must use ModelMixin"
+            ui.file_event(
+                "next",
+                f"{class_name}.observe({class_name}Observer) at startup (main.py or a Provider); "
+                f"{class_name} must use ModelMixin",
             )
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -443,11 +446,11 @@ Example:
     @staticmethod
     def _write(path: Path, content: str) -> bool:
         if path.exists():
-            typer.echo(f"  exists   {path}")
+            ui.file_event("exists", str(path))
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        typer.echo(f"  created  {path}")
+        ui.file_event("created", str(path))
         return True
 
     @staticmethod
@@ -456,4 +459,4 @@ Example:
         if not init.exists():
             directory.mkdir(parents=True, exist_ok=True)
             init.touch()
-            typer.echo(f"  created  {init}")
+            ui.file_event("created", str(init))

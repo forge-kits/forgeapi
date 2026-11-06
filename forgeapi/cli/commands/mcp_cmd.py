@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from rich.text import Text
+
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 
 
 class McpCommand(Command):
     name = "mcp:install"
-    aliases = ("mcp:remove", "mcp:status", "mcp:debug")
+    requires_project = False
+    is_group = True
+    aliases = ("mcp", "mcp:remove", "mcp:status", "mcp:debug")
     help_text = """\
 Usage:
   forgeapi mcp:install [--global] [--project]
@@ -38,6 +44,10 @@ Examples:
     def handle(self, cmd: str, args: list[str]) -> None:
         import typer
 
+        if cmd == "mcp":
+            self.show_help(cmd)
+            return
+
         is_global = "--global" in args or "-g" in args
         is_project = "--project" in args or "-p" in args
 
@@ -63,22 +73,12 @@ Examples:
             return "user"
         if is_project:
             return "project"
-        typer.echo("")
-        typer.echo("Install scope:")
-        typer.echo("  1. local    — this machine only (default)")
-        typer.echo("  2. user     — all projects on this machine (--global)")
-        typer.echo("  3. project  — .mcp.json committed to git (--project)")
-        typer.echo("")
-        choices = {
-            "1": "local", "2": "user", "3": "project",
-            "local": "local", "user": "user", "project": "project",
-        }
-        while True:
-            raw = typer.prompt("Choose [1/2/3]", default="1")
-            scope = choices.get(raw.strip().lower())
-            if scope:
-                return scope
-            typer.echo("  Invalid choice. Enter 1, 2, or 3.", err=True)
+        ui.blank()
+        return ui.choose("Install scope", [
+            ("local", "local", "this machine only (default)"),
+            ("user", "user", "all projects on this machine (--global)"),
+            ("project", "project", ".mcp.json committed to git (--project)"),
+        ])
 
     def _install(self, scope: str, typer) -> None:
         mcp_bin = self._find_mcp_bin(typer)
@@ -86,11 +86,12 @@ Examples:
             ["mcp", "add", "--scope", scope, "forge-kits", mcp_bin],
             typer,
         )
+        ui.success(f"forge-kits MCP server installed (scope: {scope}).")
 
     def _status(self, typer) -> None:
         claude_bin = shutil.which("claude")
         if not claude_bin:
-            typer.echo("  Error: claude CLI not found in PATH.", err=True)
+            ui.error("claude CLI not found in PATH.")
             raise typer.Exit(code=1)
 
         result = subprocess.run(
@@ -102,11 +103,26 @@ Examples:
         forge_lines = [l for l in lines if "forge-kits" in l]
 
         if forge_lines:
+            ui.blank()
             for l in forge_lines:
-                typer.echo(l)
+                self._print_status(l)
+            ui.blank()
         else:
-            typer.echo("  forge-kits: not installed")
-            typer.echo("  Run: forgeapi mcp:install")
+            ui.warn("forge-kits is not installed.")
+            ui.console.print(Text("  Run: forgeapi mcp:install", style="dim"))
+
+    @staticmethod
+    def _print_status(line: str) -> None:
+        """``forge-kits: /path/forgeapi-mcp  - ✔ Connected`` -> dotted line + dimmed path."""
+        match = re.match(r"^(?P<name>[^:]+):\s*(?P<target>.*?)\s+-\s+(?P<status>.*)$", line.strip())
+        if not match:
+            ui.console.print(Text("  " + line.strip()), soft_wrap=True)
+            return
+        status = match["status"].lstrip("✔✓✗✘!⚠ ").strip() or match["status"]
+        lowered = status.lower()
+        kind = "done" if lowered.startswith("connected") else "error" if "fail" in lowered else "warn"
+        ui.leader(match["name"], status.upper(), kind=kind)
+        ui.indented(match["target"], wrap=False)
 
     @staticmethod
     def _debug(args: list[str], typer) -> None:
@@ -150,6 +166,7 @@ Examples:
             ["mcp", "remove", "--scope", scope, "forge-kits"],
             typer,
         )
+        ui.success(f"forge-kits MCP server removed (scope: {scope}).")
 
     # ------------------------------------------------------------------
 
@@ -164,10 +181,9 @@ Examples:
             if candidate.exists():
                 return str(candidate)
 
-        typer.echo(
-            "  Warning: forgeapi-mcp not found in PATH or venv. "
-            "Run: pip install forge-kits[mcp]",
-            err=True,
+        ui.warn(
+            "forgeapi-mcp not found in PATH or venv. Run: pip install forge-kits[mcp]",
+            stderr=True,
         )
         return "forgeapi-mcp"
 
@@ -175,10 +191,9 @@ Examples:
     def _run_claude(cmd_args: list[str], typer) -> None:
         claude_bin = shutil.which("claude")
         if not claude_bin:
-            typer.echo(
-                "  Error: claude CLI not found in PATH. "
-                "Install Claude Code: https://claude.ai/download",
-                err=True,
+            ui.error(
+                "claude CLI not found in PATH.",
+                hint="Install Claude Code: https://claude.ai/download",
             )
             raise typer.Exit(code=1)
 

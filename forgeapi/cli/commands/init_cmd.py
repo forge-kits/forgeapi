@@ -3,6 +3,9 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 
+from rich.text import Text
+
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 
 
@@ -303,6 +306,7 @@ __all__ = ["Controller", "route"]
 
 class InitCommand(Command):
     name = "init"
+    requires_project = False
     help_text = """\
 Usage: forgeapi init <project-name>
 
@@ -327,10 +331,25 @@ Creates:
         if root.exists():
             self.abort(f"directory '{name}' already exists.")
 
-        strategy = self._prompt_strategy(typer)
-        driver = self._prompt_driver(typer)
+        ui.blank()
+        ui.console.print(Text.assemble("  ", ("ForgeAPI", ui.BRAND), f" {ui.package_version()}  ", ("new project", "dim")))
+        ui.blank()
 
-        typer.echo("")
+        strategy = ui.choose("Auth strategy", [
+            ("cookie", "cookie", "Cookie session (HMAC-signed, httpOnly)"),
+            ("telegram", "telegram", "Telegram Mini App (initData validation)"),
+        ])
+        ui.blank()
+        driver = ui.choose("Database driver", [
+            ("asyncpg", "asyncpg", "PostgreSQL (recommended)"),
+            ("aiosqlite", "aiosqlite", "SQLite (local dev / testing)"),
+            ("aiomysql", "aiomysql", "MySQL / MariaDB"),
+        ])
+
+        ui.blank()
+        ui.info(f"Creating project [{name}].")
+        ui.summary([("Auth", strategy), ("Database", driver)])
+        ui.blank()
         root.mkdir()
 
         for d in ["app/controllers", "app/schemas", "app/listeners", "app/policies",
@@ -368,46 +387,16 @@ Creates:
         self._write(root / "main.py", _MAIN_TEMPLATE.format(name=name), typer)
         self._write(root / "schedule.py", _SCHEDULE_TEMPLATE, typer)
 
-        typer.echo("\nDone. Next:")
-        typer.echo(f"  cd {name}")
-        typer.echo("  forgeapi make:controller User --ms")
-        typer.echo("  forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate")
-        typer.echo("  forgeapi runserver --reload")
-
-    def _prompt_strategy(self, typer) -> str:
-        typer.echo("")
-        typer.echo("Auth strategy:")
-        typer.echo("  1. cookie    — Cookie session (HMAC-signed, httpOnly)")
-        typer.echo("  2. telegram  — Telegram Mini App (initData validation)")
-        typer.echo("")
-        choices = {
-            "1": "cookie", "2": "telegram",
-            "cookie": "cookie", "telegram": "telegram",
-        }
-        while True:
-            raw = typer.prompt("Choose [1/2]", default="1")
-            strategy = choices.get(raw.strip().lower())
-            if strategy:
-                return strategy
-            typer.echo("  Invalid choice. Enter 1 or 2.", err=True)
-
-    def _prompt_driver(self, typer) -> str:
-        typer.echo("")
-        typer.echo("Database driver:")
-        typer.echo("  1. asyncpg   — PostgreSQL (recommended)")
-        typer.echo("  2. aiosqlite — SQLite (local dev / testing)")
-        typer.echo("  3. aiomysql  — MySQL / MariaDB")
-        typer.echo("")
-        choices = {
-            "1": "asyncpg", "2": "aiosqlite", "3": "aiomysql",
-            "asyncpg": "asyncpg", "aiosqlite": "aiosqlite", "aiomysql": "aiomysql",
-        }
-        while True:
-            raw = typer.prompt("Choose [1/2/3]", default="1")
-            driver = choices.get(raw.strip().lower())
-            if driver:
-                return driver
-            typer.echo("  Invalid choice. Enter 1, 2, or 3.", err=True)
+        ui.blank()
+        ui.success(f"Project [{name}] created.")
+        ui.blank()
+        ui.next_steps("Next steps", [
+            f"cd {name}",
+            "forgeapi make:controller User --ms",
+            "forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate",
+            "forgeapi runserver --reload",
+        ])
+        ui.blank()
 
     @staticmethod
     def _write(path: Path, content: str, typer) -> None:
@@ -415,4 +404,4 @@ Creates:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        typer.echo(f"  created  {path}")
+        ui.file_event("created", str(path))

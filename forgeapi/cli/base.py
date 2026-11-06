@@ -6,17 +6,28 @@ class Command:
 
     name: str = ""
     aliases: tuple[str, ...] = ()
+    #: Commands that read or write project files must run inside a project (see main.py).
+    requires_project: bool = True
+    #: A group (``make``, ``db``...) typed bare only prints its help, so it needs no project.
+    is_group: bool = False
+
+    def needs_project(self, cmd: str) -> bool:
+        return self.requires_project and not (self.is_group and ":" not in cmd)
 
     def handle(self, cmd: str, args: list[str]) -> None:
         raise NotImplementedError
 
     def show_help(self, cmd: str = "") -> None:
-        import typer
-        typer.echo(getattr(self, "help_text", ""))
+        from forgeapi.cli import ui
+
+        ui.render_help(getattr(self, "help_text", ""))
 
     def abort(self, msg: str) -> None:
         import typer
-        typer.echo(f"Error: {msg}", err=True)
+
+        from forgeapi.cli import ui
+
+        ui.error(msg)
         raise typer.Exit(code=1)
 
     @staticmethod

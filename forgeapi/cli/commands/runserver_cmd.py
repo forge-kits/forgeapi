@@ -24,7 +24,7 @@ Examples:
     def handle(self, cmd: str, args: list[str]) -> None:
         import os
         import sys
-        import typer
+        from forgeapi.cli import ui
 
         port = 8000
         host = "127.0.0.1"
@@ -58,5 +58,5 @@ Examples:
         if cwd not in sys.path:
             sys.path.insert(0, cwd)
 
-        typer.echo(f"Starting {app_path} on {host}:{port} (reload={reload})")
+        ui.server_started(app_path, host, port, reload)
         uvicorn.run(app_path, host=host, port=port, reload=reload)

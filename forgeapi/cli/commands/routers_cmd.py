@@ -23,7 +23,7 @@ Output:
 """
 
     def handle(self, cmd: str, args: list[str]) -> None:
-        import typer
+        from forgeapi.cli import ui
         from forgeapi.config import load_config
 
         cfg = load_config()
@@ -35,7 +35,7 @@ Output:
 
         directory = Path(st.controllers_dir)
         if not directory.exists():
-            typer.echo(f"Controllers directory not found: {directory}")
+            ui.warn(f"Controllers directory not found: {directory}")
             return
 
         from forgeapi.controllers.base import Controller as BaseController
@@ -53,7 +53,7 @@ Output:
             try:
                 mod = importlib.import_module(module_path)
             except Exception as exc:
-                typer.echo(f"  warning  {module_path}: {exc}", err=True)
+                ui.warn(f"{module_path}: {exc}", stderr=True)
                 continue
 
             ctrl_classes = [
@@ -76,19 +76,15 @@ Output:
                             routes.append((http_method, full_path, cls.__name__, method_name))
 
         if not routes:
-            typer.echo("No routes found.")
+            ui.info("No routes found.")
             return
 
         routes.sort(key=lambda r: (r[1], r[0]))
 
         col_method = max(len(r[0]) for r in routes)
-        col_path   = max(len(r[1]) for r in routes)
-
-        typer.echo("")
-        typer.echo(f"  {'METHOD':<{col_method}}  {'PATH':<{col_path}}  HANDLER")
-        typer.echo("  " + "-" * (col_method + col_path + 14))
+        ui.blank()
         for method, path, cls_name, fn_name in routes:
-            typer.echo(f"  {method:<{col_method}}  {path:<{col_path}}  {cls_name}.{fn_name}")
-        typer.echo("")
-        typer.echo(f"  {len(routes)} route(s) total")
-        typer.echo("")
+            ui.route(method, path, f"{cls_name}.{fn_name}", col_method)
+        ui.blank()
+        ui.console.print(f"  Showing [{len(routes)}] routes", style="dim", markup=False)
+        ui.blank()

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
+from pathlib import Path
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 from typing import List
-import typer
 
+import typer
+from rich.text import Text
+
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 from forgeapi.cli.commands.init_cmd import InitCommand
 from forgeapi.cli.commands.generate_cmd import MakeCommand
@@ -24,50 +29,69 @@ from forgeapi.cli.commands.models_cmd import ModelsCommand
 from forgeapi.cli.commands.runserver_cmd import RunserverCommand
 from forgeapi.cli.commands.mcp_cmd import McpCommand
 from forgeapi.cli.commands.doctor_cmd import DoctorCommand
+from forgeapi.support.project import find_project_root
 
 
-_HELP = """\
-ForgeAPI — Boilerplate for FastAPI.
+_COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("", [
+        ("init <project-name>", "Scaffold a new project"),
+        ("runserver", "Start the dev server (--port, --host, --reload)"),
+        ("routers", "List all registered routes"),
+        ("models", "List all discovered Tortoise models"),
+        ("doctor [--no-db]", "Diagnose env, config, models and DB"),
+    ]),
+    ("make", [
+        ("make:controller <Name>", "Create a controller (-m model, -s schemas)"),
+        ("make:model <Name>", "Create a model (-c controller, -s schemas)"),
+        ("make:schema <Name>", "Create stub schemas (-m model, -c controller)"),
+        ("make:seed <Name>", "Create a seeder"),
+        ("make:job <Name>", "Create a queue job"),
+        ("make:policy <Model>", "Create a policy for a model"),
+        ("make:observer <Model>", "Create a model observer"),
+        ("make:provider <Name>", "Create a provider"),
+    ]),
+    ("generate", [
+        ("generate:schema <Model>", "Generate schemas (--payload, --response)"),
+    ]),
+    ("db", [
+        ("db:init", "Init the migration config"),
+        ("db:makemigrations", "Generate a migration (-n <name>)"),
+        ("db:migrate", "Apply migrations (--force: wipe, then re-run)"),
+        ("db:seed [<Name>...]", "Run seeders"),
+        ("db:fresh", "Truncate all tables (--force: drop them)"),
+    ]),
+    ("schedule", [
+        ("schedule:run [<name>]", "Run due tasks once (for cron)"),
+        ("schedule:work", "Run the scheduler loop (dev)"),
+        ("schedule:list", "List tasks and their status"),
+    ]),
+    ("queue", [
+        ("queue:work", "Start the queue worker (--queue=a,b)"),
+        ("queue:run", "Process pending jobs once (--queue=a,b)"),
+        ("queue:failed", "List failed jobs"),
+        ("queue:retry <id>", "Move a failed job back to the queue"),
+        ("queue:flush", "Delete all failed jobs"),
+    ]),
+    ("mcp", [
+        ("mcp:install", "Register the MCP server (--global, --project)"),
+        ("mcp:remove", "Remove the MCP server (--global, --project)"),
+        ("mcp:status", "Show the MCP server status"),
+    ]),
+]
 
-\b
-Commands:
-  forgeapi init <project-name>
-  forgeapi make:controller <Name>   [-m] [-s]
-  forgeapi make:model <Name>        [-c] [-s]
-  forgeapi make:schema <Name>       [-m] [-c]
-  forgeapi generate:schema <ModelName> --payload [--crud/-cru/-cu/-d]
-  forgeapi generate:schema <ModelName> --response
-  forgeapi make:seed <Name>
-  forgeapi make:job <Name>
-  forgeapi make:policy <Model>
-  forgeapi make:observer <Model>
-  forgeapi make:provider <Name>
-  forgeapi db:init
-  forgeapi db:makemigrations [-n <name>]
-  forgeapi db:migrate
-  forgeapi db:seed [<Name>...]
-  forgeapi db:fresh
-  forgeapi schedule:run [<name>]
-  forgeapi schedule:work
-  forgeapi schedule:list
-  forgeapi queue:work [--queue=a,b]
-  forgeapi queue:run [--queue=a,b]
-  forgeapi queue:failed
-  forgeapi queue:retry <id>
-  forgeapi queue:flush
-  forgeapi routers
-  forgeapi models
-  forgeapi doctor [--no-db]
-  forgeapi runserver [--port 8000] [--host 127.0.0.1] [--reload]
-  forgeapi mcp:install [--global] [--project] [--force]
-  forgeapi mcp:remove  [--global] [--project]
-  forgeapi mcp:status
 
-\b
-Add -h after any command for detailed help:
-  forgeapi make:controller -h
-  forgeapi generate:schema -h
-"""
+def _show_help() -> None:
+    ui.logo()
+    ui.console.print(Text.assemble("  ", ("ForgeAPI", ui.BRAND), f" {ui.package_version()}  ", ("FastAPI toolkit", "dim")))
+    ui.blank()
+    ui.console.print(Text(" Usage:", style="bold yellow"))
+    ui.console.print("  forgeapi <command> [options]")
+    ui.blank()
+    ui.console.print(Text(" Available commands:", style="bold yellow"))
+    ui.render_commands(_COMMAND_GROUPS)
+    ui.blank()
+    ui.console.print(Text.assemble("  Add ", ("-h", "green"), " after any command for details, e.g. ", ("forgeapi make:controller -h", "dim")))
+    ui.blank()
 
 
 class CommandRegistry:
@@ -128,6 +152,21 @@ app = typer.Typer(
 )
 
 
+def _enter_project() -> None:
+    """Run from the project root, or stop: file-writing commands must never guess a location."""
+    here = Path.cwd().resolve()
+    root = find_project_root(here)
+    if root is None:
+        ui.error(
+            f"No ForgeAPI project found in [{here}] or its parent directories.",
+            hint="cd into your project (the folder with config/), or create one: forgeapi init <project-name>",
+        )
+        raise typer.Exit(code=1)
+    if root != here:
+        os.chdir(root)
+        ui.console.print(Text(f"  Using project root: {root}", style="dim"), soft_wrap=True)
+
+
 @app.command(
     name=None,
     context_settings={
@@ -140,7 +179,7 @@ def main(ctx: typer.Context) -> None:
     args: List[str] = ctx.args
 
     if not args or args[0] in ("--help", "-h", "--h", "help"):
-        typer.echo(_HELP)
+        _show_help()
         raise typer.Exit()
 
     cmd_name = args[0]
@@ -151,13 +190,14 @@ def main(ctx: typer.Context) -> None:
         if cmd:
             cmd.show_help(cmd_name)
         else:
-            typer.echo(_HELP)
+            _show_help()
         raise typer.Exit()
 
     cmd = _registry.find(cmd_name)
     if cmd is None:
-        typer.echo(f"Error: unknown command '{cmd_name}'.\n", err=True)
-        typer.echo(_HELP)
+        ui.error(f"Command '{cmd_name}' is not defined.", hint="Run `forgeapi` to see the available commands.")
         raise typer.Exit(code=1)
 
+    if cmd.needs_project(cmd_name):
+        _enter_project()
     cmd.handle(cmd_name, rest)

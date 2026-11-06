@@ -17,7 +17,7 @@ and field names.
 """
 
     def handle(self, cmd: str, args: list[str]) -> None:
-        import typer
+        from forgeapi.cli import ui
         from forgeapi.config import load_config
 
         cfg = load_config()
@@ -29,7 +29,7 @@ and field names.
 
         models_dir = Path(st.models_dir)
         if not models_dir.exists():
-            typer.echo(f"Models directory not found: {models_dir}")
+            ui.warn(f"Models directory not found: {models_dir}")
             return
 
         try:
@@ -51,7 +51,7 @@ and field names.
             try:
                 mod = importlib.import_module(module_path)
             except Exception as exc:
-                typer.echo(f"  warning  {module_path}: {exc}", err=True)
+                ui.warn(f"{module_path}: {exc}", stderr=True)
                 continue
 
             for attr_name, obj in vars(mod).items():
@@ -67,14 +67,13 @@ and field names.
                     found.append((attr_name, table, fields))
 
         if not found:
-            typer.echo("No models found.")
+            ui.info("No models found.")
             return
 
-        typer.echo("")
+        ui.blank()
         for name, table, fields in found:
-            typer.echo(f"  {name}  (table: {table})")
-            for field in fields:
-                typer.echo(f"    - {field}")
-            typer.echo("")
-        typer.echo(f"  {len(found)} model(s) total")
-        typer.echo("")
+            ui.dotted(name, table)
+            ui.indented(", ".join(fields))
+        ui.blank()
+        ui.console.print(f"  Showing [{len(found)}] models", style="dim", markup=False)
+        ui.blank()

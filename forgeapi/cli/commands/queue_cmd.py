@@ -5,14 +5,14 @@ import importlib
 import sys
 from pathlib import Path
 
-import typer
-
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 from forgeapi.exceptions import ForgeAPIError
 
 
 class QueueCommand(Command):
     name = "queue"
+    is_group = True
     help_text = """\
 Usage: forgeapi queue:<subcommand>
 
@@ -74,7 +74,7 @@ Examples:
         cfg = self._load_config()
         await self._connect_db(cfg)
         queue = queue or cfg.queue.queue
-        typer.echo(f"Queue worker started on '{queue}'. Press Ctrl+C to stop.")
+        ui.info(f"Queue worker started on '{queue}'. Press Ctrl+C to stop.")
         try:
             from forgeapi.queue.queue import Queue
             await Queue(name=queue).work()
@@ -93,7 +93,7 @@ Examples:
             while await q.run_next():
                 count += 1
             await q.wait_hooks()
-            typer.echo(f"Processed {count} job(s).")
+            ui.success(f"Processed {count} job(s).")
         finally:
             await self._disconnect_db()
 
@@ -104,13 +104,14 @@ Examples:
             from forgeapi.queue.models import FailedJob
             jobs = await FailedJob.all().order_by("-failed_at")
             if not jobs:
-                typer.echo("No failed jobs.")
+                ui.info("No failed jobs.")
                 return
-            typer.echo(f"{'ID':<6}  {'Queue':<12}  {'Class':<45}  Failed At")
-            typer.echo("-" * 90)
-            for j in jobs:
-                cls = j.payload.get("class", "unknown")
-                typer.echo(f"{j.id:<6}  {j.queue:<12}  {cls:<45}  {j.failed_at}")
+            ui.blank()
+            ui.table(
+                ["ID", "QUEUE", "CLASS", "FAILED AT"],
+                [[str(j.id), j.queue, j.payload.get("class", "unknown"), str(j.failed_at)] for j in jobs],
+            )
+            ui.blank()
         finally:
             await self._disconnect_db()
 
@@ -130,7 +131,7 @@ Examples:
             record.available_at = to_db(wall_clock_now(cfg.project.timezone))
             await record.save()
             await failed.delete()
-            typer.echo(f"Job {job_id} re-queued.")
+            ui.success(f"Job {job_id} re-queued.")
         finally:
             await self._disconnect_db()
 
@@ -142,7 +143,7 @@ Examples:
 
             count = await FailedJob.all().count()
             await FailedJob.all().delete()
-            typer.echo(f"Flushed {count} failed job(s).")
+            ui.success(f"Flushed {count} failed job(s).")
         finally:
             await self._disconnect_db()
 

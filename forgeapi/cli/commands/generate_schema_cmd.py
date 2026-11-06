@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 
 
@@ -126,10 +127,10 @@ Examples:
         try:
             fields, extra_imports = self._load_model_fields(class_name, module_dotted)
         except ModuleNotFoundError:
-            typer.echo(f"  note: model '{class_name}' not found — generating stubs")
+            ui.info(f"Model '{class_name}' not found — generating stubs.")
         except Exception as exc:
-            typer.echo(f"Warning: could not load model '{class_name}': {exc}", err=True)
-            typer.echo("  Generating stubs.")
+            ui.warn(f"Could not load model '{class_name}': {exc}", stderr=True)
+            ui.info("Generating stubs.")
 
         payload_ops = explicit_crud if explicit_crud is not None else {"c", "r", "u"}
 
@@ -143,7 +144,7 @@ Examples:
             content = self._build_response(class_name, fields, extra_imports)
             self._write(Path(st.schemas_dir) / "response" / f"{module_name}.py", content, typer)
 
-        typer.echo("Done.")
+        ui.success("Done.")
 
     # ── Flag parsing ────────────────────────────────────────────────────────────
 
@@ -360,20 +361,19 @@ Examples:
     @staticmethod
     def _write(path: Path, content: str, typer) -> None:
         if path.exists():
-            typer.echo(f"  exists   {path}")
+            ui.file_event("exists", str(path))
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        typer.echo(f"  created  {path}")
+        ui.file_event("created", str(path))
 
     @staticmethod
     def _ensure_init(directory: Path) -> None:
-        import typer as _typer
         init = directory / "__init__.py"
         if not init.exists():
             directory.mkdir(parents=True, exist_ok=True)
             init.touch()
-            _typer.echo(f"  created  {init}")
+            ui.file_event("created", str(init))
 
     @staticmethod
     def _to_snake(name: str) -> str:

@@ -14,7 +14,7 @@ class SeedCommand(Command):
     name = "db:seed"
 
     def handle(self, cmd: str, args: list[str]) -> None:
-        import typer
+        from forgeapi.cli import ui
         from forgeapi.config import load_config
 
         cfg = load_config()
@@ -61,10 +61,12 @@ class SeedCommand(Command):
                     from tortoise import Tortoise
                     await Tortoise.close_connections()
 
-        typer.echo("")
+        ui.blank()
+        ui.info("Seeding database.")
+        ui.blank()
         asyncio.run(_main())
-        typer.echo("")
-        typer.echo("Done.")
+        ui.blank()
+        ui.success("Database seeding completed successfully.")
 
     # ── Internals ───────────────────────────────────────────────────────────────
 
@@ -82,13 +84,13 @@ class SeedCommand(Command):
 
     @staticmethod
     async def _run_seeder(cls, name: str) -> None:
-        import typer
-        typer.echo(f"  running  {name}...")
-        await cls().execute()
-        typer.echo(f"  done     {name}")
+        from forgeapi.cli import ui
+
+        with ui.task(name):
+            await cls().execute()
 
     async def _execute(self, files: list[Path]) -> None:
-        import typer
+        from forgeapi.cli import ui
         from forgeapi.database import Seeder
 
         for f in files:
@@ -102,13 +104,13 @@ class SeedCommand(Command):
                 None,
             )
             if seeder_cls is None:
-                typer.echo(f"  skip     {f.name}  (no Seeder subclass)")
+                ui.leader(f.name, "SKIP", kind="warn", detail="no Seeder subclass")
                 continue
 
             await self._run_seeder(seeder_cls, seeder_cls.__name__)
 
     async def _execute_from_init(self, seeds_dir: Path) -> None:
-        import typer
+        from forgeapi.cli import ui
         from forgeapi.database import Seeder
 
         init_file = seeds_dir / "__init__.py"
@@ -135,12 +137,12 @@ class SeedCommand(Command):
 
         names = getattr(mod, "__all__", None)
         if not names:
-            typer.echo("  __init__.py has no __all__ — nothing to run.")
+            ui.warn("__init__.py has no __all__ — nothing to run.")
             return
 
         for name in names:
             cls = getattr(mod, name, None)
             if cls is None or not (isinstance(cls, type) and issubclass(cls, Seeder) and cls is not Seeder):
-                typer.echo(f"  skip     {name}  (not a Seeder subclass)")
+                ui.leader(name, "SKIP", kind="warn", detail="not a Seeder subclass")
                 continue
             await self._run_seeder(cls, name)

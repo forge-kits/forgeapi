@@ -3,33 +3,14 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from forgeapi.support.project import find_project_root
+
 
 # ---------------------------------------------------------------------------
 # Project root detection
 # ---------------------------------------------------------------------------
 
-def _find_project_root(start: Path) -> Path | None:
-    """Walk up from start looking for a config/ directory (forge-kits project anchor).
-
-    Recognises a directory as a forge-kits project root when it has a config/
-    subdirectory that contains at least one of project.py, structure.py,
-    database.py, or auth.py.  Returns None when nothing is found.
-    """
-    current = start.expanduser().resolve()
-    if current.is_file():
-        current = current.parent
-    for _ in range(12):
-        config_dir = current / "config"
-        if config_dir.is_dir() and any(
-            (config_dir / name).exists()
-            for name in ("project.py", "structure.py", "database.py", "auth.py")
-        ):
-            return current
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    return None
+_find_project_root = find_project_root
 
 
 # ---------------------------------------------------------------------------
