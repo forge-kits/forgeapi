@@ -56,3 +56,12 @@ async def user(db):
 @pytest.fixture
 async def other_user(db):
     return await UserModel.create(id=2)
+
+
+@pytest.fixture(autouse=True)
+def fake_users():
+    """Reset the FakeUser registry around every test."""
+    from tests.fakes import FakeUser
+    FakeUser.users.clear()
+    yield FakeUser.users
+    FakeUser.users.clear()

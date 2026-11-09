@@ -9,6 +9,7 @@ from forgeapi.auth.guard import Guard
 from forgeapi.auth.facade import Auth
 from forgeapi.auth.models import AuthUser
 from forgeapi.exceptions import ForgeAPIConfigError, SessionExpiredError, SessionInvalidError
+from tests.fakes import FakeUser
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +139,32 @@ class TestGuardWithCookie:
 
     @pytest.fixture
     def guard(self, strategy):
-        return Guard(name="web", strategy=strategy)
+        return Guard(name="web", strategy=strategy, user_model=FakeUser)
 
     @pytest.mark.anyio
     async def test_authenticate_valid_session(self, guard, strategy):
         value = strategy.create_session({"sub": "5", "username": "carol"})
+        FakeUser.users["5"] = FakeUser(5, "carol")
         user = await guard.authenticate(make_request(cookies={"session": value}), required=True)
-        assert isinstance(user, AuthUser)
-        assert user.id == "5"
+        assert isinstance(user, FakeUser)
+        assert user.id == 5
+
+    @pytest.mark.anyio
+    async def test_valid_session_for_missing_db_user_raises_401(self, guard, strategy):
+        from fastapi import HTTPException
+        value = strategy.create_session({"sub": "404"})
+        with pytest.raises(HTTPException) as exc:
+            await guard.authenticate(make_request(cookies={"session": value}), required=True)
+        assert exc.value.status_code == 401
+        assert exc.value.detail == "User not found."
+
+    def test_guard_without_user_model_is_a_config_error(self, strategy):
+        with pytest.raises(ForgeAPIConfigError, match="no user model"):
+            Guard(name="web", strategy=strategy, user_model=None)
+
+    def test_guard_requires_user_model_argument(self, strategy):
+        with pytest.raises(TypeError):
+            Guard(name="web", strategy=strategy)
 
     @pytest.mark.anyio
     async def test_missing_cookie_required_raises_401(self, guard):
@@ -209,7 +228,7 @@ class TestGuardTelegramUnsupported:
     @pytest.fixture
     def guard(self):
         from forgeapi.auth.strategies.telegram import TelegramStrategy
-        return Guard("tg", TelegramStrategy(bot_token="123:abc"))
+        return Guard("tg", TelegramStrategy(bot_token="123:abc"), FakeUser)
 
     def test_token_raises(self, guard):
         user = AuthUser(id="1", auth_method="telegram")
@@ -234,7 +253,7 @@ class TestAuthFacade:
     def facade(self):
         a = fresh_auth()
         strategy = CookieStrategy(secret_key="facade_secret_key_tests!!", secure=False)
-        g = Guard(name="web", strategy=strategy)
+        g = Guard(name="web", strategy=strategy, user_model=FakeUser)
         a.register("web", g)
         a.set_default("web")
         return a, strategy
@@ -260,8 +279,8 @@ class TestAuthFacade:
         a = fresh_auth()
         s1 = CookieStrategy(secret_key="guard1_secret_key_tests!!!", secure=False)
         s2 = CookieStrategy(secret_key="guard2_secret_key_tests!!!", cookie_name="admin", secure=False)
-        a.register("web", Guard("web", s1))
-        a.register("admin", Guard("admin", s2))
+        a.register("web", Guard("web", s1, FakeUser))
+        a.register("admin", Guard("admin", s2, FakeUser))
         assert a.guard("web").name == "web"
         assert a.guard("admin").name == "admin"
 
@@ -298,7 +317,7 @@ class TestContracts:
             def delete_cookie(self, response) -> None:
                 pass
 
-        g = Guard("stub", StubStrategy())
+        g = Guard("stub", StubStrategy(), FakeUser)
         user = AuthUser(id="7", auth_method="stub")
         assert g.token(user) == "stub:7"
 
@@ -342,7 +361,7 @@ class TestStrategyFactories:
 class TestAuthClaims:
     def test_model_controls_claims(self):
         strategy = CookieStrategy(secret_key="claims_secret_key_tests!!", secure=False)
-        g = Guard("web", strategy)
+        g = Guard("web", strategy, FakeUser)
 
         class User:
             id = 42
@@ -355,7 +374,7 @@ class TestAuthClaims:
 
     def test_default_payload_uses_id_and_username(self):
         strategy = CookieStrategy(secret_key="payload_secret_key_tests!", secure=False)
-        g = Guard("web", strategy)
+        g = Guard("web", strategy, FakeUser)
 
         class User:
             id = 99
@@ -373,7 +392,7 @@ class TestAuthClaims:
 class TestGuardErrorTranslation:
     @pytest.fixture
     def guard(self):
-        return Guard("web", CookieStrategy(secret_key="error_secret_key_tests!!", secure=False))
+        return Guard("web", CookieStrategy(secret_key="error_secret_key_tests!!", secure=False), FakeUser)
 
     @pytest.mark.anyio
     async def test_expired_session_translates_to_401(self, guard, guard_strategy=None):

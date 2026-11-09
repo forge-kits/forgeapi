@@ -14,10 +14,11 @@ _log = log.channel("auth.guard")
 
 
 class Guard:
-    """Named authentication context — strategy + optional DB model.
+    """Named authentication context — strategy + DB user model.
 
-    Each guard has its own strategy (Cookie, Telegram, custom) and
-    optionally resolves the authenticated token to a real DB model instance.
+    Each guard has its own strategy (Cookie, Telegram, custom) and always
+    resolves the authenticated identity to a real DB model instance.  A guard
+    without ``user_model`` is a configuration error.
 
     The guard is the **only** layer that speaks HTTP: strategies raise
     :class:`~forgeapi.exceptions.ForgeAPIAuthError` subclasses, and
@@ -50,8 +51,18 @@ class Guard:
         self,
         name: str,
         strategy: AuthStrategy,
-        user_model: type | None = None,
+        user_model: type,
     ) -> None:
+        if user_model is None:
+            from forgeapi.exceptions import ForgeAPIConfigError
+            raise ForgeAPIConfigError(
+                f"Auth guard '{name}' has no user model.",
+                hint=(
+                    f'Add "model" to the guard config, e.g. '
+                    f'"{name}": {{"strategy": "cookie", ..., "model": "database.models.user.User"}}, '
+                    "or pass user_model= to Guard()."
+                ),
+            )
         self.name = name
         self._strategy = strategy
         self._user_model = user_model
@@ -65,8 +76,8 @@ class Guard:
         return self._strategy
 
     @property
-    def user_model(self) -> type | None:
-        """The DB model authenticated users resolve to, or ``None``."""
+    def user_model(self) -> type:
+        """The DB model authenticated users resolve to."""
         return self._user_model
 
     # ------------------------------------------------------------------
@@ -102,9 +113,6 @@ class Guard:
             )
             raise self._unauthorized("Not authenticated", code="missing_credentials")
 
-        if self._user_model is None:
-            return auth_user
-
         db_user = await self._user_model.get_or_none(pk=auth_user.id)
         if db_user is None:
             _log.debug(
@@ -124,8 +132,7 @@ class Guard:
         """Return an ``Annotated`` dependency — required authenticated user.
 
         Raises HTTP 401 if no valid credentials are present.
-        Returns the configured DB model, or :class:`~forgeapi.auth.models.AuthUser`
-        when no model is set.
+        Returns an instance of the guard's DB user model.
 
         Example::
 
@@ -223,9 +230,6 @@ class Guard:
             return await _guard.authenticate(request, required=required)
 
         model = self._user_model
-        if model is None:
-            from .models import AuthUser
-            model = AuthUser
 
         if required:
             return Annotated[model, Depends(_resolve)]

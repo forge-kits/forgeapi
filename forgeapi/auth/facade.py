@@ -69,7 +69,7 @@ class Auth:
             "Auth: registered guard '%s' (strategy=%s, model=%s)",
             name,
             type(guard.strategy).__name__,
-            guard.user_model.__name__ if guard.user_model else "AuthUser",
+            guard.user_model.__name__,
         )
 
     def set_default(self, name: str) -> None:

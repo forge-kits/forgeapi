@@ -226,7 +226,8 @@ config = {"cors": ["*"], "rate_limit": 60, "request_id": True, "access_log": Tru
 
 # config/auth.py
 config = {"default": "api", "guards": {
-    "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET")}
+    "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+            "model": "database.models.user.User"}   # model is required
 }}
 
 # config/storage.py
@@ -431,7 +432,7 @@ config = {
         "api": {
             "strategy": "cookie",
             "secret": env("COOKIE_SECRET"),
-            "model": "database.models.user.User",   # optional — load user from DB
+            "model": "database.models.user.User",   # required — user is always loaded from the DB
         },
     },
 }
@@ -451,11 +452,10 @@ async def feed(self, user: OptionalUser) -> dict:
     return public_feed()
 ```
 
-## AuthUser fields (when model= is not set)
-- `user.id: str` — `sub` claim; use `int(user.id)` for DB queries
-- `user.username: str | None`
-- `user.extra: dict` — any extra session claims
-- `user.auth_method: str` — `"cookie"` | `"telegram"`
+## What `user` is
+`CurrentUser` / `OptionalUser` always return an instance of the guard's DB `model`
+(looked up by pk from the session `sub` claim). A guard without `"model"` in
+`config/auth.py` raises ForgeAPIConfigError at startup.
 
 ## Cookie session operations
 ```python

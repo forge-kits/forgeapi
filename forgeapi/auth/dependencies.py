@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 from fastapi import Depends, Request
-
-from .models import AuthUser
 
 
 # ---------------------------------------------------------------------------
@@ -18,18 +16,19 @@ from .models import AuthUser
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_current(request: Request) -> AuthUser:
+async def _resolve_current(request: Request) -> Any:
     from .facade import auth
     return await auth.guard().authenticate(request, required=True)
 
 
-async def _resolve_optional(request: Request) -> Optional[AuthUser]:
+async def _resolve_optional(request: Request) -> Any:
     from .facade import auth
     return await auth.guard().authenticate(request, required=False)
 
 
-CurrentUser = Annotated[AuthUser, Depends(_resolve_current)]
-"""Required authenticated user from the default guard.
+CurrentUser = Annotated[Any, Depends(_resolve_current)]
+"""Required authenticated user from the default guard — an instance of the
+guard's DB user model.
 
 Raises HTTP 401 when credentials are absent or invalid::
 
@@ -39,12 +38,12 @@ Raises HTTP 401 when credentials are absent or invalid::
     async def me(self, user: CurrentUser):
         return user
 
-For a specific guard or a DB model result, use :func:`~forgeapi.auth.guard`::
+For a typed result or a specific guard, use :func:`~forgeapi.auth.guard`::
 
-    CurrentUser = guard("api").current_user()
+    CurrentUser = guard("api").current_user()   # typed as the guard's model
 """
 
-OptionalUser = Annotated[Optional[AuthUser], Depends(_resolve_optional)]
+OptionalUser = Annotated[Optional[Any], Depends(_resolve_optional)]
 """Optional authenticated user from the default guard.
 
 Returns ``None`` when credentials are absent.  Present-but-invalid

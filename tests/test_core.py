@@ -97,11 +97,22 @@ class TestConventions:
         (in_tmp_cwd / "config").mkdir()
         (in_tmp_cwd / "config" / "auth.py").write_text(
             "config = {'guards': {'api': "
-            "{'strategy': 'cookie', 'secret': 'conv_secret_key_for_tests!!!!!!'}}}\n"
+            "{'strategy': 'cookie', 'secret': 'conv_secret_key_for_tests!!!!!!', "
+            "'model': 'tests.fakes.FakeUser'}}}\n"
         )
         core = Core(FastAPI())
         assert core.auth is not None
         assert core.auth.guard("api").name == "api"
+
+    def test_guard_without_model_raises_helpful_error(self, in_tmp_cwd, isolated_auth):
+        from forgeapi.exceptions import ForgeAPIConfigError
+        (in_tmp_cwd / "config").mkdir()
+        (in_tmp_cwd / "config" / "auth.py").write_text(
+            "config = {'guards': {'api': "
+            "{'strategy': 'cookie', 'secret': 'conv_secret_key_for_tests!!!!!!'}}}\n"
+        )
+        with pytest.raises(ForgeAPIConfigError, match="no user model"):
+            Core(FastAPI())
 
     def test_empty_auth_guards_raise_helpful_error(self, in_tmp_cwd):
         from forgeapi.exceptions import ForgeAPIConfigError
@@ -183,8 +194,10 @@ class TestMultiGuardConfig:
             "config = {\n"
             "    'default': 'api',\n"
             "    'guards': {\n"
-            "        'api':   {'strategy': 'cookie', 'secret': 'api_secret_key_for_tests!!!!!'},\n"
-            "        'admin': {'strategy': 'cookie', 'secret': 'admin_secret_key_for_tests!!!'},\n"
+            "        'api':   {'strategy': 'cookie', 'secret': 'api_secret_key_for_tests!!!!!',\n"
+            "                  'model': 'tests.fakes.FakeUser'},\n"
+            "        'admin': {'strategy': 'cookie', 'secret': 'admin_secret_key_for_tests!!!',\n"
+            "                  'model': 'tests.fakes.FakeUser'},\n"
             "    },\n"
             "}\n"
         )

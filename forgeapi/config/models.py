@@ -79,7 +79,7 @@ class AuthConfig(BaseModel):
         }
 
     Guard dict keys: ``strategy`` (cookie | telegram | custom name
-    registered via ``auth.extend()``), optional ``model`` (dotted path to the
+    registered via ``auth.extend()``), required ``model`` (dotted path to the
     user model), plus the strategy's ``from_config`` keys.
     """
 

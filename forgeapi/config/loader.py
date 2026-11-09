@@ -20,7 +20,8 @@ def load_config(path: str = "") -> KitConfig:
         config = {
             "default": "api",
             "guards": {
-                "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET")},
+                "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+                        "model": "database.models.user.User"},
             },
         }
 

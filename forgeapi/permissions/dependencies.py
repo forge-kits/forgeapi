@@ -2,37 +2,12 @@ from __future__ import annotations
 
 from fastapi import Depends, HTTPException, Request
 from tortoise.models import Model
-from forgeapi.logging import log
-from .registry import get_user_model
-
-_log = log.channel("permissions")
-
 
 async def _resolve_db_user(request: Request, guard_name: str | None) -> Model:
-    """Authenticate via *guard_name* and return a DB model instance.
-
-    When the guard has ``user_model`` configured it returns the DB record
-    directly.  When it returns a bare ``AuthUser`` DTO (no model on the guard),
-    we fall back to the global registry / ``app.state.user_model``.
-    """
+    """Authenticate via *guard_name* and return the guard's DB user instance."""
     from forgeapi.auth.facade import auth
-    from forgeapi.auth.models import AuthUser
 
-    _guard = auth.guard(guard_name)
-    db_user = await _guard.authenticate(request, required=True)
-
-    if isinstance(db_user, AuthUser):
-        UserModel = getattr(request.app.state, "user_model", None) or get_user_model()
-        try:
-            user_id = int(db_user.id)
-        except (TypeError, ValueError) as exc:
-            _log.warning("Invalid user identity in token: %s", exc)
-            raise HTTPException(status_code=401, detail="Invalid user identity")
-        if user_id <= 0:
-            raise HTTPException(status_code=401, detail="Invalid user identity")
-        db_user = await UserModel.get_or_none(pk=user_id)
-        if not db_user:
-            raise HTTPException(status_code=401, detail="User not found")
+    db_user = await auth.guard(guard_name).authenticate(request, required=True)
 
     if not getattr(db_user, "is_active", True):
         raise HTTPException(status_code=401, detail="User not found")

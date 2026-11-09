@@ -25,7 +25,8 @@ class AuthProvider(Provider):
                 "config/auth.py exists but defines no guards.",
                 hint=(
                     'Add at least one guard: config = {"default": "api", '
-                    '"guards": {"api": {"strategy": "cookie", "secret": env("COOKIE_SECRET")}}}'
+                    '"guards": {"api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"), '
+                    '"model": "database.models.user.User"}}}'
                 ),
             )
 
