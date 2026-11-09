@@ -192,6 +192,7 @@ class TelegramStrategy(AuthStrategy):
             first_name=user_data.get("first_name"),
             last_name=user_data.get("last_name"),
             language_code=user_data.get("language_code"),
+            photo_url=user_data.get("photo_url"),
             auth_date=auth_date,
         )
 
@@ -222,6 +223,7 @@ class TelegramStrategy(AuthStrategy):
                 "first_name": tg_user.first_name,
                 "last_name": tg_user.last_name,
                 "language_code": tg_user.language_code,
+                "photo_url": tg_user.photo_url,
                 "auth_date": tg_user.auth_date,
             },
             auth_method="telegram",

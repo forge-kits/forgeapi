@@ -80,6 +80,17 @@ def test_multi_token_second_token_valid():
     assert user.id == USER["id"]
 
 
+def test_photo_url_is_parsed(strategy):
+    user = strategy.validate_init_data(
+        _make_init_data({**USER, "photo_url": "https://t.me/i/userpic/320/alice.jpg"})
+    )
+    assert user.photo_url == "https://t.me/i/userpic/320/alice.jpg"
+
+
+def test_photo_url_is_optional(strategy):
+    assert strategy.validate_init_data(_make_init_data(USER)).photo_url is None
+
+
 def test_auth_date_and_language_code(strategy):
     init_data = _make_init_data(USER)
     user = strategy.validate_init_data(init_data)
@@ -126,3 +137,4 @@ async def test_authenticate_extra_fields(strategy):
     user = await strategy.authenticate(request)
     assert user.extra["first_name"] == "Alice"
     assert user.extra["language_code"] == "en"
+    assert "photo_url" in user.extra
