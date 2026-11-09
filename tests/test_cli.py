@@ -674,3 +674,46 @@ def test_doctor_is_not_blocked_outside_a_project(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["doctor", "--no-db"])
     assert "No ForgeAPI project found" not in result.output
     assert "config/ directory not found" in result.output     # it reports the problem instead
+
+
+# ── forgeapi init: default User model + initial migration ──────────────────────
+
+def _init_project(tmp_path, monkeypatch, strategy: str, driver: str = "aiosqlite"):
+    from forgeapi.cli import ui
+    from forgeapi.cli.commands.init_cmd import InitCommand
+
+    answers = iter([strategy, driver])
+    monkeypatch.setattr(ui, "choose", lambda *a, **kw: next(answers))
+    monkeypatch.chdir(tmp_path)
+    InitCommand().handle("init", ["demo"])
+    return tmp_path / "demo"
+
+
+@pytest.mark.parametrize("strategy", ["cookie", "telegram"])
+def test_init_creates_user_model_and_guard_points_to_it(tmp_path, monkeypatch, strategy):
+    root = _init_project(tmp_path, monkeypatch, strategy)
+    src = (root / "database/models/user.py").read_text()
+    expected = {
+        "cookie": ("id", "name", "email", "password", "created_at", "updated_at"),
+        "telegram": ("id", "username", "first_name", "last_name", "photo_url",
+                     "language_code", "created_at", "updated_at"),
+    }[strategy]
+    for field in expected:
+        assert f"    {field} = fields." in src
+    if strategy == "telegram":
+        assert "password" not in src and "email" not in src
+    assert "from .user import User" in (root / "database/models/__init__.py").read_text()
+    assert '"model": "database.models.user.User"' in (root / "config/auth.py").read_text()
+
+
+def test_init_generates_initial_migration(tmp_path, monkeypatch):
+    from forgeapi.cli.commands.db_cmd import DbCommand
+
+    if DbCommand._find_tortoise_bin() is None:
+        pytest.skip("tortoise binary not available")
+    root = _init_project(tmp_path, monkeypatch, "cookie")
+    migrations = sorted((root / "database/migrations").glob("0001_*.py"))
+    assert len(migrations) == 1
+    body = migrations[0].read_text()
+    for table in ("users", "queued_jobs", "failed_jobs", "scheduled_tasks"):
+        assert f"'table': '{table}'" in body

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import secrets
+import subprocess
 from pathlib import Path
 
 from rich.text import Text
@@ -105,6 +107,7 @@ config = {
     "guards": {
         "web": {
             "strategy": "cookie",
+            "model": "database.models.user.User",
             "secret": env("COOKIE_SECRET"),
             "cookie_name": "session",
             "httponly": True,
@@ -121,6 +124,7 @@ config = {
     "guards": {
         "api": {
             "strategy": "telegram",
+            "model": "database.models.user.User",
             "bot_token": env("BOT_TOKEN"),
             "max_age": 86400,   # seconds
         },
@@ -128,6 +132,58 @@ config = {
 }
 ''',
 }
+
+_USER_MODEL_TEMPLATES = {
+    "cookie": '''\
+from tortoise import fields
+from tortoise.models import Model
+
+from forgeapi.database import ModelMixin
+
+
+class User(ModelMixin, Model):
+    id = fields.IntField(primary_key=True)
+    name = fields.CharField(max_length=255)
+    email = fields.CharField(max_length=255, unique=True)
+    password = fields.CharField(max_length=255)   # store a hash, never the plain password
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "users"
+''',
+    "telegram": '''\
+from tortoise import fields
+from tortoise.models import Model
+
+from forgeapi.database import ModelMixin
+
+
+class User(ModelMixin, Model):
+    # The telegram guard looks the user up by primary key, so the key is the Telegram user id.
+    id = fields.BigIntField(primary_key=True, generated=False)
+    username = fields.CharField(max_length=64, null=True)
+    first_name = fields.CharField(max_length=255, null=True)
+    last_name = fields.CharField(max_length=255, null=True)
+    photo_url = fields.CharField(max_length=512, null=True)
+    language_code = fields.CharField(max_length=16, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    @property
+    def full_name(self) -> str:
+        return " ".join(p for p in (self.first_name, self.last_name) if p)
+
+    class Meta:
+        table = "users"
+''',
+}
+
+_USER_MODELS_INIT = '''\
+from .user import User
+
+__all__ = ["User"]
+'''
 
 _CONFIG_PAGINATION_TEMPLATE = '''\
 config = {
@@ -317,7 +373,7 @@ Scaffolds a new ForgeAPI project. Asks for:
 Creates:
   <project-name>/
     main.py  .env
-    config/  app/  database/
+    config/  app/  database/   (incl. database/models/user.py, the auth user model)
 """
 
     def handle(self, cmd: str, args: list[str]) -> None:
@@ -360,6 +416,9 @@ Creates:
 
         (root / "app" / "__init__.py").touch()
 
+        (root / "database/models/__init__.py").write_text(_USER_MODELS_INIT, encoding="utf-8")
+        ui.file_event("created", str(root / "database/models/__init__.py"))
+        self._write(root / "database/models/user.py", _USER_MODEL_TEMPLATES[strategy], typer)
         self._write(root / "app/controllers/controller.py", _CONTROLLER_BASE, typer)
         self._write(root / "config/project.py", _CONFIG_PROJECT_TEMPLATE.format(name=name), typer)
         self._write(root / "config/structure.py", _CONFIG_STRUCTURE_TEMPLATE, typer)
@@ -387,16 +446,57 @@ Creates:
         self._write(root / "main.py", _MAIN_TEMPLATE.format(name=name), typer)
         self._write(root / "schedule.py", _SCHEDULE_TEMPLATE, typer)
 
+        migrated = self._make_initial_migration(root)
+
         ui.blank()
         ui.success(f"Project [{name}] created.")
         ui.blank()
         ui.next_steps("Next steps", [
             f"cd {name}",
-            "forgeapi make:controller User --ms",
-            "forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate",
+            "forgeapi db:migrate" if migrated
+            else "forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate",
+            "forgeapi make:controller Post --ms",
             "forgeapi runserver --reload",
         ])
         ui.blank()
+
+    @staticmethod
+    def _make_initial_migration(root: Path) -> bool:
+        """Run ``db:init`` + ``db:makemigrations`` inside the new project.
+
+        Returns ``True`` when ``database/migrations/0001_*.py`` was generated.
+        On any failure prints a warning and returns ``False`` so the caller can
+        fall back to the manual commands - scaffolding itself never fails here.
+        """
+        from .db_cmd import DbCommand
+
+        tortoise_bin = DbCommand._find_tortoise_bin()
+        if tortoise_bin is None:
+            ui.warn("tortoise binary not found - skipped the initial migration.")
+            return False
+
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        orm = "config.database.TORTOISE_ORM"   # the default path, same as KitConfig.database.tortoise_orm
+        for sub in ("init", "makemigrations"):
+            try:
+                result = subprocess.run(
+                    [tortoise_bin, "-c", orm, sub],
+                    cwd=root, env=env, capture_output=True, text=True, timeout=120,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                ui.warn(f"initial migration skipped: {exc}")
+                return False
+            if result.returncode != 0:
+                ui.warn(f"initial migration skipped: 'tortoise {sub}' failed.")
+                ui.indented((result.stderr or result.stdout).strip()[-600:])
+                return False
+
+        created = sorted((root / "database" / "migrations").glob("0001_*.py"))
+        if not created:
+            ui.warn("initial migration skipped: no migration file was generated.")
+            return False
+        ui.file_event("created", str(created[0]))
+        return True
 
     @staticmethod
     def _write(path: Path, content: str, typer) -> None:

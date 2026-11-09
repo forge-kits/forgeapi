@@ -115,11 +115,11 @@ pip install forge-kits[s3,images]    # S3 storage + image processing
 forgeapi init my-project
 cd my-project
 
-forgeapi db:init && forgeapi db:makemigrations && forgeapi db:migrate
+forgeapi db:migrate
 forgeapi runserver --reload
 ```
 
-`forgeapi init` asks for auth strategy (cookie / telegram), DB driver (asyncpg / aiosqlite / aiomysql), and whether to generate the welcome boilerplate (User + Post + events).
+`forgeapi init` asks for auth strategy (cookie / telegram) and DB driver (asyncpg / aiosqlite / aiomysql). It scaffolds the auth user model (`database/models/user.py`: `id`, `name`, `email`, `password`, `created_at`, `updated_at`) and generates the initial migration (`database/migrations/0001_initial.py`) covering `users`, the queue, scheduler and permissions tables, so only `forgeapi db:migrate` is left. If the migration cannot be generated (missing DB driver, no `tortoise` binary) `init` prints a warning and you run `forgeapi db:init && forgeapi db:makemigrations` yourself.
 
 ---
 
@@ -278,7 +278,7 @@ Auth has its own domain-exception hierarchy (`ForgeAPIAuthError` subclasses:
 
 ## 5. Auth
 
-Auth is based on **Guards**. A Guard combines a **strategy** (how to verify credentials) with an optional **user model** (which Tortoise model to load from the DB).
+Auth is based on **Guards**. A Guard combines a **strategy** (how to verify credentials) with a required **user model** (which Tortoise model to load from the DB). A guard without `"model"` is a configuration error.
 
 Available strategies: **cookie** (HMAC-signed session cookie), **telegram** (Telegram Mini App initData).
 
@@ -302,7 +302,7 @@ config = {
         "api": {
             "strategy": "cookie",           # cookie | telegram | custom
             "secret": env("COOKIE_SECRET"),
-            "model": "database.models.user.User",   # optional — load user from DB
+            "model": "database.models.user.User",   # required — user is always loaded from the DB
         },
     },
 }
@@ -310,8 +310,9 @@ config = {
 
 `strategy` picks the credential mechanism; the remaining keys are passed to
 the strategy's `from_config()` (see per-strategy tables below). `model` is a
-dotted path to a Tortoise model — when set, `CurrentUser` resolves to a real
+required dotted path to a Tortoise model: `CurrentUser` always resolves to a real
 DB instance (and a valid session whose user is gone from the DB is a 401).
+A guard without `model` raises `ForgeAPIConfigError` at startup.
 
 ### Step 2 — protect routes
 
@@ -339,18 +340,10 @@ async def feed(self, user: OptionalUser):
 
 ### What the user object contains
 
-With `"model"` configured, the dependency returns your **Tortoise model
-instance** loaded from the DB — all its fields and methods are available.
-
-Without `"model"`, it returns a lightweight `AuthUser` built from the session
-payload:
-
-| Field | Type | Description |
-|---|---|---|
-| `user.id` | `str` | Session `sub` claim — cast with `int(user.id)` for DB queries |
-| `user.username` | `str \| None` | From session payload |
-| `user.auth_method` | `str` | `"cookie"` / `"telegram"` |
-| `user.extra` | `dict` | Any extra claims (`role`, `email`, etc.) |
+The dependency returns your **Tortoise model instance** loaded from the DB
+(looked up by primary key from the session `sub` claim), so all its fields and
+methods are available. `CurrentUser` and `OptionalUser` are typed `Any`; use
+`guard("api").current_user()` for a dependency typed as the guard's model.
 
 ### Auth facade — session operations
 

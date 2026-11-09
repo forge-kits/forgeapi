@@ -2,6 +2,14 @@
 
 Generated from git history by `scripts/gen_changelog.py` (Conventional Commits). Do not edit by hand.
 
+## [1.8.1](https://github.com/forge-kits/forgeapi/releases/tag/v1.8.1) - 2026-11-09
+
+### Features
+
+- **cli:** Init scaffolds the User model and the initial migration ([`f5a00ca`](https://github.com/forge-kits/forgeapi/commit/f5a00ca))
+- **auth:** Parse photo_url from Telegram init data ([`fc63f20`](https://github.com/forge-kits/forgeapi/commit/fc63f20))
+- **BREAKING** **auth:** Require a DB user model on every guard ([`4e74d6d`](https://github.com/forge-kits/forgeapi/commit/4e74d6d))
+
 ## [1.8.0](https://github.com/forge-kits/forgeapi/releases/tag/v1.8.0) - 2026-11-06
 
 ### Features
