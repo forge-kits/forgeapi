@@ -2,6 +2,12 @@
 
 Generated from git history by `scripts/gen_changelog.py` (Conventional Commits). Do not edit by hand.
 
+## [1.8.2](https://github.com/forge-kits/forgeapi/releases/tag/v1.8.2) - 2026-11-09
+
+### Features
+
+- **cli:** Add make:command and project-defined CLI commands ([`10775f2`](https://github.com/forge-kits/forgeapi/commit/10775f2))
+
 ## [1.8.1](https://github.com/forge-kits/forgeapi/releases/tag/v1.8.1) - 2026-11-09
 
 ### Features
