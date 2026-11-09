@@ -887,6 +887,9 @@ forgeapi make:job SendWelcomeEmail      # app/jobs/send_welcome_email.py
 forgeapi make:policy Post               # app/policies/post_policy.py (@gate.policy(Post))
 forgeapi make:observer Post             # app/observers/post_observer.py (register with Post.observe(...))
 forgeapi make:provider Metrics          # app/providers/metrics_provider.py (add to "providers")
+forgeapi make:command SendReport        # app/commands/send_report_command.py → run: forgeapi send:report
+# the generated command's run(self, report_id: int, to: str = 'me', dry_run: bool = False) IS the command line:
+# forgeapi send:report 42 --to bob --dry-run   (typed, validated, -h generated; async def run is awaited)
 forgeapi generate:schema Post --payload --response
 ```
 

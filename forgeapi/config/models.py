@@ -60,6 +60,7 @@ class StructureConfig(BaseModel):
     jobs_dir: str = "app/jobs"
     observers_dir: str = "app/observers"
     providers_dir: str = "app/providers"
+    commands_dir: str = "app/commands"
     seeds_dir: str = "database/seeds"
     base_prefix: str = "/api/v1"
     schedule_file: str = "schedule.py"

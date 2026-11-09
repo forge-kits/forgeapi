@@ -6,6 +6,8 @@ class Command:
 
     name: str = ""
     aliases: tuple[str, ...] = ()
+    #: One line shown next to the command in the ``forgeapi`` listing (project commands).
+    description: str = ""
     #: Commands that read or write project files must run inside a project (see main.py).
     requires_project: bool = True
     #: A group (``make``, ``db``...) typed bare only prints its help, so it needs no project.
@@ -15,12 +17,41 @@ class Command:
         return self.requires_project and not (self.is_group and ":" not in cmd)
 
     def handle(self, cmd: str, args: list[str]) -> None:
-        raise NotImplementedError
+        """Entry point with the raw command line.
+
+        A project command usually defines ``run`` instead: its typed parameters become the
+        arguments and options, see :mod:`forgeapi.cli.arguments`.  ``async def run`` is awaited.
+        """
+        run = getattr(self, "run", None)
+        if not callable(run):
+            raise NotImplementedError
+
+        import asyncio
+        import inspect
+
+        import typer
+
+        from forgeapi.cli import ui
+        from forgeapi.cli.arguments import ArgumentError, bind
+
+        try:
+            values, kwargs = bind(run, args)
+        except ArgumentError as exc:
+            ui.error(str(exc), hint=f"forgeapi {cmd} -h")
+            raise typer.Exit(code=1)
+        result = run(*values, **kwargs)
+        if inspect.iscoroutine(result):
+            asyncio.run(result)
 
     def show_help(self, cmd: str = "") -> None:
         from forgeapi.cli import ui
 
-        ui.render_help(getattr(self, "help_text", ""))
+        text = getattr(self, "help_text", "")
+        if not text and callable(getattr(self, "run", None)):
+            from forgeapi.cli.arguments import help_text
+
+            text = help_text(self.run, cmd or self.name, self.description)
+        ui.render_help(text)
 
     def abort(self, msg: str) -> None:
         import typer

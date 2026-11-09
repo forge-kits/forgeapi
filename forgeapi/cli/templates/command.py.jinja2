@@ -1,0 +1,31 @@
+from forgeapi.cli import ui
+from forgeapi.cli.base import Command
+
+
+class {{ class_name }}Command(Command):
+    name = "{{ command_name }}"
+    description = "TODO: one line shown in `forgeapi`"
+
+    # The parameters of run() are the command line, typed and converted for you:
+    #
+    #   report_id: int            no default -> argument      forgeapi {{ command_name }} 42
+    #   to: str = "me"            default    -> option        --to bob   or   --to=bob
+    #   dry_run: bool = False     bool       -> flag          --dry-run
+    #   *emails: str              the rest of the arguments
+    #
+    # `forgeapi {{ command_name }} -h` prints the usage generated from this signature.
+    # `async def run` works too, so models can be awaited directly.
+    def run(self) -> None:
+        ui.info("{{ command_name }} ran.")
+
+        # To use models, connect first:
+        #
+        #   from tortoise import Tortoise
+        #   from config.database import TORTOISE_ORM
+        #
+        #   async def run(self) -> None:
+        #       await Tortoise.init(config=TORTOISE_ORM)
+        #       try:
+        #           ...  # your queries
+        #       finally:
+        #           await Tortoise.close_connections()

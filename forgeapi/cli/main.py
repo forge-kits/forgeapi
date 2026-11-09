@@ -49,6 +49,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("make:policy <Model>", "Create a policy for a model"),
         ("make:observer <Model>", "Create a model observer"),
         ("make:provider <Name>", "Create a provider"),
+        ("make:command <Name>", "Create a custom CLI command"),
     ]),
     ("generate", [
         ("generate:schema <Model>", "Generate schemas (--payload, --response)"),
@@ -88,7 +89,11 @@ def _show_help() -> None:
     ui.console.print("  forgeapi <command> [options]")
     ui.blank()
     ui.console.print(Text(" Available commands:", style="bold yellow"))
-    ui.render_commands(_COMMAND_GROUPS)
+    found, errors = _load_project_commands(quiet=True)
+    rows = [(c.name, c.description) for c in {id(c): c for c in found.values()}.values()]
+    ui.render_commands(_COMMAND_GROUPS + ([("project", rows)] if rows else []))
+    for error in errors:
+        ui.warn(f"project commands: {error}")
     ui.blank()
     ui.console.print(Text.assemble("  Add ", ("-h", "green"), " after any command for details, e.g. ", ("forgeapi make:controller -h", "dim")))
     ui.blank()
@@ -144,6 +149,50 @@ _registry.register_prefix("queue:", _queue_cmd)
 _registry.register_prefix("mcp:", _mcp_cmd)
 
 
+def _load_project_commands(*, quiet: bool) -> tuple[dict[str, Command], list[str]]:
+    """Commands from the project's ``commands_dir`` as ``{name or alias: command}``, plus problems.
+
+    Built-in names always win: a project command that reuses one is skipped and reported.
+    Returns nothing outside a project. ``quiet`` skips the "Using project root" notice (help listing).
+    """
+    root = find_project_root(Path.cwd())
+    if root is None:
+        return {}, []
+    if quiet:
+        os.chdir(root)
+    else:
+        _enter_project()
+
+    from forgeapi.cli import project_commands
+
+    try:
+        from forgeapi.config import load_config
+
+        commands, errors = project_commands.discover(load_config().structure.commands_dir)
+    except Exception as exc:
+        return {}, [f"{type(exc).__name__}: {exc}"]
+
+    found: dict[str, Command] = {}
+    for cmd in commands:
+        names = (cmd.name, *cmd.aliases)
+        taken = next((n for n in names if _registry.find(n) is not None or n in found), None)
+        if taken is not None:
+            errors.append(f"{cmd.name}: the name '{taken}' is already taken, skipped")
+            continue
+        for n in names:
+            found[n] = cmd
+    return found, errors
+
+
+def _resolve(cmd_name: str, *, quiet: bool) -> tuple[Command | None, list[str]]:
+    """A built-in command, else a project command; the list holds project-command problems."""
+    cmd = _registry.find(cmd_name)
+    if cmd is not None:
+        return cmd, []
+    found, errors = _load_project_commands(quiet=quiet)
+    return found.get(cmd_name), errors
+
+
 app = typer.Typer(
     name="forgeapi",
     add_completion=False,
@@ -186,15 +235,17 @@ def main(ctx: typer.Context) -> None:
     rest = args[1:]
 
     if any(a in rest for a in ("-h", "-H", "--help", "--h")):
-        cmd = _registry.find(cmd_name)
+        cmd, _ = _resolve(cmd_name, quiet=True)
         if cmd:
             cmd.show_help(cmd_name)
         else:
             _show_help()
         raise typer.Exit()
 
-    cmd = _registry.find(cmd_name)
+    cmd, problems = _resolve(cmd_name, quiet=False)
     if cmd is None:
+        for problem in problems:
+            ui.warn(f"project commands: {problem}")
         ui.error(f"Command '{cmd_name}' is not defined.", hint="Run `forgeapi` to see the available commands.")
         raise typer.Exit(code=1)
 

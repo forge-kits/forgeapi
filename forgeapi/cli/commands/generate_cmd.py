@@ -20,9 +20,10 @@ _ALLOWED_EXTRA: dict[str, set[str]] = {
     "policy":     set(),
     "observer":   set(),
     "provider":   set(),
+    "command":    set(),
 }
 
-_MAKE_KINDS = ("controller", "model", "schema", "seed", "job", "policy", "observer", "provider")
+_MAKE_KINDS = ("controller", "model", "schema", "seed", "job", "policy", "observer", "provider", "command")
 
 
 class MakeCommand(Command):
@@ -39,6 +40,7 @@ Usage: forgeapi make:<command> <Name> [flags]
   make:policy <Model>      Generate a policy for a model
   make:observer <Model>    Generate a model observer
   make:provider <Name>     Generate a provider
+  make:command <Name>      Generate a custom CLI command
 
 Namespace controllers — each CamelCase word becomes a path segment:
   AdminUser      → controllers/admin/user_controller.py   /admin/users
@@ -143,6 +145,22 @@ Example:
   forgeapi make:provider Metrics
   # → app/providers/metrics_provider.py   (class MetricsProvider)
 """,
+        "command": """\
+Usage: forgeapi make:command <Name>
+
+Generates a custom CLI command in commands_dir (default: app/commands/).
+The class name sets the command name: the first CamelCase word, then ":" and the rest
+joined with "-". Commands are discovered automatically and listed in `forgeapi`.
+A name already used by a built-in command (make:*, db:*, ...) is refused.
+
+Example:
+  forgeapi make:command SendWeeklyReport
+  # → app/commands/send_weekly_report_command.py
+  # → run it with: forgeapi send:weekly-report
+
+  forgeapi make:command Cleanup
+  # → forgeapi cleanup
+""",
         "seed": """\
 Usage: forgeapi make:seed <Name>
 
@@ -227,7 +245,7 @@ Example:
             ui.success("Done.")
             return
 
-        if kind in ("job", "policy", "observer", "provider"):
+        if kind in ("job", "policy", "observer", "provider", "command"):
             self._gen_simple(kind, class_name, st)
             ui.success("Done.")
             return
@@ -338,10 +356,10 @@ Example:
         seeds_dir = getattr(st, "seeds_dir", "database/seeds")
         self._write(Path(seeds_dir) / f"{module_name}_seeder.py", content)
 
-    _SIMPLE_SUFFIX = {"policy": "Policy", "observer": "Observer", "provider": "Provider"}
+    _SIMPLE_SUFFIX = {"policy": "Policy", "observer": "Observer", "provider": "Provider", "command": "Command"}
 
     def _gen_simple(self, kind: str, class_name: str, st) -> None:
-        """job / policy / observer / provider: one file, no flags."""
+        """job / policy / observer / provider / command: one file, no flags."""
         suffix = self._SIMPLE_SUFFIX.get(kind, "")
         if suffix and class_name.endswith(suffix) and len(class_name) > len(suffix):
             class_name = class_name[: -len(suffix)]
@@ -351,6 +369,7 @@ Example:
             "policy": st.policies_dir,
             "observer": st.observers_dir,
             "provider": st.providers_dir,
+            "command": st.commands_dir,
         }[kind]
         file_name = f"{module_name}_{kind}.py" if suffix else f"{module_name}.py"
 
@@ -361,6 +380,16 @@ Example:
         elif kind == "observer":
             context["models_import"] = ".".join(Path(st.models_dir).parts)
             context["observer_import"] = ".".join([*Path(directory).parts, file_name[:-3]])
+        elif kind == "command":
+            command_name = self._command_name(class_name)
+            from forgeapi.cli.main import _registry
+
+            if _registry.find(command_name) is not None:
+                self.abort(
+                    f"the command name '{command_name}' is already used by a built-in command.\n"
+                    "  Pick another class name, e.g. make:command SendReport"
+                )
+            context["command_name"] = command_name
         elif kind == "provider":
             context["dotted_path"] = ".".join([*Path(directory).parts, file_name[:-3], f"{class_name}Provider"])
 
@@ -370,6 +399,8 @@ Example:
 
         if created and kind == "provider":
             ui.file_event("next", f'add "{context["dotted_path"]}" to "providers" in config/project.py')
+        if created and kind == "command":
+            ui.file_event("next", f'run it with: forgeapi {context["command_name"]}')
         if created and kind == "observer":
             ui.file_event(
                 "next",
@@ -403,6 +434,14 @@ Example:
             else:
                 unknown.append(arg)
         return flags, unknown
+
+    @staticmethod
+    def _command_name(class_name: str) -> str:
+        """SendWeeklyReport -> send:weekly-report, SendSMS -> send:sms, Cleanup -> cleanup."""
+        words = [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+", class_name)]
+        if len(words) < 2:
+            return "".join(words) or class_name.lower()
+        return f"{words[0]}:{'-'.join(words[1:])}"
 
     @staticmethod
     def _to_snake(name: str) -> str:

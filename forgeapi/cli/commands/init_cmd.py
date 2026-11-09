@@ -46,6 +46,7 @@ config = {
     "jobs_dir": "app/jobs",
     "observers_dir": "app/observers",
     "providers_dir": "app/providers",
+    "commands_dir": "app/commands",
     "seeds_dir": "database/seeds",
     "base_prefix": "/api/v1",
 }
@@ -408,7 +409,7 @@ Creates:
         ui.blank()
         root.mkdir()
 
-        for d in ["app/controllers", "app/schemas", "app/listeners", "app/policies",
+        for d in ["app/controllers", "app/schemas", "app/listeners", "app/policies", "app/commands",
                   "database/models", "database/migrations", "database/seeds"]:
             p = root / d
             p.mkdir(parents=True, exist_ok=True)

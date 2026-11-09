@@ -2132,8 +2132,56 @@ forgeapi make:job SendWelcomeEmail      # app/jobs/send_welcome_email.py
 forgeapi make:policy Post               # app/policies/post_policy.py (@gate.policy(Post))
 forgeapi make:observer Post             # app/observers/post_observer.py (register with Post.observe(...))
 forgeapi make:provider Metrics          # app/providers/metrics_provider.py (add to "providers")
+forgeapi make:command SendWeeklyReport  # app/commands/send_weekly_report_command.py → forgeapi send:weekly-report
 forgeapi make:schema Post              # stub schemas (3 classes with pass)
 ```
+
+### Custom commands
+
+`make:command <Name>` generates a `Command` subclass in `commands_dir` (`app/commands` by default, set in
+`config/structure.py`). Every module there is imported on demand: the command is runnable as `forgeapi <name>`
+and listed under "project" in `forgeapi`. The name comes from the class: `SendWeeklyReport` becomes
+`send:weekly-report`, `Cleanup` becomes `cleanup`. Names used by built-in commands (`make:*`, `db:*`, ...) are refused
+at generation time and skipped (with a warning) at run time.
+
+```python
+from forgeapi.cli import ui
+from forgeapi.cli.base import Command
+
+
+class SendWeeklyReportCommand(Command):
+    name = "send:weekly-report"
+    description = "Email the weekly report"
+
+    def run(self, report_id: int, *emails: str, to: str = "me", dry_run: bool = False) -> None:
+        """Email the weekly report."""
+        ui.info(f"report {report_id} -> {to}, {len(emails)} extra, dry run: {dry_run}")
+```
+
+```bash
+forgeapi send:weekly-report 42 a@x.com b@x.com --to bob --dry-run
+forgeapi send:weekly-report -h      # usage generated from the signature (and the docstring)
+```
+
+The parameters of `run()` are the command line, converted to the declared types. No parsing code is needed:
+
+| In `run()` | On the command line |
+|---|---|
+| `report_id: int` (no default) | positional argument, `42` |
+| `*emails: str` | all remaining positional arguments |
+| `to: str = "me"` (has a default) | option, `--to bob` or `--to=bob` (`_` becomes `-`) |
+| `dry_run: bool = False` | flag, `--dry-run` (a `True` default is switched off with `--no-name`) |
+| `tag: list[str] = ()` | repeatable option, `--tag a --tag b` |
+| `*, to: str` (keyword-only, no default) | required option |
+
+`int`, `float`, `str`, `Path` and `X | None` are supported. Bad input (a missing or unknown argument, a value of the wrong type)
+prints a one-line error with a hint to `-h` and exits with code 1, `run()` is not called. `--` ends the options, `-5` is a
+number, not an option. `-h` and `--help` are always taken by the CLI.
+
+`async def run(...)` is awaited, so models can be queried directly. If you need the raw command line instead, override
+`handle(self, cmd, args)`: it receives everything typed after the command name as a list of strings.
+
+A module that fails to import does not hide the other commands: the error is printed as a warning.
 
 ### Typed schema generation (from existing model)
 

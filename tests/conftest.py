@@ -65,3 +65,23 @@ def fake_users():
     FakeUser.users.clear()
     yield FakeUser.users
     FakeUser.users.clear()
+
+
+@pytest.fixture
+def cmd_project(tmp_path, monkeypatch):
+    """A minimal project whose ``app`` package is importable, with a clean module cache."""
+    import sys
+
+    def purge() -> None:
+        for name in [m for m in sys.modules if m == "app" or m.startswith("app.")]:
+            del sys.modules[name]
+
+    purge()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "project.py").write_text("config = {}\n")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").touch()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield tmp_path
+    purge()

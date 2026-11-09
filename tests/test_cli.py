@@ -717,3 +717,113 @@ def test_init_generates_initial_migration(tmp_path, monkeypatch):
     body = migrations[0].read_text()
     for table in ("users", "queued_jobs", "failed_jobs", "scheduled_tasks"):
         assert f"'table': '{table}'" in body
+
+
+# ── make:command + project commands ───────────────────────────────────────────
+
+@pytest.mark.parametrize("name, expected", [
+    ("SendWeeklyReport", "send:weekly-report"),
+    ("SendSMS", "send:sms"),
+    ("Cleanup", "cleanup"),
+])
+def test_command_name_from_class(name, expected):
+    assert _make._command_name(name) == expected
+
+
+def test_make_command(cmd_project):
+    _run_make("command", "SendWeeklyReport")
+    f = cmd_project / "app/commands/send_weekly_report_command.py"
+    src = f.read_text()
+    assert "class SendWeeklyReportCommand(Command):" in src
+    assert 'name = "send:weekly-report"' in src
+    assert (cmd_project / "app/commands/__init__.py").exists()
+    compile(src, "command.py", "exec")
+
+
+def test_make_command_strips_suffix(cmd_project):
+    _run_make("command", "SendReportCommand")
+    src = (cmd_project / "app/commands/send_report_command.py").read_text()
+    assert "class SendReportCommand(Command):" in src and 'name = "send:report"' in src
+    assert not (cmd_project / "app/commands/send_report_command_command.py").exists()
+
+
+def test_make_command_refuses_builtin_name(cmd_project):
+    from typer import Exit
+
+    with pytest.raises((Exit, SystemExit)):
+        _run_make("command", "MakeThing")                 # make:thing is a built-in prefix
+    assert not (cmd_project / "app/commands").exists()
+
+
+def test_generated_command_is_discovered_and_runs(cmd_project):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    _run_make("command", "SendWeeklyReport")
+    runner = CliRunner()
+    result = runner.invoke(app, ["send:weekly-report"])
+    assert result.exit_code == 0, result.output
+    assert "send:weekly-report ran." in result.output
+
+    listing = runner.invoke(app, [])
+    assert "send:weekly-report" in listing.output and "project" in listing.output
+
+
+def test_project_command_receives_args_and_help(cmd_project):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    (cmd_project / "app/commands").mkdir()
+    (cmd_project / "app/commands/__init__.py").touch()
+    (cmd_project / "app/commands/greet_command.py").write_text(
+        "from forgeapi.cli import ui\n"
+        "from forgeapi.cli.base import Command\n\n"
+        "class GreetCommand(Command):\n"
+        "    name = 'greet'\n"
+        "    help_text = 'Usage: forgeapi greet <who>\\n'\n"
+        "    def handle(self, cmd, args):\n"
+        "        ui.info('hello ' + ' '.join(args))\n"
+    )
+    runner = CliRunner()
+    assert "hello world" in runner.invoke(app, ["greet", "world"]).output
+    assert "forgeapi greet <who>" in runner.invoke(app, ["greet", "-h"]).output
+
+
+def test_broken_and_conflicting_project_commands(cmd_project):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    d = cmd_project / "app/commands"
+    d.mkdir()
+    (d / "__init__.py").touch()
+    (d / "broken.py").write_text("raise RuntimeError('boom')\n")
+    (d / "clash.py").write_text(
+        "from forgeapi.cli.base import Command\n\n"
+        "class Clash(Command):\n"
+        "    name = 'db:migrate'\n"
+        "    def handle(self, cmd, args):\n"
+        "        raise AssertionError('must never shadow a built-in')\n"
+    )
+    (d / "fine.py").write_text(
+        "from forgeapi.cli.base import Command\n\n"
+        "class Fine(Command):\n"
+        "    name = 'fine'\n"
+        "    def handle(self, cmd, args):\n"
+        "        print('fine ran')\n"
+    )
+    runner = CliRunner()
+    ok = runner.invoke(app, ["fine"])
+    assert ok.exit_code == 0 and "fine ran" in ok.output          # the broken file did not hide it
+
+    missing = runner.invoke(app, ["nope"])
+    assert missing.exit_code == 1
+    assert "boom" in missing.output and "already taken" in missing.output
+
+
+def test_unknown_command_outside_project_is_still_an_error(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from forgeapi.cli.main import app
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["nope"])
+    assert result.exit_code == 1 and "is not defined" in result.output
