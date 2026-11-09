@@ -6,7 +6,7 @@ Generated from git history by `scripts/gen_changelog.py` (Conventional Commits).
 
 ### Features
 
-- **cli:** Init scaffolds the User model and the initial migration ([`f5a00ca`](https://github.com/forge-kits/forgeapi/commit/f5a00ca))
+- **cli:** Init scaffolds the User model and the initial migration ([`b7322d7`](https://github.com/forge-kits/forgeapi/commit/b7322d7))
 - **auth:** Parse photo_url from Telegram init data ([`fc63f20`](https://github.com/forge-kits/forgeapi/commit/fc63f20))
 - **BREAKING** **auth:** Require a DB user model on every guard ([`4e74d6d`](https://github.com/forge-kits/forgeapi/commit/4e74d6d))
 
