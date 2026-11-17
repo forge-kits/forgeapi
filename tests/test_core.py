@@ -207,9 +207,9 @@ class TestMultiGuardConfig:
         assert isolated_auth.guard().name == "api"  # default
 
         # guards are isolated — different secrets
-        from forgeapi.auth.models import AuthUser
+        from types import SimpleNamespace
         from forgeapi.exceptions import SessionInvalidError
-        user = AuthUser(id="1", auth_method="cookie")
+        user = SimpleNamespace(id=1)
         token = isolated_auth.token(user, guard="api")
         isolated_auth.guard("api").strategy._verify(token)  # own secret: valid
         with pytest.raises(SessionInvalidError):

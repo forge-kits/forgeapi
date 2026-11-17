@@ -7,7 +7,7 @@ from starlette.responses import Response as StarletteResponse
 from forgeapi.auth.strategies.cookie import CookieStrategy
 from forgeapi.auth.guard import Guard
 from forgeapi.auth.facade import Auth
-from forgeapi.auth.models import AuthUser
+from types import SimpleNamespace
 from forgeapi.exceptions import ForgeAPIConfigError, SessionExpiredError, SessionInvalidError
 from tests.fakes import FakeUser
 
@@ -87,10 +87,7 @@ class TestCookieStrategySession:
         value = strategy.create_session({"sub": "42", "username": "alice"})
         req = make_request(cookies={"session": value})
         user = await strategy.authenticate(req)
-        assert user is not None
-        assert user.id == "42"
-        assert user.username == "alice"
-        assert user.auth_method == "cookie"
+        assert user == "42"
 
     @pytest.mark.anyio
     async def test_tampered_signature_raises(self, strategy):
@@ -197,7 +194,7 @@ class TestGuardWithCookie:
         assert dep is guard.optional_user()  # cached
 
     def test_token_creates_session_value(self, guard, strategy):
-        user = AuthUser(id="10", username="dave", auth_method="cookie")
+        user = SimpleNamespace(id=10, username="dave")
         token = guard.token(user)
         assert "." in token
 
@@ -231,7 +228,7 @@ class TestGuardTelegramUnsupported:
         return Guard("tg", TelegramStrategy(bot_token="123:abc"), FakeUser)
 
     def test_token_raises(self, guard):
-        user = AuthUser(id="1", auth_method="telegram")
+        user = SimpleNamespace(id=1)
         with pytest.raises(NotImplementedError):
             guard.token(user)
 
@@ -318,7 +315,7 @@ class TestContracts:
                 pass
 
         g = Guard("stub", StubStrategy(), FakeUser)
-        user = AuthUser(id="7", auth_method="stub")
+        user = SimpleNamespace(id=7)
         assert g.token(user) == "stub:7"
 
 

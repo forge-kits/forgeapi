@@ -3,7 +3,7 @@ import hmac
 import json
 import os
 import time
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import parse_qsl, unquote
 
 from fastapi import Request
@@ -11,7 +11,6 @@ from fastapi import Request
 from forgeapi.exceptions import TokenExpiredError, TokenInvalidError
 from forgeapi.logging import log
 from .base import AuthStrategy
-from ..models import AuthUser, TelegramUser
 
 _log = log.channel("auth.telegram")
 
@@ -42,7 +41,7 @@ class TelegramStrategy(AuthStrategy):
 
         # manual validation (e.g. in a webhook handler)
         tg_user = strategy.validate_init_data(raw_init_data_string)
-        print(tg_user.id, tg_user.username)
+        print(tg_user["id"], tg_user.get("username"))
 
     FastAPI usage::
 
@@ -106,15 +105,15 @@ class TelegramStrategy(AuthStrategy):
             _log.warning("TelegramStrategy in DEBUG mode — auth_date expiry check disabled")
         _log.debug("TelegramStrategy ready with %d token(s), max_age=%s s, debug=%s", self._token_count, max_age_seconds, debug)
 
-    def validate_init_data(self, init_data: str) -> TelegramUser:
+    def validate_init_data(self, init_data: str) -> Dict[str, Any]:
         """Parse and validate raw Telegram ``initData``.
 
         Args:
             init_data: URL-encoded string from ``window.Telegram.WebApp.initData``.
 
         Returns:
-            :class:`~forgeapi.auth.models.TelegramUser` with the validated
-            user fields.
+            The validated Telegram user fields (``id``, ``username``,
+            ``first_name``, ...) plus ``auth_date``.
 
         Raises:
             :class:`~forgeapi.exceptions.TokenExpiredError`: If ``auth_date``
@@ -126,7 +125,7 @@ class TelegramStrategy(AuthStrategy):
 
             raw = "query_id=AAH...&user=%7B%22id%22%3A123...%7D&auth_date=1700000000&hash=abc..."
             user = strategy.validate_init_data(raw)
-            # TelegramUser(id=123, username="alice", ...)
+            # {"id": 123, "username": "alice", ..., "auth_date": 1700000000}
         """
         # parse_qsl handles URL-decoding of values internally; do NOT double-unquote
         # the outer string — it would cause + → space and %25 → % mismatches in
@@ -186,25 +185,17 @@ class TelegramStrategy(AuthStrategy):
             raise TokenInvalidError("No user in Telegram init data")
         _log.debug("Telegram auth OK: user_id=%s username=%s", tg_id, user_data.get("username"))
 
-        return TelegramUser(
-            id=tg_id,
-            username=user_data.get("username"),
-            first_name=user_data.get("first_name"),
-            last_name=user_data.get("last_name"),
-            language_code=user_data.get("language_code"),
-            photo_url=user_data.get("photo_url"),
-            auth_date=auth_date,
-        )
+        return {**user_data, "auth_date": auth_date}
 
-    async def authenticate(self, request: Request) -> Optional[AuthUser]:
+    async def authenticate(self, request: Request) -> Optional[int]:
         """Validate Telegram init data from the request headers.
 
         Args:
             request: Incoming FastAPI/Starlette request.
 
         Returns:
-            :class:`~forgeapi.auth.models.AuthUser` on success, ``None``
-            if no Telegram header is present.
+            The Telegram user id on success, ``None`` if no Telegram header
+            is present.
         """
         init_data = self._extract(request)
         if not init_data:
@@ -214,20 +205,7 @@ class TelegramStrategy(AuthStrategy):
             )
             return None
 
-        tg_user = self.validate_init_data(init_data)
-
-        return AuthUser(
-            id=tg_user.id,
-            username=tg_user.username,
-            extra={
-                "first_name": tg_user.first_name,
-                "last_name": tg_user.last_name,
-                "language_code": tg_user.language_code,
-                "photo_url": tg_user.photo_url,
-                "auth_date": tg_user.auth_date,
-            },
-            auth_method="telegram",
-        )
+        return self.validate_init_data(init_data)["id"]
 
     @staticmethod
     def _extract(request: Request) -> Optional[str]:

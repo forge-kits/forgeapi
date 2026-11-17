@@ -54,10 +54,7 @@ async def test_authenticate_valid_cookie(strategy):
     value = strategy.create_session({"sub": "42", "username": "alice"})
     request = _make_request("session", value)
     user = await strategy.authenticate(request)
-    assert user is not None
-    assert user.id == "42"
-    assert user.username == "alice"
-    assert user.auth_method == "cookie"
+    assert user == "42"
 
 
 async def test_authenticate_no_cookie(strategy):
@@ -88,8 +85,8 @@ async def test_authenticate_malformed_cookie(strategy):
         await strategy.authenticate(request)
 
 
-async def test_extra_fields_in_user(strategy):
-    value = strategy.create_session({"sub": "1", "username": "alice", "role": "admin"})
+async def test_session_without_sub_raises(strategy):
+    value = strategy.create_session({"username": "alice"})
     request = _make_request("session", value)
-    user = await strategy.authenticate(request)
-    assert user.extra.get("role") == "admin"
+    with pytest.raises(SessionInvalidError):
+        await strategy.authenticate(request)

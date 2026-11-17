@@ -5,14 +5,13 @@ import hmac
 import json
 import os
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import Request, Response
 
 from forgeapi.exceptions import SessionExpiredError, SessionInvalidError
 from forgeapi.logging import log
 from .base import AuthStrategy
-from ..models import AuthUser
 
 _log = log.channel("auth.cookie")
 
@@ -118,9 +117,8 @@ class CookieStrategy(AuthStrategy):
 
         Args:
             data: Any JSON-serialisable dict.  Include ``"sub"`` (user id) and
-                ``"username"`` — those will be mapped to
-                :class:`~forgeapi.auth.models.AuthUser` fields on read.
-                An ``"exp"`` (Unix timestamp) claim is added automatically.
+                ``"username"``; ``"sub"`` becomes the user id the guard
+                loads from the DB.  An ``"exp"`` (Unix timestamp) claim is added automatically.
 
         Returns:
             Signed cookie string in the form ``<b64payload>.<signature>``.
@@ -179,20 +177,20 @@ class CookieStrategy(AuthStrategy):
             samesite=self._samesite,
         )
 
-    async def authenticate(self, request: Request) -> Optional[AuthUser]:
+    async def authenticate(self, request: Request) -> Optional[Union[str, int]]:
         """Read and verify the session cookie from the request.
 
         Args:
             request: Incoming FastAPI/Starlette request.
 
         Returns:
-            :class:`~forgeapi.auth.models.AuthUser` on success, ``None``
-            if the cookie is absent.
+            The user id (``sub`` claim) on success, ``None`` if the cookie
+            is absent.
 
         Raises:
             :class:`~forgeapi.exceptions.SessionExpiredError`: If the session expired.
             :class:`~forgeapi.exceptions.SessionInvalidError`: If the cookie is
-                malformed or its signature does not match.
+                malformed, has no ``sub`` claim, or its signature does not match.
         """
         raw = request.cookies.get(self._cookie_name)
         if not raw:
@@ -204,12 +202,11 @@ class CookieStrategy(AuthStrategy):
             _log.warning("Cookie auth rejected: session expired (sub=%s)", data.get("sub"))
             raise SessionExpiredError("Session has expired")
         _log.debug("Cookie auth OK: user_id=%s", data.get("sub"))
-        return AuthUser(
-            id=data.get("sub"),
-            username=data.get("username"),
-            extra={k: v for k, v in data.items() if k not in ("sub", "username", "exp")},
-            auth_method="cookie",
-        )
+        user_id = data.get("sub")
+        if user_id is None or user_id == "":
+            _log.warning("Cookie auth rejected: session has no 'sub' claim")
+            raise SessionInvalidError("Session has no user id")
+        return user_id
 
     def _sign(self, value: str) -> str:
         raw = hmac.new(self._secret.encode(), value.encode(), hashlib.sha256).digest()

@@ -96,7 +96,7 @@ class Guard:
           downgrading it to anonymous would mask it.
         """
         try:
-            auth_user = await self._strategy.authenticate(request)
+            user_id = await self._strategy.authenticate(request)
         except ForgeAPIAuthError as exc:
             _log.debug(
                 "Guard '%s': 401 (%s) on %s %s",
@@ -104,7 +104,7 @@ class Guard:
             )
             raise self._unauthorized(str(exc), code=exc.code)
 
-        if auth_user is None:
+        if user_id is None:
             if not required:
                 return None
             _log.debug(
@@ -113,15 +113,15 @@ class Guard:
             )
             raise self._unauthorized("Not authenticated", code="missing_credentials")
 
-        db_user = await self._user_model.get_or_none(pk=auth_user.id)
+        db_user = await self._user_model.get_or_none(pk=user_id)
         if db_user is None:
             _log.debug(
                 "Guard '%s': token valid but user id=%s not in DB",
-                self.name, auth_user.id,
+                self.name, user_id,
             )
             raise self._unauthorized("User not found.", code="user_not_found")
 
-        _log.debug("Guard '%s': authenticated user id=%s", self.name, auth_user.id)
+        _log.debug("Guard '%s': authenticated user id=%s", self.name, user_id)
         return db_user
 
     # ------------------------------------------------------------------
@@ -248,18 +248,10 @@ class Guard:
         Without the hook: ``sub`` from ``user.id`` plus the first present
         attribute of ``username`` / ``email`` / ``name``.
         """
-        from .models import AuthUser
-
         claims_hook = getattr(user, "auth_claims", None)
         if callable(claims_hook):
             payload = dict(claims_hook())
             payload.setdefault("sub", str(getattr(user, "id", "")))
-            return payload
-
-        if isinstance(user, AuthUser):
-            payload: dict = {"sub": str(user.id)}
-            if user.username:
-                payload["username"] = user.username
             return payload
 
         payload = {"sub": str(getattr(user, "id", ""))}

@@ -78,7 +78,6 @@ def __getattr__(name: str):
     _auth_exports = {
         "auth", "Auth", "guard",
         "CurrentUser", "OptionalUser",
-        "AuthUser", "TelegramUser",
         "CookieStrategy", "TelegramStrategy",
     }
     _db_exports = {

@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Union
 from fastapi import Request
-
-from ..models import AuthUser
 
 
 class AuthStrategy(ABC):
@@ -26,12 +24,13 @@ class AuthStrategy(ABC):
     challenge: Optional[str] = None
 
     @abstractmethod
-    async def authenticate(self, request: Request) -> Optional[AuthUser]:
+    async def authenticate(self, request: Request) -> Optional[Union[str, int]]:
         """Authenticate the request.
 
         Returns:
-            :class:`~forgeapi.auth.models.AuthUser` on success,
-            ``None`` if credentials are absent (not an error — caller decides).
+            The user's identifier (primary key) on success, ``None`` if
+            credentials are absent (not an error — caller decides).  The guard
+            loads the user from the DB by this value.
 
         Raises:
             ForgeAPIAuthError: If credentials are present but invalid.

@@ -38,9 +38,9 @@ USER = {"id": 123456, "username": "alice", "first_name": "Alice", "language_code
 def test_valid_init_data(strategy):
     init_data = _make_init_data(USER)
     user = strategy.validate_init_data(init_data)
-    assert user.id == 123456
-    assert user.username == "alice"
-    assert user.first_name == "Alice"
+    assert user["id"] == 123456
+    assert user["username"] == "alice"
+    assert user["first_name"] == "Alice"
 
 
 def test_missing_hash_raises(strategy):
@@ -62,7 +62,7 @@ def test_debug_skips_expiry():
     s = TelegramStrategy(bot_token=BOT_TOKEN, max_age_seconds=60, debug=True)
     init_data = _make_init_data(USER, age=9999)
     user = s.validate_init_data(init_data)
-    assert user.id == USER["id"]
+    assert user["id"] == USER["id"]
 
 
 def test_invalid_signature_raises(strategy):
@@ -77,25 +77,25 @@ def test_multi_token_second_token_valid():
     s = TelegramStrategy(bot_token=[BOT_TOKEN, other_token])
     init_data = _make_init_data(USER, bot_token=other_token)
     user = s.validate_init_data(init_data)
-    assert user.id == USER["id"]
+    assert user["id"] == USER["id"]
 
 
 def test_photo_url_is_parsed(strategy):
     user = strategy.validate_init_data(
         _make_init_data({**USER, "photo_url": "https://t.me/i/userpic/320/alice.jpg"})
     )
-    assert user.photo_url == "https://t.me/i/userpic/320/alice.jpg"
+    assert user["photo_url"] == "https://t.me/i/userpic/320/alice.jpg"
 
 
 def test_photo_url_is_optional(strategy):
-    assert strategy.validate_init_data(_make_init_data(USER)).photo_url is None
+    assert "photo_url" not in strategy.validate_init_data(_make_init_data(USER))
 
 
 def test_auth_date_and_language_code(strategy):
     init_data = _make_init_data(USER)
     user = strategy.validate_init_data(init_data)
-    assert user.language_code == "en"
-    assert isinstance(user.auth_date, int)
+    assert user["language_code"] == "en"
+    assert isinstance(user["auth_date"], int)
 
 
 def _make_request(headers: list[tuple[bytes, bytes]]) -> Request:
@@ -112,29 +112,17 @@ async def test_authenticate_x_header(strategy):
     init_data = _make_init_data(USER)
     request = _make_request([(b"x-telegram-init-data", init_data.encode())])
     user = await strategy.authenticate(request)
-    assert user is not None
-    assert user.id == 123456
-    assert user.auth_method == "telegram"
+    assert user == 123456
 
 
 async def test_authenticate_tma_header(strategy):
     init_data = _make_init_data(USER)
     request = _make_request([(b"authorization", f"tma {init_data}".encode())])
     user = await strategy.authenticate(request)
-    assert user is not None
-    assert user.id == 123456
+    assert user == 123456
 
 
 async def test_authenticate_no_header(strategy):
     request = _make_request([])
     user = await strategy.authenticate(request)
     assert user is None
-
-
-async def test_authenticate_extra_fields(strategy):
-    init_data = _make_init_data(USER)
-    request = _make_request([(b"x-telegram-init-data", init_data.encode())])
-    user = await strategy.authenticate(request)
-    assert user.extra["first_name"] == "Alice"
-    assert user.extra["language_code"] == "en"
-    assert "photo_url" in user.extra

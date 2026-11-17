@@ -171,7 +171,7 @@ class Auth:
         """Create a session token for *user*.
 
         Args:
-            user:  DB model instance or :class:`~forgeapi.auth.models.AuthUser`.
+            user:  DB model instance.
             guard: Guard name override (uses default when omitted).
 
         Example::

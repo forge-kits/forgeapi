@@ -2,7 +2,6 @@ from .facade import auth, Auth
 from .guard import Guard
 from .contracts import SessionIssuer
 from .dependencies import CurrentUser, OptionalUser
-from .models import AuthUser, TelegramUser
 from .strategies import AuthStrategy, CookieStrategy, TelegramStrategy
 
 
@@ -28,6 +27,5 @@ __all__ = [
     "guard", "Guard",
     "SessionIssuer",
     "CurrentUser", "OptionalUser",
-    "AuthUser", "TelegramUser",
     "AuthStrategy", "CookieStrategy", "TelegramStrategy",
 ]
