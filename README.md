@@ -226,10 +226,10 @@ core = Core(app)
 | Broadcasting | `config/broadcast.py` exists — creates global `broadcast`, connects on startup, disconnects on shutdown |
 | Scheduler | `config/scheduler.py` exists — loads `schedule.py`, starts worker task on startup |
 | Queue worker | `config/queue.py` exists — starts worker task on startup |
-| Controllers | `controllers_dir` exists — all `*_controller.py` imported recursively |
-| Event listeners | `config/broadcast.py` exists — all files in `listeners_dir` imported |
-| Policies | `policies_dir` exists — all `*_policy.py` imported |
-| Permissions | a model in `models_dir` inherits `PermissionsMixin` (no config needed) |
+| Controllers | `app/controllers` exists — all `*_controller.py` imported recursively |
+| Event listeners | `config/broadcast.py` exists — all files in `app/listeners` imported |
+| Policies | `app/policies` exists — all `*_policy.py` imported |
+| Permissions | a model in `database/models` inherits `PermissionsMixin` (no config needed) |
 | Pagination, Cache | always configured (from their sections or defaults) |
 | Custom providers | `"providers"` list in `config/project.py` |
 
@@ -618,6 +618,8 @@ config = {
     },
 }
 ```
+
+Generate a listener with `forgeapi make:listener OrderCreated` (the event name becomes `order:created`), or write it by hand:
 
 ```python
 # app/listeners/order_listener.py
@@ -2876,21 +2878,10 @@ from forgeapi import env
 config = {
     "name": "my-app",
     "version": "0.1.0",
+    "api_prefix": "/api/v1",           # URL prefix of every controller route
     "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
     "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name; scheduler runs in this timezone (default: server local time)
     "providers": [],                    # extra Provider classes / dotted paths
-}
-
-# config/structure.py
-config = {
-    "models_dir": "database/models",
-    "controllers_dir": "app/controllers",
-    "schemas_dir": "app/schemas",
-    "listeners_dir": "app/listeners",
-    "policies_dir": "app/policies",
-    "seeds_dir": "database/seeds",
-    "base_prefix": "/api/v1",
-    "schedule_file": "schedule.py",   # path to schedule.py; used by schedule:* CLI commands
 }
 
 # config/http.py

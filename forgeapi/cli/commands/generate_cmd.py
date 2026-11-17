@@ -475,6 +475,7 @@ Example:
             "observer": st.observers_dir,
             "provider": st.providers_dir,
             "command": st.commands_dir,
+            "listener": st.listeners_dir,
         }[kind]
         file_name = f"{module_name}_{kind}.py" if suffix else f"{module_name}.py"
 
@@ -495,6 +496,9 @@ Example:
                     "  Pick another class name, e.g. make:command SendReport"
                 )
             context["command_name"] = command_name
+        elif kind == "listener":
+            context["event_name"] = self._command_name(class_name)
+            context["func_name"] = f"on_{module_name}"
         elif kind == "provider":
             context["dotted_path"] = ".".join([*Path(directory).parts, file_name[:-3], f"{class_name}Provider"])
 
@@ -504,6 +508,8 @@ Example:
 
         if created and kind == "provider":
             ui.file_event("next", f'add "{context["dotted_path"]}" to "providers" in config/project.py')
+        if created and kind == "listener" and not Path("config/broadcast.py").exists():
+            ui.file_event("next", "create config/broadcast.py, otherwise listeners are not loaded")
         if created and kind == "command":
             ui.file_event("next", f'run it with: forgeapi {context["command_name"]}')
         if created and kind == "observer":

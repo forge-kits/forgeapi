@@ -819,3 +819,149 @@ def test_unknown_command_outside_project_is_still_an_error(tmp_path, monkeypatch
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(app, ["nope"])
     assert result.exit_code == 1 and "is not defined" in result.output
+
+
+def test_make_listener(mk_project, capsys):
+    _run_make("listener", "OrderCreated")
+    src = (mk_project / "app/listeners/order_created_listener.py").read_text()
+    assert '@broadcast.on("order:created")' in src
+    assert "async def on_order_created(data: dict)" in src
+    assert (mk_project / "app/listeners/__init__.py").exists()
+    assert "config/broadcast.py" in capsys.readouterr().out
+    compile(src, "listener.py", "exec")
+
+
+@pytest.mark.parametrize("name,event", [("Order", "order"), ("OrderListener", "order"), ("UserSignedUp", "user:signed-up")])
+def test_make_listener_event_name(mk_project, name, event):
+    _run_make("listener", name)
+    files = list((mk_project / "app/listeners").glob("*_listener.py"))
+    assert len(files) == 1 and not files[0].name.endswith("_listener_listener.py")
+    assert f'@broadcast.on("{event}")' in files[0].read_text()
+
+
+# ── make:schema: Create / Update / Response ──────────────────────────────────
+
+_POST_MODEL = '''\
+from tortoise import Model, fields
+
+
+class Post(Model):
+    id = fields.IntField(primary_key=True)
+    title = fields.CharField(max_length=100)
+    body = fields.TextField(null=True)
+    views = fields.IntField(default=0)
+    password_hash = fields.CharField(max_length=255)
+    author = fields.ForeignKeyField("models.User", related_name="posts")
+    created_at = fields.DatetimeField(auto_now_add=True)
+'''
+
+
+@pytest.fixture
+def schema_project(mk_project, monkeypatch):
+    import sys
+
+    (mk_project / "database/models").mkdir(parents=True)
+    (mk_project / "database/__init__.py").touch()
+    (mk_project / "database/models/__init__.py").touch()
+    (mk_project / "database/models/post.py").write_text(_POST_MODEL)
+    monkeypatch.syspath_prepend(str(mk_project))
+    for name in [m for m in sys.modules if m == "database" or m.startswith("database.")]:
+        monkeypatch.delitem(sys.modules, name)
+    return mk_project
+
+
+def test_make_schema_without_model_is_a_stub(mk_project, capsys):
+    _run_make("schema", "Post")
+    src = (mk_project / "app/schemas/post.py").read_text()
+    assert "class PostCreate(Schema):" in src
+    assert 'PostUpdate = PostCreate.partial("PostUpdate")' in src
+    assert "class PostResponse(BaseSchema):" in src
+    assert "add the fields" in capsys.readouterr().out
+    compile(src, "post.py", "exec")
+
+
+def test_make_schema_reads_the_model(schema_project, capsys):
+    _run_make("schema", "Post")
+    src = (schema_project / "app/schemas/post.py").read_text()
+    create = src.split("class PostResponse")[0]
+    response = src.split("class PostResponse")[1]
+    assert "title: str" in create and "body: str | None = None" in create and "views: int = 0" in create
+    assert "password_hash: str" in create          # legitimate input
+    assert "author_id: int" in create
+    assert "password_hash" not in response          # never sent back
+    assert "title: str" in response and "author_id: int" in response
+    assert "\n    id:" not in src and "created_at" not in src   # come from BaseSchema
+    assert "PostResponse leaves out: password_hash" in capsys.readouterr().out
+
+
+def test_make_schema_generated_module_works(schema_project):
+    _run_make("schema", "Post")
+    namespace: dict = {}
+    exec(compile((schema_project / "app/schemas/post.py").read_text(), "post.py", "exec"), namespace)
+    Create, Update, Response = namespace["PostCreate"], namespace["PostUpdate"], namespace["PostResponse"]
+
+    created = Create(title="Hi", password_hash="x", author_id=1)
+    assert created.views == 0
+    assert Update().model_dump(exclude_unset=True) == {}
+    assert Update(title="New").model_dump(exclude_unset=True) == {"title": "New"}
+    assert "required" not in Update.model_json_schema()
+
+    class Row:
+        id, title, body, views, author_id = 1, "Hi", None, 0, 7
+        created_at = updated_at = None
+
+    assert Response.model_validate(Row()).author_id == 7
+
+
+def test_make_schema_exclude(schema_project):
+    MakeCommand().handle("make:schema", ["Post", "--exclude", "views,body"])
+    src = (schema_project / "app/schemas/post.py").read_text()
+    assert "views" not in src and "body" not in src and "title: str" in src
+
+
+def test_make_schema_exclude_unknown_field_warns(schema_project, capsys):
+    MakeCommand().handle("make:schema", ["Post", "--exclude", "nope"])
+    assert "no such field" in capsys.readouterr().out
+
+
+def test_exclude_only_with_schemas(mk_project):
+    with pytest.raises(Exception):
+        MakeCommand().handle("make:job", ["Send", "--exclude", "x"])
+
+
+def test_make_schema_does_not_overwrite(schema_project):
+    _run_make("schema", "Post")
+    f = schema_project / "app/schemas/post.py"
+    f.write_text("# edited\n")
+    _run_make("schema", "Post")
+    assert f.read_text() == "# edited\n"
+
+
+def test_make_controller_with_model_and_schema_uses_response(mk_project):
+    MakeCommand().handle("make:controller", ["Post", "--ms"])
+    src = (mk_project / "app/controllers/post_controller.py").read_text()
+    assert "from database.models.post import Post" in src
+    assert "from ..schemas.post import PostResponse" in src
+    assert "paginate(15, PostResponse)" in src
+    compile(src, "post_controller.py", "exec")
+    assert (mk_project / "app/schemas/post.py").exists()
+
+
+def test_make_controller_with_model_only_imports_no_schema(mk_project):
+    MakeCommand().handle("make:controller", ["Post", "-m"])
+    src = (mk_project / "app/controllers/post_controller.py").read_text()
+    assert "Schema" not in src and "Response" not in src
+    assert "paginate(15)" in src
+    compile(src, "post_controller.py", "exec")
+
+
+def test_make_model_with_schema_reads_the_new_model(mk_project, monkeypatch):
+    import sys
+
+    monkeypatch.syspath_prepend(str(mk_project))
+    for name in [m for m in sys.modules if m == "database" or m.startswith("database.")]:
+        monkeypatch.delitem(sys.modules, name)
+    MakeCommand().handle("make:model", ["Post", "-s"])
+    src = (mk_project / "app/schemas/post.py").read_text()
+    assert "class PostCreate(Schema):" in src
+    compile(src, "post.py", "exec")

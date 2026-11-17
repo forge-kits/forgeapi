@@ -1,0 +1,7 @@
+from forgeapi.broadcasting import broadcast
+
+
+@broadcast.on("{{ event_name }}")
+async def {{ func_name }}(data: dict) -> None:
+    # TODO: handle the event. The payload is whatever was passed to broadcast.emit("{{ event_name }}", ...)
+    pass
