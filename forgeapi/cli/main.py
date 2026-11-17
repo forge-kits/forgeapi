@@ -29,6 +29,7 @@ from forgeapi.cli.commands.models_cmd import ModelsCommand
 from forgeapi.cli.commands.runserver_cmd import RunserverCommand
 from forgeapi.cli.commands.mcp_cmd import McpCommand
 from forgeapi.cli.commands.doctor_cmd import DoctorCommand
+from forgeapi.config.layout import layout
 from forgeapi.support.project import find_project_root
 
 
@@ -166,9 +167,7 @@ def _load_project_commands(*, quiet: bool) -> tuple[dict[str, Command], list[str
     from forgeapi.cli import project_commands
 
     try:
-        from forgeapi.config import load_config
-
-        commands, errors = project_commands.discover(load_config().structure.commands_dir)
+        commands, errors = project_commands.discover(layout.commands_dir)
     except Exception as exc:
         return {}, [f"{type(exc).__name__}: {exc}"]
 

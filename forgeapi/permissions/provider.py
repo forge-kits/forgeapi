@@ -1,3 +1,4 @@
+from forgeapi.config.layout import layout
 from forgeapi.foundation import Provider
 from forgeapi.logging import log
 
@@ -14,7 +15,7 @@ class PermissionProvider(Provider):
 
     def boot(self) -> None:
         from .discovery import find_permissions_model
-        model = find_permissions_model(self.config.structure.models_dir, required=False)
+        model = find_permissions_model(layout.models_dir, required=False)
         if model is None:
             _log.debug("Permissions: no PermissionsMixin model in models_dir — skipping")
             return

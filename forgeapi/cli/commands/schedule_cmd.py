@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from forgeapi.cli.base import Command
+from forgeapi.config.layout import layout
 from forgeapi.exceptions import ForgeAPIError
 
 
@@ -169,7 +170,7 @@ Examples:
         from forgeapi.config import load_config
         cfg = load_config()
 
-        schedule_file = getattr(cfg.structure, "schedule_file", "schedule.py")
+        schedule_file = cfg.scheduler.schedule if cfg.provided("scheduler") else layout.schedule_file
         path = Path(schedule_file)
 
         if not path.exists():

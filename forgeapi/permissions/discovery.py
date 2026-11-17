@@ -28,7 +28,7 @@ def find_permissions_model(models_dir: str, *, required: bool = True) -> type | 
             return None
         raise ForgeAPIConfigError(
             f"models_dir '{directory}' does not exist.",
-            hint="Create the directory or update models_dir in config/structure.py.",
+            hint="Create the directory.",
         )
 
     cwd = str(Path.cwd())

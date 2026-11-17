@@ -1,6 +1,7 @@
 import pytest
 
 from forgeapi.config import KitConfig, load_config
+from forgeapi.exceptions import ForgeAPIConfigError
 
 
 @pytest.fixture
@@ -18,10 +19,15 @@ class TestKitConfigDefaults:
         assert cfg.project.version == "0.1.0"
         assert cfg.project.debug is False
 
-    def test_default_structure(self):
-        cfg = KitConfig()
-        assert cfg.structure.base_prefix == "/api/v1"
-        assert cfg.structure.controllers_dir == "app/controllers"
+    def test_default_api_prefix(self):
+        assert KitConfig().project.api_prefix == "/api/v1"
+
+    def test_directory_layout_is_fixed(self):
+        from forgeapi.config import layout
+
+        assert layout.controllers_dir == "app/controllers"
+        assert layout.models_dir == "database/models"
+        assert not hasattr(KitConfig(), "structure")
 
     def test_default_http(self):
         cfg = KitConfig()
@@ -55,6 +61,16 @@ class TestLoadConfig:
         cfg = load_config()
         assert cfg.project.name == "MyApp"
         assert cfg.project.version == "2.0.0"
+
+    def test_reads_api_prefix(self, config_dir):
+        (config_dir / "project.py").write_text("config = {'api_prefix': '/v2'}\n")
+        assert load_config().project.api_prefix == "/v2"
+
+    def test_structure_file_is_rejected_with_migration_hint(self, config_dir):
+        (config_dir / "structure.py").write_text("config = {'base_prefix': '/api/v1'}\n")
+        with pytest.raises(ForgeAPIConfigError) as exc:
+            load_config()
+        assert "api_prefix" in exc.value.hint
 
     def test_reads_http_section(self, config_dir):
         (config_dir / "http.py").write_text(

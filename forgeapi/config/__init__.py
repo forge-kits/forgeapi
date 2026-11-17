@@ -12,8 +12,8 @@ from .models import (
     QueueConfig,
     SchedulerConfig,
     StorageConfig,
-    StructureConfig,
 )
+from .layout import layout
 
 __all__ = [
     "env",
@@ -21,7 +21,7 @@ __all__ = [
     "config_from_dict",
     "KitConfig",
     "ProjectConfig",
-    "StructureConfig",
+    "layout",
     "HttpConfig",
     "AuthConfig",
     "PaginationConfig",

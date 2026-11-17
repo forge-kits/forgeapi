@@ -9,6 +9,7 @@ from pathlib import Path
 
 from forgeapi.cli import ui
 from forgeapi.cli.base import Command
+from forgeapi.config.layout import layout
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
@@ -120,7 +121,7 @@ Exit code is 1 when any check fails (warnings do not fail).
         return cfg
 
     def _check_structure(self, cfg) -> None:
-        st = cfg.structure
+        st = layout
         for label, path in (
             ("models_dir", st.models_dir),
             ("controllers_dir", st.controllers_dir),
@@ -129,7 +130,7 @@ Exit code is 1 when any check fails (warnings do not fail).
             if Path(path).is_dir():
                 self._add(OK, f"{label}: {path}")
             else:
-                self._add(WARN, f"{label} '{path}' does not exist", "fix config/project.py structure or create it")
+                self._add(WARN, f"{label} '{path}' does not exist", "create it (forgeapi init scaffolds it)")
 
     def _load_tortoise_dict(self, cfg) -> dict | None:
         try:
@@ -177,6 +178,14 @@ Exit code is 1 when any check fails (warnings do not fail).
                     "(schedule:/queue: commands create them at runtime instead)",
                 )
 
+        if cfg.cache.driver == "database" and "forgeapi.cache.models" not in all_modules:
+            self._add(
+                WARN,
+                "cache driver is 'database' but 'forgeapi.cache.models' is not in TORTOISE_ORM models",
+                "add it to config/database.py and run db:makemigrations && db:migrate, "
+                "or set the cache driver to 'redis'",
+            )
+
         for conn_name, conn in tc["connections"].items():
             engine = conn if isinstance(conn, str) else conn.get("engine", "")
             engine = engine.lower()
@@ -190,9 +199,9 @@ Exit code is 1 when any check fails (warnings do not fail).
         return tc
 
     def _check_scheduler(self, cfg) -> None:
-        if not cfg.provided("scheduler") and not Path(cfg.structure.schedule_file).exists():
+        if not cfg.provided("scheduler") and not Path(layout.schedule_file).exists():
             return
-        path = Path(cfg.scheduler.schedule if cfg.provided("scheduler") else cfg.structure.schedule_file)
+        path = Path(cfg.scheduler.schedule if cfg.provided("scheduler") else layout.schedule_file)
         if not path.exists():
             self._add(WARN, f"schedule file '{path}' not found", "create it with a `scheduler = Scheduler()` variable")
             return

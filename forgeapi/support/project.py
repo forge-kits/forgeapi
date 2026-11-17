@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 #: A directory is a forgeapi project root when its ``config/`` holds one of these files.
-_ANCHORS = ("project.py", "structure.py", "database.py", "auth.py")
+_ANCHORS = ("project.py", "database.py", "auth.py")
 _MAX_DEPTH = 12
 
 

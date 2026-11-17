@@ -256,7 +256,7 @@ core.auth       # Auth facade | None (None when config/auth.py absent)
 core.config     # KitConfig — access any section
 core.providers  # list of active Provider instances
 core.use(MiddlewareClass, **kwargs)          # add middleware after boot
-core.include_router(router, prefix="/")     # prepends base_prefix
+core.include_router(router, prefix="/")     # prepends api_prefix
 ```
 
 ## Running the dev server
@@ -502,6 +502,8 @@ from forgeapi.auth.strategies.base import AuthStrategy
 auth.extend("apikey", ApiKeyStrategy)
 # now "apikey" is a valid strategy name in config/auth.py
 ```
+`authenticate(request)` returns only the user id (str or int), or `None` when credentials are absent.
+The guard loads the user from the DB by that id via the guard's `user_model`.
 
 ## Telegram strategy
 Client sends `window.Telegram.WebApp.initData` via `X-Telegram-Init-Data` or `Authorization: tma <initData>`.
@@ -661,7 +663,7 @@ await Cache.increment("counter", amount=5)
 ## Configuration (config/cache.py)
 ```python
 config = {
-    "driver": "memory",                        # "memory" | "redis"
+    "driver": "database",                      # "database" | "redis"
     "prefix": "myapp:",
     "ttl": None,                               # default TTL in seconds (None = no expiry)
     "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
@@ -1011,7 +1013,7 @@ config = {"default_limit": 20, "max_limit": 100}
 
 # config/cache.py
 config = {
-    "driver": "memory",   # "memory" | "redis"
+    "driver": "database",   # "database" | "redis"
     "prefix": "",
     "ttl": None,
     "redis_url": "redis://localhost:6379/0",

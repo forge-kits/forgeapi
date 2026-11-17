@@ -4,6 +4,7 @@ import importlib
 import sys
 from pathlib import Path
 
+from forgeapi.config.layout import layout
 from forgeapi.foundation import Provider
 from forgeapi.logging import log
 
@@ -55,7 +56,7 @@ class BroadcastProvider(Provider):
         _log.debug("BroadcastProvider: driver=%s", cfg.driver)
 
     def boot(self) -> None:
-        listeners_dir = self.config.structure.listeners_dir
+        listeners_dir = layout.listeners_dir
 
         if not self.config.provided("broadcast"):
             if Path(listeners_dir).exists():

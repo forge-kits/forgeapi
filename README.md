@@ -132,8 +132,7 @@ my-project/
   main.py                    # entry point — FastAPI app + Core(app)
   .env                       # secrets (COOKIE_SECRET, DB_* etc.)
   config/                    # config directory (see §24)
-    project.py               # name, debug, extra providers
-    structure.py             # directory layout + base_prefix
+    project.py               # name, api_prefix, debug, extra providers
     http.py                  # cors, rate_limit, request_id, access_log, middleware
     auth.py                  # named guards (cookie / telegram)
     pagination.py            # default_limit, max_limit
@@ -417,9 +416,18 @@ class ApiKeyStrategy(AuthStrategy):
     @classmethod
     def from_config(cls, cfg: dict) -> "ApiKeyStrategy": ...
 
+    async def authenticate(self, request):
+        key = request.headers.get("X-Api-Key")
+        if not key:
+            return None                 # no credentials
+        return lookup_user_id(key)      # user id (primary key)
+
 auth.extend("apikey", ApiKeyStrategy)
 # now usable in config/auth.py: {"strategy": "apikey", ...}
 ```
+
+`authenticate()` returns only the user id (`str` or `int`), or `None` when credentials are absent.
+The guard loads the user from the DB by that id, using the guard's `user_model`.
 
 Strategies raise **only** `ForgeAPIAuthError` subclasses — never
 `HTTPException`, never touch the DB.
@@ -655,7 +663,7 @@ asyncio.run(main())
 
 ## 8. Controllers
 
-Controllers group routes. `Core` auto-discovers all `*_controller.py` files in `controllers_dir` (recursively) and registers their routers under `base_prefix`.
+Controllers group routes. `Core` auto-discovers all `*_controller.py` files in `app/controllers` (recursively) and registers their routers under `api_prefix`.
 
 ### Base pattern
 
@@ -744,7 +752,7 @@ If `prefix` is not set, it is derived from the class name:
 | `AdminUserController` | `/admin/users` |
 | `SuperAdminOrderController` | `/super/admin/orders` |
 
-Final URL = `base_prefix` + `controller.prefix` + `route path`
+Final URL = `api_prefix` + `controller.prefix` + `route path`
 
 ```bash
 forgeapi make:controller Post          # controllers/post_controller.py
@@ -1157,7 +1165,7 @@ TORTOISE_ORM = {
 }
 ```
 
-**3. Nothing to register** — `Core(app)` scans `models_dir` and activates
+**3. Nothing to register** — `Core(app)` scans `database/models` and activates
 permissions automatically when it finds the single `PermissionsMixin`
 subclass (silently skips when there is none).
 
@@ -2258,7 +2266,7 @@ forgeapi doctor    # check env, config, Tortoise models, scheduler file, DB conn
 
 ---
 
-## 23. Configuration reference (config/)
+## 24. Configuration reference (config/)
 
 The only config format is a **`config/` directory of Python dict files**
 Each `config/<section>.py` defines a module-level
@@ -2323,7 +2331,7 @@ config = {
 config = {"default_limit": 20, "max_limit": 100}
 
 # config/cache.py
-config = {"driver": "memory", "prefix": "", "ttl": None,
+config = {"driver": "database", "prefix": "", "ttl": None,
           "redis_url": "redis://localhost:6379/0"}
 
 # config/storage.py
@@ -2422,7 +2430,7 @@ Known sections are validated by Pydantic models; misconfiguration raises
 
 ---
 
-## 24. MCP Server
+## 25. MCP Server
 
 forge-kits ships an MCP server that gives AI assistants (Claude Code, Cursor, etc.) direct access to API docs, code generation tools, and project structure scanning — without reading source files.
 

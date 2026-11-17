@@ -1,3 +1,4 @@
+from forgeapi.config.layout import layout
 from forgeapi.foundation import Provider
 from forgeapi.logging import log
 
@@ -11,10 +12,10 @@ class ControllerProvider(Provider):
         from .discovery import load_controllers
         load_controllers(
             self.app,
-            self.config.structure.controllers_dir,
-            self.config.structure.base_prefix,
+            layout.controllers_dir,
+            self.config.project.api_prefix,
         )
         _log.debug(
             "Controllers: auto-discovered from '%s'",
-            self.config.structure.controllers_dir,
+            layout.controllers_dir,
         )

@@ -59,6 +59,17 @@ def _from_py_dir(directory: Path) -> KitConfig:
             continue
         raw[f.stem] = _load_section(f)
 
+    if "structure" in raw:
+        raise ForgeAPIConfigError(
+            f"'{directory / 'structure.py'}' is no longer used.",
+            hint=(
+                'Delete it and set "api_prefix" (formerly "base_prefix") in config/project.py. '
+                "Project directories are fixed: database/models, app/controllers, app/schemas, "
+                "app/listeners, app/policies, app/jobs, app/observers, app/providers, "
+                "app/commands, database/seeds."
+            ),
+        )
+
     try:
         cfg = KitConfig(**raw)
         cfg._provided = set(raw)

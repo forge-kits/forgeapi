@@ -9,7 +9,7 @@ from forgeapi.logging import log
 _log = log.channel("controllers.discovery")
 
 
-def load_controllers(app: FastAPI, controllers_dir: str, base_prefix: str = "") -> None:
+def load_controllers(app: FastAPI, controllers_dir: str, api_prefix: str = "") -> None:
     """Auto-import ``**/*_controller.py`` from *controllers_dir* and register routers.
 
     Supports two styles:
@@ -51,7 +51,7 @@ def load_controllers(app: FastAPI, controllers_dir: str, base_prefix: str = "") 
             for cls in ctrl_classes:
                 if not cls._registered:
                     cls()
-                app.include_router(cls.router, prefix="" if cls.web else base_prefix)
+                app.include_router(cls.router, prefix="" if cls.web else api_prefix)
             continue
 
         # Legacy style: module-level router
@@ -66,4 +66,4 @@ def load_controllers(app: FastAPI, controllers_dir: str, base_prefix: str = "") 
                     and obj.__module__ == mod.__name__
                 ):
                     obj()
-        app.include_router(router, prefix=base_prefix)
+        app.include_router(router, prefix=api_prefix)

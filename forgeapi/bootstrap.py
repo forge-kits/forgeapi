@@ -143,8 +143,8 @@ class Core:
     # ── Router ────────────────────────────────────────────────────────────────
 
     def include_router(self, router, prefix: str = "", **kwargs) -> "Core":
-        """Include a router, prepending the configured ``base_prefix``."""
-        base = self._cfg.structure.base_prefix
+        """Include a router, prepending the configured ``api_prefix``."""
+        base = self._cfg.project.api_prefix
         self._app.include_router(router, prefix=base + prefix, **kwargs)
         return self
 

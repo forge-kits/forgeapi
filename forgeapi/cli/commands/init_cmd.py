@@ -18,6 +18,7 @@ config = {{
     "name": "{name}",
     "version": "0.1.0",
     "description": "",
+    "api_prefix": "/api/v1",            # URL prefix of every controller route
     "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
     "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name (e.g. "Europe/Sofia") — scheduler, queue
     # Extra forgeapi.foundation.Provider classes to run on startup:
@@ -33,22 +34,6 @@ config = {
     "request_id": False,   # inject X-Request-ID header
     "access_log": False,   # log method/path/status/duration per request
     "middleware": [],     # custom middleware classes or (cls, kwargs) tuples
-}
-'''
-
-_CONFIG_STRUCTURE_TEMPLATE = '''\
-config = {
-    "models_dir": "database/models",
-    "controllers_dir": "app/controllers",
-    "schemas_dir": "app/schemas",
-    "listeners_dir": "app/listeners",
-    "policies_dir": "app/policies",
-    "jobs_dir": "app/jobs",
-    "observers_dir": "app/observers",
-    "providers_dir": "app/providers",
-    "commands_dir": "app/commands",
-    "seeds_dir": "database/seeds",
-    "base_prefix": "/api/v1",
 }
 '''
 
@@ -423,7 +408,6 @@ Creates:
         self._write(root / "database/models/user.py", _USER_MODEL_TEMPLATES[strategy], typer)
         self._write(root / "app/controllers/controller.py", _CONTROLLER_BASE, typer)
         self._write(root / "config/project.py", _CONFIG_PROJECT_TEMPLATE.format(name=name), typer)
-        self._write(root / "config/structure.py", _CONFIG_STRUCTURE_TEMPLATE, typer)
         self._write(root / "config/http.py", _CONFIG_HTTP_TEMPLATE, typer)
         self._write(root / "config/auth.py", _CONFIG_AUTH_TEMPLATES[strategy], typer)
         self._write(root / "config/pagination.py", _CONFIG_PAGINATION_TEMPLATE, typer)

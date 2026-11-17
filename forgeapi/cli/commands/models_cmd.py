@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from forgeapi.cli.base import Command
+from forgeapi.config.layout import layout
 
 
 class ModelsCommand(Command):
@@ -12,7 +13,7 @@ class ModelsCommand(Command):
     help_text = """\
 Usage: forgeapi models
 
-Lists all Tortoise model classes found in models_dir, their table names
+Lists all Tortoise model classes found in database/models, their table names
 and field names.
 """
 
@@ -20,8 +21,8 @@ and field names.
         from forgeapi.cli import ui
         from forgeapi.config import load_config
 
-        cfg = load_config()
-        st = cfg.structure
+        load_config()  # fail early on an invalid config/
+        st = layout
 
         cwd = str(Path.cwd())
         if cwd not in sys.path:

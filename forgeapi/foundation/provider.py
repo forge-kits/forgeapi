@@ -33,7 +33,7 @@ class Provider:
                 self.app.add_middleware(TenantMiddleware)
 
             def boot(self) -> None:
-                load_tenants(self.config.structure.models_dir)
+                load_tenants("database/models")
     """
 
     def __init__(self, app: "FastAPI", config: "KitConfig") -> None:

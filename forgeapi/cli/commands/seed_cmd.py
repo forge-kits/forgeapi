@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from forgeapi.cli.base import Command
+from forgeapi.config.layout import layout
 
 
 class SeedCommand(Command):
@@ -18,7 +19,7 @@ class SeedCommand(Command):
         from forgeapi.config import load_config
 
         cfg = load_config()
-        seeds_dir = Path(cfg.structure.seeds_dir)
+        seeds_dir = Path(layout.seeds_dir)
 
         cwd = str(Path.cwd())
         if cwd not in sys.path:

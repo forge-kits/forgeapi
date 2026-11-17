@@ -7,6 +7,8 @@ class ProjectConfig(BaseModel):
     name: str = "my-app"
     version: str = "0.1.0"
     description: str = ""
+    #: URL prefix for every auto-discovered controller route and ``Core.include_router``.
+    api_prefix: str = "/api/v1"
     #: Verbose forgeapi logging. Set via env: ``"debug": env("APP_DEBUG", False)``.
     #: Never enable in production.
     debug: bool = False
@@ -49,21 +51,6 @@ class HttpConfig(BaseModel):
     request_id: bool = False
     access_log: bool = True
     middleware: list[Any] = []
-
-
-class StructureConfig(BaseModel):
-    models_dir: str = "database/models"
-    controllers_dir: str = "app/controllers"
-    schemas_dir: str = "app/schemas"
-    listeners_dir: str = "app/listeners"
-    policies_dir: str = "app/policies"
-    jobs_dir: str = "app/jobs"
-    observers_dir: str = "app/observers"
-    providers_dir: str = "app/providers"
-    commands_dir: str = "app/commands"
-    seeds_dir: str = "database/seeds"
-    base_prefix: str = "/api/v1"
-    schedule_file: str = "schedule.py"
 
 
 class AuthConfig(BaseModel):
@@ -220,7 +207,6 @@ class KitConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     project: ProjectConfig = ProjectConfig()
-    structure: StructureConfig = StructureConfig()
     http: HttpConfig = HttpConfig()
     auth: AuthConfig = AuthConfig()
     pagination: PaginationConfig = PaginationConfig()

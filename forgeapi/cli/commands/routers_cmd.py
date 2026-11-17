@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from forgeapi.cli.base import Command
+from forgeapi.config.layout import layout
 
 
 class RoutersCommand(Command):
@@ -12,7 +13,7 @@ class RoutersCommand(Command):
     help_text = """\
 Usage: forgeapi routers
 
-Scans all controllers in controllers_dir and prints every registered route.
+Scans all controllers in app/controllers and prints every registered route.
 Does not require a running database — reads route metadata at import time.
 
 Output:
@@ -27,7 +28,7 @@ Output:
         from forgeapi.config import load_config
 
         cfg = load_config()
-        st = cfg.structure
+        st = layout
 
         cwd = str(Path.cwd())
         if cwd not in sys.path:
@@ -40,7 +41,7 @@ Output:
 
         from forgeapi.controllers.base import Controller as BaseController
 
-        base_prefix = st.base_prefix
+        api_prefix = cfg.project.api_prefix
         routes: list[tuple[str, str, str, str]] = []
 
         for f in sorted(directory.glob("**/*_controller.py")):
@@ -71,7 +72,7 @@ Output:
                     fn = getattr(cls, method_name)
                     if callable(fn) and hasattr(fn, "_route"):
                         meta = fn._route
-                        full_path = base_prefix + cls.prefix + meta["path"]
+                        full_path = api_prefix + cls.prefix + meta["path"]
                         for http_method in meta["methods"]:
                             routes.append((http_method, full_path, cls.__name__, method_name))
 
