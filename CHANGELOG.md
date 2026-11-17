@@ -2,6 +2,21 @@
 
 Generated from git history by `scripts/gen_changelog.py` (Conventional Commits). Do not edit by hand.
 
+## [1.9.1](https://github.com/forge-kits/forgeapi/releases/tag/v1.9.1) - 2026-11-17
+
+### Features
+
+- **cli:** Runserver --dev runs server, queue and scheduler in tabs with search and restart ([`619331f`](https://github.com/forge-kits/forgeapi/commit/619331f))
+- **cli:** Add make:listener, init no longer creates policies, commands or listeners ([`55aa2b6`](https://github.com/forge-kits/forgeapi/commit/55aa2b6))
+- **BREAKING** **schemas:** Add Schema with partial() and changes(), make:schema reads the model ([`00120eb`](https://github.com/forge-kits/forgeapi/commit/00120eb))
+- **mail:** Add Mail, Mailable, the log and smtp drivers and make:mail ([`d3eb896`](https://github.com/forge-kits/forgeapi/commit/d3eb896))
+- **BREAKING** **cache:** Store the cache in the database by default, remove the memory driver ([`5acadd9`](https://github.com/forge-kits/forgeapi/commit/5acadd9))
+- **BREAKING** **auth:** Resolve users from the guard's DB model, drop AuthUser and TelegramUser ([`92eee51`](https://github.com/forge-kits/forgeapi/commit/92eee51))
+
+### Refactoring
+
+- **BREAKING** **config:** Fixed project layout, api_prefix replaces base_prefix, drop structure.py ([`888a348`](https://github.com/forge-kits/forgeapi/commit/888a348))
+
 ## [1.8.2](https://github.com/forge-kits/forgeapi/releases/tag/v1.8.2) - 2026-11-09
 
 ### Features
