@@ -18,7 +18,6 @@ from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 from forgeapi.cli.commands.init_cmd import InitCommand
 from forgeapi.cli.commands.generate_cmd import MakeCommand
-from forgeapi.cli.commands.generate_schema_cmd import GenerateSchemaCommand
 from forgeapi.cli.commands.db_cmd import DbCommand
 from forgeapi.cli.commands.seed_cmd import SeedCommand
 from forgeapi.cli.commands.fresh_cmd import FreshCommand
@@ -130,7 +129,6 @@ _mcp_cmd = McpCommand()
 _registry = CommandRegistry([
     InitCommand(),
     _make_cmd,
-    GenerateSchemaCommand(),
     RoutersCommand(),
     ModelsCommand(),
     RunserverCommand(),

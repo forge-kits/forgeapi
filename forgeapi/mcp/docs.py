@@ -36,9 +36,9 @@ class PostController(Controller):
 
 ## Schemas | Auth | Broadcasting
 ```python
-class PostResponse(BaseSchema): title: str          # + id/created_at/updated_at inherited
-class PostCreate(BaseCreateSchema): title: str
-class PostUpdate(BaseUpdateSchema): title: str | None = None  # auto-optional
+class PostCreate(Schema): title: str
+PostUpdate = PostCreate.partial("PostUpdate")           # PATCH: every field optional, derived
+class PostResponse(BaseSchema): title: str              # + id/created_at/updated_at inherited
 
 user: CurrentUser   # 401 if missing  |  user: OptionalUser  # None if missing
 auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
@@ -106,8 +106,7 @@ Post.observe(PostObserver)
 
 ## CLI
 ```bash
-forgeapi make:controller Post && forgeapi make:model Post
-forgeapi generate:schema Post --payload --response
+forgeapi make:model Post && forgeapi make:schema Post && forgeapi make:controller Post
 forgeapi db:makemigrations && forgeapi db:migrate
 forgeapi runserver --reload        # NOT uvicorn directly
 ```
@@ -164,7 +163,7 @@ forgeapi make:controller Post         # app/controllers/post_controller.py
 forgeapi make:controller AdminUser    # app/controllers/admin/user_controller.py
 forgeapi make:model Post              # database/models/post.py
 forgeapi make:seed User               # database/seeds/user_seeder.py
-forgeapi generate:schema Post --payload --response
+forgeapi make:schema Post             # app/schemas/post.py: PostCreate, PostUpdate, PostResponse
 ```
 """,
 
@@ -322,7 +321,7 @@ class PostController(Controller):
         return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.post("/", status_code=201)
-    async def create(self, payload: PostCreatePayload) -> dict:
+    async def create(self, payload: PostCreate) -> dict:
         return await Post.create_from(payload, author_id=1)
 
     @route.get("/{id}")
@@ -330,7 +329,7 @@ class PostController(Controller):
         return await Post.find_or_fail(id)
 
     @route.patch("/{id}")
-    async def update(self, id: int, payload: PostUpdatePayload):
+    async def update(self, id: int, payload: PostUpdate):
         post = await Post.find_or_fail(id)
         return await post.update_from(payload)
 
@@ -606,7 +605,7 @@ class PostPolicy(Policy):
 from forgeapi import gate
 
 @route.patch("/{id}")
-async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+async def update(self, id: int, payload: PostUpdate, user: CurrentUser):
     post = await Post.find_or_fail(id)
     await gate.authorize(user, "update", post)   # raises 403 if denied
     return await post.update_from(payload)
@@ -782,43 +781,53 @@ config = {
 "schemas": """\
 # forge-kits: Schemas (Pydantic)
 
-```python
-from forgeapi import BaseSchema, BaseCreateSchema, BaseUpdateSchema
-```
+One file per resource, three classes: `app/schemas/post.py`.
 
-## BaseSchema — response / read
 ```python
-class PostResponse(BaseSchema):
-    # Inherits: id, created_at, updated_at — model_config from_attributes=True
+from forgeapi import BaseSchema, Schema
+
+class PostCreate(Schema):                      # POST body
     title: str
-    body: str
-    author_id: int
+    body: str | None = None
+    tags: list[str] = []
+
+PostUpdate = PostCreate.partial("PostUpdate")  # PATCH body: every field optional
+
+class PostResponse(BaseSchema):                # output
+    # Inherits: id, created_at, updated_at (None when the model has no timestamps)
+    # model_config from_attributes=True
+    title: str
+    body: str | None = None
 
 response = PostResponse.model_validate(orm_post_instance)
 ```
 
-## BaseCreateSchema — POST body
-```python
-class PostCreatePayload(BaseCreateSchema):
-    title: str
-    body: str
-    tags: list[str] = []
-```
+## Schema (input base)
+`Schema` is a pydantic BaseModel plus two helpers (you may use plain BaseModel instead):
+- `Schema.partial(name)`: copy with every field optional (default None).  Constraints and validators
+  stay and run only for fields the client sends.  Dynamic class: editors do not autocomplete its fields.
+  If PATCH must differ from POST, subclass `Schema` by hand with `X | None = None` fields.
+- `payload.changes()`: only the fields the client sent (`model_dump(exclude_unset=True)`); a field sent
+  as null is kept, so `post.update_from_dict(payload.changes()); await post.save()` can clear a value.
 
-## BaseUpdateSchema — PATCH body
-```python
-class PostUpdatePayload(BaseUpdateSchema):
-    # ALL fields must be Optional — raises TypeError otherwise
-    title: str | None = None
-    body: str | None = None
-```
+## Hiding fields
+- `forgeapi make:schema User --exclude a,b`: skip model fields in all three generated classes
+- credential-looking names (password, *_hash, *token*, *secret*, *api_key*) stay in Create, auto-left out of Response
+- input-only field: declare it in Create, not in Response (Response returns only what it declares)
+- one class both ways: `password: str = Field(exclude=True)`  (accepted on input, never in output)
+- one call: `model.model_dump(exclude={"password"})`
+- create_from/update_from use `model_dump(exclude_none=True)`: a client cannot PATCH a field to null
 
-## generate:schema CLI
+## make:schema CLI
 ```bash
-forgeapi generate:schema Post --payload        # Create + Update payloads
-forgeapi generate:schema Post --response       # PostResponse
-forgeapi generate:schema Post --payload --response  # all three
+forgeapi make:schema Post                     # app/schemas/post.py
+forgeapi make:schema User --exclude internal  # drop a model field from all three classes
+forgeapi make:model Post -s                   # model + schema
+forgeapi make:controller Post --ms            # model + schema + controller
 ```
+Fields are copied from `database/models/post.py` when it exists, otherwise empty stubs.
+Credential-looking fields (password, *_hash, *token*, *secret*, *api_key*) stay in Create but are
+left out of Response (the command reports them).  Existing files are never overwritten.
 """,
 
 "middleware": """\

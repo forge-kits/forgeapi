@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from forgeapi.cli.commands.generate_schema_cmd import GenerateSchemaCommand
+from forgeapi.cli import schema_gen
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -20,63 +20,63 @@ class Priority(int, enum.Enum):
     HIGH = 2
 
 
-# ── _resolve_python_type ──────────────────────────────────────────────────────
+# ── resolve_python_type ──────────────────────────────────────────────────────
 
 class TestResolvePythonType:
     def test_builtins(self):
-        assert GenerateSchemaCommand._resolve_python_type(str) == ("str", None)
-        assert GenerateSchemaCommand._resolve_python_type(int) == ("int", None)
-        assert GenerateSchemaCommand._resolve_python_type(float) == ("float", None)
-        assert GenerateSchemaCommand._resolve_python_type(bool) == ("bool", None)
-        assert GenerateSchemaCommand._resolve_python_type(bytes) == ("bytes", None)
+        assert schema_gen.resolve_python_type(str) == ("str", None)
+        assert schema_gen.resolve_python_type(int) == ("int", None)
+        assert schema_gen.resolve_python_type(float) == ("float", None)
+        assert schema_gen.resolve_python_type(bool) == ("bool", None)
+        assert schema_gen.resolve_python_type(bytes) == ("bytes", None)
 
     def test_enum_returns_class_name_and_import(self):
-        py_type, import_line = GenerateSchemaCommand._resolve_python_type(Status)
+        py_type, import_line = schema_gen.resolve_python_type(Status)
         assert py_type == "Status"
         assert import_line == f"from {Status.__module__} import Status"
 
     def test_int_enum_returns_class_name_and_import(self):
-        py_type, import_line = GenerateSchemaCommand._resolve_python_type(Priority)
+        py_type, import_line = schema_gen.resolve_python_type(Priority)
         assert py_type == "Priority"
         assert import_line == f"from {Priority.__module__} import Priority"
 
     def test_unknown_class_returns_any(self):
-        py_type, import_line = GenerateSchemaCommand._resolve_python_type(None)
+        py_type, import_line = schema_gen.resolve_python_type(None)
         assert py_type == "Any"
         assert import_line == "from typing import Any"
 
 
-# ── _literal_default ──────────────────────────────────────────────────────────
+# ── literal_default ──────────────────────────────────────────────────────────
 
 class TestLiteralDefault:
     def test_none(self):
-        assert GenerateSchemaCommand._literal_default(None) is None
+        assert schema_gen.literal_default(None) is None
 
     def test_callable_skipped(self):
-        assert GenerateSchemaCommand._literal_default(lambda: "x") is None
+        assert schema_gen.literal_default(lambda: "x") is None
 
     def test_bool(self):
-        assert GenerateSchemaCommand._literal_default(True) == "True"
-        assert GenerateSchemaCommand._literal_default(False) == "False"
+        assert schema_gen.literal_default(True) == "True"
+        assert schema_gen.literal_default(False) == "False"
 
     def test_int(self):
-        assert GenerateSchemaCommand._literal_default(42) == "42"
+        assert schema_gen.literal_default(42) == "42"
 
     def test_float(self):
-        assert GenerateSchemaCommand._literal_default(3.14) == "3.14"
+        assert schema_gen.literal_default(3.14) == "3.14"
 
     def test_str(self):
-        assert GenerateSchemaCommand._literal_default("hello") == "'hello'"
+        assert schema_gen.literal_default("hello") == "'hello'"
 
     def test_enum_instance(self):
-        assert GenerateSchemaCommand._literal_default(Status.ACTIVE) == "Status.ACTIVE"
-        assert GenerateSchemaCommand._literal_default(Priority.HIGH) == "Priority.HIGH"
+        assert schema_gen.literal_default(Status.ACTIVE) == "Status.ACTIVE"
+        assert schema_gen.literal_default(Priority.HIGH) == "Priority.HIGH"
 
     def test_unknown_type_returns_none(self):
-        assert GenerateSchemaCommand._literal_default(object()) is None
+        assert schema_gen.literal_default(object()) is None
 
 
-# ── _load_model_fields with enum ──────────────────────────────────────────────
+# ── load_model_fields with enum ──────────────────────────────────────────────
 
 class TestLoadModelFieldsEnum:
     def _make_char_enum_field(self, enum_cls, null=False, default=None):
@@ -107,7 +107,7 @@ class TestLoadModelFieldsEnum:
         module = MagicMock()
         module.MyModel = model_cls
         with patch("importlib.import_module", return_value=module):
-            return GenerateSchemaCommand._load_model_fields("MyModel", "app.models.my_model")
+            return schema_gen.load_model_fields("MyModel", "app.models.my_model")
 
     def test_char_enum_field_generates_correct_type(self):
         fields_map = {"status": self._make_char_enum_field(Status)}

@@ -63,7 +63,7 @@ class ModelMixin:
         without a value don't overwrite database defaults.
 
         Args:
-            payload: A Pydantic model instance (e.g. a ``BaseCreateSchema``).
+            payload: A Pydantic model instance (e.g. a ``Schema`` subclass).
             **extra: Additional field values merged after the schema dump
                      (useful for server-set fields like ``author_id``).
 
@@ -104,7 +104,7 @@ class ModelMixin:
         values are skipped so partial PATCH payloads work correctly.
 
         Args:
-            payload: A Pydantic model instance (e.g. a ``BaseUpdateSchema``).
+            payload: A Pydantic model instance (e.g. ``PostCreate.partial()``).
             **extra: Additional field overrides applied after the schema.
 
         Returns:

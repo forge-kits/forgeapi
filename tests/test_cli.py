@@ -1,6 +1,5 @@
 import pytest
 from forgeapi.cli.commands.generate_cmd import MakeCommand
-from forgeapi.cli.commands.generate_schema_cmd import GenerateSchemaCommand
 from forgeapi.scheduling.scheduler import ScheduledJob
 
 _make = MakeCommand()
@@ -130,51 +129,6 @@ def test_namespace_api_version():
     ns, resource = _make._parse_namespace("ApiV1User")
     assert ns == "api/v1"
     assert resource == "User"
-
-
-# ── generate:schema flag parsing ──────────────────────────────────────────────
-
-_gs = GenerateSchemaCommand()
-
-
-def test_schema_flags_payload_only():
-    want_p, want_r, crud, unknown = _gs._parse_flags(["--payload"])
-    assert want_p is True
-    assert want_r is False
-    assert crud is None
-    assert unknown == []
-
-
-def test_schema_flags_response_only():
-    want_p, want_r, crud, unknown = _gs._parse_flags(["--response"])
-    assert want_p is False
-    assert want_r is True
-
-
-def test_schema_flags_both():
-    want_p, want_r, crud, unknown = _gs._parse_flags(["--payload", "--response"])
-    assert want_p is True
-    assert want_r is True
-
-
-def test_schema_flags_crud_long():
-    _, _, crud, _ = _gs._parse_flags(["--payload", "--crud"])
-    assert crud == {"c", "r", "u"}
-
-
-def test_schema_flags_crud_short_all():
-    _, _, crud, _ = _gs._parse_flags(["--payload", "-crud"])
-    assert crud == {"c", "r", "u", "d"}
-
-
-def test_schema_flags_crud_partial():
-    _, _, crud, _ = _gs._parse_flags(["--payload", "--cu"])
-    assert crud == {"c", "u"}
-
-
-def test_schema_flags_unknown():
-    _, _, _, unknown = _gs._parse_flags(["--payload", "--unknown"])
-    assert "--unknown" in unknown
 
 
 # ── ScheduledJob — compute_next_run ──────────────────────────────────────────
@@ -322,6 +276,44 @@ def test_make_observer_and_provider(mk_project, capsys):
     assert "class MetricsProvider(Provider):" in prov
     assert "app.providers.metrics_provider.MetricsProvider" in capsys.readouterr().out
     compile(obs, "o.py", "exec"); compile(prov, "p.py", "exec")
+
+
+def test_make_mail_creates_class_and_templates(mk_project):
+    _run_make("mail", "WeeklyReport")
+    src = (mk_project / "app/mail/weekly_report.py").read_text()
+    assert "class WeeklyReport(Mailable):" in src
+    assert 'subject = "Weekly report"' in src
+    assert (mk_project / "app/mail/__init__.py").exists()
+    html = mk_project / "app/templates/mail/weekly_report.html"
+    txt = mk_project / "app/templates/mail/weekly_report.txt"
+    assert "{{ name }}" in html.read_text() and "{{ name }}" in txt.read_text()
+
+    # the generated trio works together: class + templates render a real message
+    from forgeapi.mail.mail import _Mail
+
+    namespace: dict = {}
+    exec(compile(src, "weekly_report.py", "exec"), namespace)
+    mail = _Mail()
+    mail.configure(driver="log", from_address="n@app.test", templates=str(html.parent))
+    msg = mail.build(namespace["WeeklyReport"]("Ana"), to="a@x.com")
+    assert "Hi Ana" in msg.html and msg.text.strip() == "Hi Ana,"
+
+
+def test_make_mail_uses_templates_dir_from_config(mk_project):
+    (mk_project / "config").mkdir()
+    (mk_project / "config/mail.py").write_text("config = {'templates': 'resources/mail'}\n")
+    _run_make("mail", "Welcome")
+    assert (mk_project / "resources/mail/welcome.html").exists()
+    assert (mk_project / "app/mail/welcome.py").exists()
+    assert not (mk_project / "app/templates").exists()
+
+
+def test_make_mail_does_not_overwrite(mk_project):
+    _run_make("mail", "Welcome")
+    html = mk_project / "app/templates/mail/welcome.html"
+    html.write_text("<p>edited</p>")
+    _run_make("mail", "Welcome")
+    assert html.read_text() == "<p>edited</p>"
 
 
 def test_make_does_not_overwrite_and_validates_name(mk_project):

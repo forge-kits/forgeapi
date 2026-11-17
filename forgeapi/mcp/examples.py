@@ -28,20 +28,18 @@ class Post(ModelMixin, Model):
 
 
 # app/schemas/post.py
-from forgeapi import BaseSchema, BaseCreateSchema, BaseUpdateSchema
+from forgeapi import BaseSchema, Schema
+
+class PostCreate(Schema):
+    title: str
+    body: str
+
+PostUpdate = PostCreate.partial("PostUpdate")   # PATCH: every field optional
 
 class PostResponse(BaseSchema):
     title: str
     body: str
     author_id: int
-
-class PostCreatePayload(BaseCreateSchema):
-    title: str
-    body: str
-
-class PostUpdatePayload(BaseUpdateSchema):
-    title: str | None = None
-    body: str | None = None
 
 
 # app/controllers/post_controller.py
@@ -49,7 +47,7 @@ from fastapi import Request
 from forgeapi.controllers import Controller, route
 from forgeapi.auth import CurrentUser
 from database.models.post import Post
-from app.schemas.post import PostResponse, PostCreatePayload, PostUpdatePayload
+from app.schemas.post import PostResponse, PostCreate, PostUpdate
 
 
 class PostController(Controller):
@@ -62,7 +60,7 @@ class PostController(Controller):
         return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.post("/", status_code=201)
-    async def create(self, payload: PostCreatePayload, user: CurrentUser):
+    async def create(self, payload: PostCreate, user: CurrentUser):
         return await Post.create_from(payload, author_id=int(user.id))
 
     @route.get("/{id}")
@@ -70,7 +68,7 @@ class PostController(Controller):
         return await Post.find_or_fail(id)
 
     @route.patch("/{id}")
-    async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+    async def update(self, id: int, payload: PostUpdate, user: CurrentUser):
         post = await Post.find_or_fail(id)
         return await post.update_from(payload)
 
@@ -219,7 +217,7 @@ class PostController(Controller):
         return {"posts": []}
 
     @route.post("/", status_code=201)
-    async def create(self, payload: PostCreatePayload, user=require_permission("create:posts")):
+    async def create(self, payload: PostCreate, user=require_permission("create:posts")):
         return await Post.create_from(payload, author_id=user.id)
 
     @route.delete("/{id}", status_code=204)
@@ -232,7 +230,7 @@ class PostController(Controller):
         return {"total_posts": await Post.all().count()}
 
     @route.patch("/{id}")
-    async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+    async def update(self, id: int, payload: PostUpdate, user: CurrentUser):
         db_user = await User.find_or_fail(int(user.id))
         if not await db_user.can("edit:posts"):
             raise HTTPException(403, "Forbidden")

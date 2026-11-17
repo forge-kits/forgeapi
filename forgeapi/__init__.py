@@ -5,7 +5,7 @@ from .foundation import Provider
 from .config import KitConfig, load_config, config_from_dict, env, StorageConfig
 from .exceptions import ForgeAPIError, ForgeAPIConfigError, ForgeAPIImportError
 from .settings import BaseAppSettings
-from .schemas import BaseSchema, BaseCreateSchema, BaseUpdateSchema
+from .schemas import BaseSchema, Schema
 from .database import ModelMixin, scope, ModelObserver
 from .broadcasting import BroadcastManager, broadcast
 from .controllers import Controller, route
@@ -37,8 +37,7 @@ __all__ = [
     "BaseAppSettings",
     # Schemas
     "BaseSchema",
-    "BaseCreateSchema",
-    "BaseUpdateSchema",
+    "Schema",
     # Database
     "ModelMixin",
     "scope",

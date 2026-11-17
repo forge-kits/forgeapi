@@ -1,10 +1,14 @@
 from fastapi import HTTPException
 from forgeapi.auth import CurrentUser
 from forgeapi.controllers import Controller, route
-{% if with_model %}
+{%- if with_model %}
+
 from {{ models_module }}.{{ module_name }} import {{ class_name }}
-from {{ schemas_module }}.{{ module_name }} import {{ class_name }}Schema
-{% endif %}
+{%- endif %}
+{%- if with_model and with_schema %}
+
+from {{ schemas_module }}.{{ module_name }} import {{ class_name }}Response
+{%- endif %}
 
 
 class {{ class_name }}Controller(Controller):
@@ -13,8 +17,10 @@ class {{ class_name }}Controller(Controller):
 
     @route.get("/", response_model=None)
     async def index(self):
-{% if with_model %}
-        return await {{ class_name }}.all().order_by("-created_at").paginate(15, {{ class_name }}Schema)
+{% if with_model and with_schema %}
+        return await {{ class_name }}.all().order_by("-created_at").paginate(15, {{ class_name }}Response)
+{% elif with_model %}
+        return await {{ class_name }}.all().order_by("-created_at").paginate(15)
 {% else %}
         pass
 {% endif %}

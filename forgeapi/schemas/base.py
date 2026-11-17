@@ -1,60 +1,65 @@
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
+
 from pydantic import BaseModel
+
+from .partial import partial_schema
+
+
+class Schema(BaseModel):
+    """Base for input schemas (request bodies): a Pydantic model plus two helpers.
+
+    ::
+
+        class PostCreate(Schema):
+            title: str
+            body: str | None = None
+
+        PostUpdate = PostCreate.partial("PostUpdate")   # PATCH body: every field optional
+
+    Everything else is plain Pydantic: field types, ``Field(...)`` constraints and
+    validators work as documented by Pydantic.
+    """
+
+    @classmethod
+    def partial(cls, name: str | None = None) -> type["Schema"]:
+        """A copy of this schema where every field is optional (default ``None``).
+
+        Constraints and validators stay and run only for the fields the client sends.
+        The original schema is not changed.
+
+        Args:
+            name: Class name shown in OpenAPI.  Defaults to ``<Class>Partial``.
+        """
+        return partial_schema(cls, name)
+
+    def changes(self) -> dict[str, Any]:
+        """Only the fields the client actually sent (``model_dump(exclude_unset=True)``).
+
+        Unlike ``None``-filtering, a field sent as ``null`` is kept, so a PATCH can clear a value::
+
+            await post.update_from_dict(payload.changes())
+            await post.save()
+        """
+        return self.model_dump(exclude_unset=True)
 
 
 class BaseSchema(BaseModel):
-    """Base response schema — reads from a Tortoise model via ``from_attributes``.
+    """Base response schema: reads from a Tortoise model via ``from_attributes``.
 
+    ``id`` is required, ``created_at`` / ``updated_at`` are filled when the model has them.
     Inherit to add your own response fields::
 
-        class UserSchema(BaseSchema):
+        class UserResponse(BaseSchema):
             username: str
             email: str
     """
 
     id: int | str
-    created_at: datetime
-    updated_at: datetime
+    #: Optional so a model without timestamp columns still validates.
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
-
-
-class BaseCreateSchema(BaseModel):
-    """Base schema for POST (create) payloads.
-
-    All fields should be required::
-
-        class UserCreateSchema(BaseCreateSchema):
-            username: str
-            email: str
-    """
-
-
-class BaseUpdateSchema(BaseModel):
-    """Base schema for PATCH (update) payloads.
-
-    All fields **must** be ``Optional`` with a ``None`` default so partial
-    updates work — the framework only persists fields that are explicitly
-    provided by the client.  Declaring a required (non-optional) field is a
-    bug and is caught at class-definition time::
-
-        class UserUpdateSchema(BaseUpdateSchema):
-            username: str | None = None
-            email: str | None = None
-    """
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        # Pydantic sets model_fields AFTER __init_subclass__ returns, so we
-        # inspect the raw class annotations instead.  A field declared without
-        # a default value has an entry in __annotations__ but NOT in __dict__.
-        own_annotations = cls.__dict__.get("__annotations__", {})
-        for field_name in own_annotations:
-            if field_name.startswith("_"):
-                continue
-            if field_name not in cls.__dict__:
-                raise TypeError(
-                    f"{cls.__name__}.{field_name} must be Optional[...] = None. "
-                    f"BaseUpdateSchema subclasses represent PATCH payloads — "
-                    f"all fields must be optional to support partial updates."
-                )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from forgeapi.config.layout import layout
 from forgeapi.support.project import find_project_root
 
 
@@ -161,7 +162,7 @@ def _scan_controllers(files: list[Path], root: Path, base_prefix: str) -> list[s
 
 
 def _scan_schemas(files: list[Path], root: Path) -> list[str]:
-    schema_bases = {"BaseSchema", "BaseCreateSchema", "BaseUpdateSchema", "BaseModel"}
+    schema_bases = {"BaseSchema", "Schema", "BaseModel"}
     out: list[str] = []
     for f in files:
         tree = _ast_parse_safe(f)
@@ -174,6 +175,16 @@ def _scan_schemas(files: list[Path], root: Path) -> list[str]:
             bases = [_node_name(b) for b in node.bases]
             if any(b in schema_bases for b in bases):
                 classes.append(f"    {node.name}({', '.join(bases)})")
+        for node in tree.body:
+            # PostUpdate = PostCreate.partial("PostUpdate")
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "partial"
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                classes.append(f"    {node.targets[0].id} = {_node_name(node.value.func.value)}.partial()")
         if classes:
             try:
                 rel = f.relative_to(root)
@@ -250,15 +261,12 @@ def _read_env_keys(root: Path) -> list[str]:
 # Default structure
 # ---------------------------------------------------------------------------
 
-_STRUCTURE_DEFAULTS: dict[str, str] = {
-    "models_dir":      "database/models",
-    "controllers_dir": "app/controllers",
-    "schemas_dir":     "app/schemas",
-    "listeners_dir":   "app/listeners",
-    "policies_dir":    "app/policies",
-    "seeds_dir":       "database/seeds",
-    "base_prefix":     "/api/v1",
-    "schedule_file":   "schedule.py",
+_DEFAULT_API_PREFIX = "/api/v1"
+
+_STRUCTURE: dict[str, str] = {
+    key: getattr(layout, key)
+    for key in ("models_dir", "controllers_dir", "schemas_dir", "listeners_dir",
+                "policies_dir", "seeds_dir", "schedule_file")
 }
 
 
@@ -298,17 +306,16 @@ def scan_project(path: str = ".") -> str:
         return (
             f"No forge-kits project found at or above '{given}'.\n"
             "A forge-kits project needs a config/ directory with at least one of:\n"
-            "  config/project.py, config/structure.py, config/database.py, config/auth.py\n\n"
+            "  config/project.py, config/database.py, config/auth.py\n\n"
             "Run `forgeapi init <name>` to scaffold a new project."
         )
 
     config_dir  = root / "config"
-    struct_cfg  = _read_config_py(config_dir / "structure.py")
     project_cfg = _read_config_py(config_dir / "project.py")
     auth_cfg    = _read_config_py(config_dir / "auth.py")
 
-    struct      = {**_STRUCTURE_DEFAULTS, **struct_cfg}
-    base_prefix = struct["base_prefix"]
+    struct      = _STRUCTURE
+    base_prefix = project_cfg.get("api_prefix", _DEFAULT_API_PREFIX)
 
     auth_strategy = "none"
     guards = auth_cfg.get("guards", {})
@@ -380,12 +387,11 @@ def project_info(path: str = ".") -> str:
         )
 
     config_dir  = root / "config"
-    struct_cfg  = _read_config_py(config_dir / "structure.py")
     project_cfg = _read_config_py(config_dir / "project.py")
     auth_cfg    = _read_config_py(config_dir / "auth.py")
     pag_cfg     = _read_config_py(config_dir / "pagination.py")
 
-    struct = {**_STRUCTURE_DEFAULTS, **struct_cfg}
+    struct = _STRUCTURE
     pag    = {**{"default_limit": 20, "max_limit": 100}, **pag_cfg}
 
     lines = [
@@ -402,12 +408,10 @@ def project_info(path: str = ".") -> str:
         lines.append(f"  config/{cfg_file.name}")
 
     lines += ["", "## Structure"]
+    lines.append(f"  {'api_prefix':<20} = {project_cfg.get('api_prefix', _DEFAULT_API_PREFIX)!r}")
     for key, val in struct.items():
-        if key == "base_prefix":
-            lines.append(f"  {key:<20} = {val!r}")
-        else:
-            marker = " [exists]" if (root / val).exists() else " [missing]"
-            lines.append(f"  {key:<20} = {val!r}{marker}")
+        marker = " [exists]" if (root / val).exists() else " [missing]"
+        lines.append(f"  {key:<20} = {val!r}{marker}")
 
     lines += [
         "", "## Auth",

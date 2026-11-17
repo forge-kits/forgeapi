@@ -30,9 +30,15 @@
    - [Route decorator](#route-decorator)
    - [Auto-prefix and namespace](#auto-prefix-and-namespace)
 9. [Schemas](#9-schemas)
+   - [Pydantic in five minutes](#pydantic-in-five-minutes)
+   - [Where they live](#where-they-live)
+   - [The three schemas](#the-three-schemas)
    - [Base classes](#base-classes)
-   - [Schema directories](#schema-directories)
-   - [generate:schema](#generateschema)
+   - [Update schema: partial()](#update-schema-partial)
+   - [Using schemas in a controller](#using-schemas-in-a-controller)
+   - [Generating schemas: make:schema](#generating-schemas-makeschema)
+   - [Hiding and removing fields](#hiding-and-removing-fields)
+   - [Customising schemas](#customising-schemas)
 10. [Policies](#10-policies)
 11. [Database](#11-database)
     - [ModelMixin](#modelmixin)
@@ -698,7 +704,7 @@ from fastapi import Request
 from forgeapi.controllers import Controller, route
 from forgeapi.auth import CurrentUser
 from database.models.post import Post
-from app.schemas.post import PostResponse, PostCreatePayload, PostUpdatePayload
+from app.schemas.post import PostResponse, PostCreate, PostUpdate
 
 
 class PostController(Controller):
@@ -711,7 +717,7 @@ class PostController(Controller):
         return await Post.all().order_by("-created_at").paginate(15, PostResponse)
 
     @route.post("/", status_code=201)
-    async def create(self, payload: PostCreatePayload, user: CurrentUser):
+    async def create(self, payload: PostCreate, user: CurrentUser):
         return await Post.create_from(payload, author_id=int(user.id))
 
     @route.get("/{id}")
@@ -719,7 +725,7 @@ class PostController(Controller):
         return await Post.find_or_fail(id)
 
     @route.patch("/{id}")
-    async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+    async def update(self, id: int, payload: PostUpdate, user: CurrentUser):
         post = await Post.find_or_fail(id)
         return await post.update_from(payload)
 
@@ -1203,7 +1209,7 @@ class PostPolicy(Policy):
 from forgeapi import gate
 
 @route.patch("/{id}")
-async def update(self, id: int, payload: PostUpdatePayload, user: CurrentUser):
+async def update(self, id: int, payload: PostUpdate, user: CurrentUser):
     post = await Post.find_or_fail(id)
     await gate.authorize(user, "update", post)   # raises HTTP 403 if denied
     return await post.update_from(payload)
@@ -2788,16 +2794,6 @@ number, not an option. `-h` and `--help` are always taken by the CLI.
 
 A module that fails to import does not hide the other commands: the error is printed as a warning.
 
-### Typed schema generation (from existing model)
-
-```bash
-forgeapi generate:schema Post --payload             # Create + Update payloads
-forgeapi generate:schema Post --response            # PostResponse
-forgeapi generate:schema Post --payload --response  # both
-forgeapi generate:schema Post --payload -crud       # all four incl. DeletePayload
-forgeapi generate:schema Post --payload --cu        # Create + Update only
-```
-
 ### DB commands
 
 > Never run `aerich` directly — always use `forgeapi db:*`
@@ -3173,7 +3169,7 @@ If `forgeapi-mcp` is installed in a virtualenv, point to it directly:
 | `permissions` | PermissionsMixin, require_permission, roles |
 | `policies` | Policy, Gate, authorize, allows, discover |
 | `pagination` | QuerySet .paginate(), offset, cursor, configuration |
-| `schemas` | BaseSchema, BaseCreateSchema, BaseUpdateSchema |
+| `schemas` | Create / Update / Response schemas, Schema.partial, make:schema |
 | `middleware` | Middleware, Guard, built-in middleware |
 | `cli` | All CLI commands reference |
 | `config` | config/ directory format, all known sections |

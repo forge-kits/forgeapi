@@ -90,7 +90,7 @@ def generate_controller(name: str, routes: list[str]) -> str:
             "",
             '    @route.get("/", response_model=None)',
             "    async def index(self):",
-            "        pass  # e.g.: return await Model.all().paginate(15, ModelSchema)",
+            "        pass  # e.g.: return await Model.all().paginate(15, ModelResponse)",
         ]
     else:
         for rd in route_defs:
@@ -100,7 +100,7 @@ def generate_controller(name: str, routes: list[str]) -> str:
 
             sig = ["self"] + [f"{p}: int" for p in rd["path_params"]]
             if rd["http_method"] in ("POST", "PUT", "PATCH"):
-                payload = name + ("Create" if rd["http_method"] == "POST" else "Update") + "Payload"
+                payload = name + ("Create" if rd["http_method"] == "POST" else "Update")
                 sig.append(f"payload: {payload}")
             if rd["http_method"] != "GET":
                 sig.append("user: CurrentUser")
@@ -120,7 +120,9 @@ def generate_schema(name: str, fields: list[str], mode: str = "all") -> str:
         fields: Field definitions in "name:type" or "name:type=default" format.
                 Examples: ["title:str", "body:str", "views:int=0", "tags:list[str]=[]"].
         mode:   "all" | "response" | "create" | "update" | "crud"
-                "all"/"crud" → all three classes; others → single class.
+                "all"/"crud" → Create, Update and Response.
+                "update" → Create and Update (Update is derived from Create).
+                "create" / "response" → that class only.
 
     Returns:
         Python source code with the requested schema classes.
@@ -143,41 +145,39 @@ def generate_schema(name: str, fields: list[str], mode: str = "all") -> str:
 
     mode = mode.lower().strip()
     gen_response = mode in ("all", "crud", "response")
-    gen_create   = mode in ("all", "crud", "create")
     gen_update   = mode in ("all", "crud", "update")
+    gen_create   = mode in ("all", "crud", "create") or gen_update   # Update is derived from Create
 
     if not any([gen_response, gen_create, gen_update]):
         return f"Error: unknown mode '{mode}'. Use: all, response, create, update, crud."
 
-    lines = ["from forgeapi import BaseSchema, BaseCreateSchema, BaseUpdateSchema", ""]
+    imports = [n for n, used in (
+        ("BaseSchema", gen_response), ("Schema", gen_create),
+    ) if used]
+    lines = [f"from forgeapi import {', '.join(imports)}", ""]
 
-    if gen_response:
-        lines += [
-            "",
-            f"class {name}Response(BaseSchema):",
-            "    # Inherits: id, created_at, updated_at — model_config from_attributes=True",
-        ]
-        lines += (
-            [f"    {fn}: {ft}" + (f" = {d}" if d else "") for fn, ft, d in parsed]
-            or ["    pass"]
-        )
+    def _body() -> list[str]:
+        return [
+            f"    {fn}: {ft}" + (f" = {d}" if d else "")
+            for fn, ft, d in parsed
+        ] or ["    pass"]
 
     if gen_create:
-        lines += ["", f"class {name}CreatePayload(BaseCreateSchema):"]
-        lines += (
-            [f"    {fn}: {ft}" + (f" = {d}" if d else "") for fn, ft, d in parsed]
-            or ["    pass"]
-        )
+        lines += ["", "", f"class {name}Create(Schema):"] + _body()
 
     if gen_update:
         lines += [
             "",
-            f"class {name}UpdatePayload(BaseUpdateSchema):",
-            "    # All fields Optional — safe for partial PATCH",
+            "",
+            f'{name}Update = {name}Create.partial("{name}Update")   # PATCH: every field optional',
         ]
-        lines += (
-            [f"    {fn}: {ft} | None = None" for fn, ft, _ in parsed]
-            or ["    pass"]
-        )
+
+    if gen_response:
+        lines += [
+            "",
+            "",
+            f"class {name}Response(BaseSchema):",
+            "    # Inherits: id, created_at, updated_at — model_config from_attributes=True",
+        ] + _body()
 
     return "\n".join(lines) + "\n"

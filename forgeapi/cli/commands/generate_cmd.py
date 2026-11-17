@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import re
+import sys
 from pathlib import Path
 
 import typer
 
-from forgeapi.cli import ui
+from forgeapi.cli import schema_gen, ui
 from forgeapi.cli.base import Command
+from forgeapi.config.layout import layout
 
 
 _LETTER_TO_FLAG: dict[str, str] = {"m": "model", "c": "controller", "s": "schema"}
@@ -58,7 +61,7 @@ Add -h after any subcommand for details.
         "controller": """\
 Usage: forgeapi make:controller <Name> [flags]
 
-Generates a controller in controllers_dir.
+Generates a controller in app/controllers.
 CamelCase words before the last become a namespace subdirectory.
 
   User              → controllers/user_controller.py
@@ -67,7 +70,7 @@ CamelCase words before the last become a namespace subdirectory.
 
 Flags:
   -m, --model    Also generate Tortoise model
-  -s, --schema   Also generate stub schemas
+  -s, --schema   Also generate schemas (Create / Update / Response)
   Compound: --ms  --mc  --mcs  -ms  etc.
 
 Examples:
@@ -78,11 +81,11 @@ Examples:
         "model": """\
 Usage: forgeapi make:model <Name> [flags]
 
-Generates a Tortoise ORM model in models_dir.
+Generates a Tortoise ORM model in database/models.
 
 Flags:
   -c, --controller      Also generate controller
-  -s, --schema          Also generate stub schemas
+  -s, --schema          Also generate schemas (Create / Update / Response)
   --alias <FileName>    Write model into models/<filename>.py instead of the
                         default <name>.py. If the file already exists and is
                         non-empty the new class is appended at the end.
@@ -97,21 +100,30 @@ Examples:
         "schema": """\
 Usage: forgeapi make:schema <Name> [flags]
 
-Generates stub Pydantic schemas (3 classes with pass).
-For typed schemas from an existing model use generate:schema.
+Generates app/schemas/<name>.py with three classes:
+
+  <Name>Create    input for POST   (Schema)
+  <Name>Update    input for PATCH  (Create.partial(): every field optional)
+  <Name>Response  output           (BaseSchema, reads from the model)
+
+When database/models/<name>.py exists, the fields are copied from the model with their types.
+Otherwise the classes are empty stubs.  Fields that look like credentials (password, *_hash,
+*token*, ...) are left out of the Response and reported.  Existing files are never overwritten.
 
 Flags:
-  -m, --model        Also generate Tortoise model
-  -c, --controller   Also generate controller
+  -m, --model         Also generate Tortoise model (the schema then reads its fields)
+  -c, --controller    Also generate controller
+  --exclude a,b       Leave these model fields out of all three classes
 
 Examples:
   forgeapi make:schema Post
+  forgeapi make:schema User --exclude internal_note
   forgeapi make:schema Post --mc
 """,
         "job": """\
 Usage: forgeapi make:job <Name>
 
-Generates a queue Job in jobs_dir (default: app/jobs/).
+Generates a queue Job in app/jobs/.
 
 Example:
   forgeapi make:job SendWelcomeEmail
@@ -120,9 +132,9 @@ Example:
         "policy": """\
 Usage: forgeapi make:policy <Model>
 
-Generates <Model>Policy in policies_dir (default: app/policies/), registered
+Generates <Model>Policy in app/policies/, registered
 with @gate.policy(<Model>) and picked up by gate.discover().
-Import the model from models_dir, so create the model first (make:model).
+Import the model from database/models, so create the model first (make:model).
 
 Example:
   forgeapi make:policy Post
@@ -131,7 +143,7 @@ Example:
         "observer": """\
 Usage: forgeapi make:observer <Model>
 
-Generates <Model>Observer in observers_dir (default: app/observers/).
+Generates <Model>Observer in app/observers/.
 Observers are not auto-discovered: register with <Model>.observe(<Model>Observer)
 at startup.
 
@@ -142,7 +154,7 @@ Example:
         "provider": """\
 Usage: forgeapi make:provider <Name>
 
-Generates <Name>Provider in providers_dir (default: app/providers/).
+Generates <Name>Provider in app/providers/.
 Enable it by adding the dotted path to "providers" in config/project.py.
 
 Example:
@@ -152,7 +164,7 @@ Example:
         "command": """\
 Usage: forgeapi make:command <Name>
 
-Generates a custom CLI command in commands_dir (default: app/commands/).
+Generates a custom CLI command in app/commands/.
 The class name sets the command name: the first CamelCase word, then ":" and the rest
 joined with "-". Commands are discovered automatically and listed in `forgeapi`.
 A name already used by a built-in command (make:*, db:*, ...) is refused.
@@ -237,13 +249,23 @@ Example:
             alias = remaining[idx + 1]
             remaining = remaining[:idx] + remaining[idx + 2:]
 
+        exclude: list[str] = []
+        if "--exclude" in remaining:
+            idx = remaining.index("--exclude")
+            if idx + 1 >= len(remaining) or remaining[idx + 1].startswith("-"):
+                self.abort("--exclude requires a value.  Example: --exclude password,internal_note")
+            exclude = [x for x in remaining[idx + 1].split(",") if x]
+            remaining = remaining[:idx] + remaining[idx + 2:]
+
         flags, unknown = self._parse_flags(remaining)
         if unknown:
             self.abort(f"unknown flags: {' '.join(unknown)}")
 
-        self._run(kind=kind, name=name, flags=flags, alias=alias)
+        self._run(kind=kind, name=name, flags=flags, alias=alias, exclude=exclude)
 
-    def _run(self, kind: str, name: str, flags: dict[str, bool], alias: str | None) -> None:
+    def _run(
+        self, kind: str, name: str, flags: dict[str, bool], alias: str | None, exclude: list[str] | None = None
+    ) -> None:
         from forgeapi.config import load_config
 
         if not _VALID_NAME_RE.match(name):
@@ -252,11 +274,13 @@ Example:
                 "and underscores (no slashes, dots, or other special characters)."
             )
 
-        cfg = load_config()
-        st = cfg.structure
+        cfg = load_config()  # also fails early on an invalid config/
+        st = layout
 
         if alias and kind != "model":
             self.abort("--alias is only supported for make:model.")
+        if exclude and not (kind == "schema" or flags.get("schema")):
+            self.abort("--exclude is only supported when generating schemas (make:schema, or -s).")
 
         allowed = _ALLOWED_EXTRA[kind]
         for flag_name, val in flags.items():
@@ -300,23 +324,26 @@ Example:
             ctrl_dir      = str(Path(st.controllers_dir).joinpath(*ns_parts))
             models_module = self._relative_import(ctrl_dir, st.models_dir)
             ctrl_filename = resource_module
+            schemas_module = self._relative_import(ctrl_dir, st.schemas_dir)
         else:
             plural        = self._to_plural(module_name)
             url_prefix    = "/" + plural.replace("_", "-")
             tag           = plural.replace("_", " ")
             models_module = self._relative_import(st.controllers_dir, st.models_dir)
             ctrl_filename = module_name
+            schemas_module = self._relative_import(st.controllers_dir, st.schemas_dir)
 
         plural = self._to_plural(module_name)
 
         if gen_model:
             self._gen_model(class_name, module_name, plural, st, alias=alias)
         if gen_schema:
-            self._gen_schema(class_name, module_name, st)
+            self._gen_schema(class_name, module_name, st, exclude or [])
         if gen_controller:
             self._gen_controller(
                 class_name, module_name, ctrl_filename,
                 url_prefix, tag, models_module, gen_model, st,
+                with_schema=gen_schema, schemas_module=schemas_module,
                 namespace=namespace,
             )
 
@@ -352,9 +379,31 @@ Example:
                 f.write(import_line)
             ui.file_event("updated", str(init_file))
 
-    def _gen_schema(self, class_name: str, module_name: str, st) -> None:
-        content = self._render("schema.py.jinja2", class_name=class_name)
-        self._write(Path(st.schemas_dir) / f"{module_name}.py", content)
+    def _gen_schema(self, class_name: str, module_name: str, st, exclude: list[str]) -> None:
+        """``<Name>Create`` / ``Update`` / ``Response``, typed from the model when it exists."""
+        fields: list[dict] = []
+        imports: set[str] = set()
+        model_file = Path(st.models_dir) / f"{module_name}.py"
+        if model_file.exists():
+            if str(Path.cwd()) not in sys.path:
+                sys.path.insert(0, str(Path.cwd()))
+            importlib.invalidate_caches()
+            module_dotted = Path(st.models_dir).as_posix().replace("/", ".") + "." + module_name
+            try:
+                fields, imports = schema_gen.load_model_fields(class_name, module_dotted)
+            except Exception as exc:
+                ui.warn(f"could not read {model_file} ({exc}); generating empty schemas")
+
+        known = {f["name"] for f in fields}
+        for missing in sorted(set(exclude) - known) if fields else []:
+            ui.warn(f"--exclude {missing}: no such field on {class_name}")
+
+        content, hidden = schema_gen.build_schema_module(class_name, fields, imports, exclude)
+        created = self._write(Path(st.schemas_dir) / f"{module_name}.py", content)
+        if created and hidden:
+            ui.file_event("note", f"{class_name}Response leaves out: {', '.join(hidden)}")
+        if created and not fields:
+            ui.file_event("next", f"add the fields to {class_name}Create and {class_name}Response")
 
     def _gen_controller(
         self,
@@ -367,6 +416,8 @@ Example:
         with_model: bool,
         st,
         namespace: str = "",
+        with_schema: bool = False,
+        schemas_module: str = "",
     ) -> None:
         content = self._render(
             "controller.py.jinja2",
@@ -376,6 +427,8 @@ Example:
             tag=tag,
             models_module=models_module,
             with_model=with_model,
+            with_schema=with_schema,
+            schemas_module=schemas_module,
         )
         if namespace:
             ns_parts = namespace.split("/")

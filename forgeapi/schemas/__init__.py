@@ -1,3 +1,3 @@
-from .base import BaseSchema, BaseCreateSchema, BaseUpdateSchema
+from .base import BaseSchema, Schema
 
-__all__ = ["BaseSchema", "BaseCreateSchema", "BaseUpdateSchema"]
+__all__ = ["BaseSchema", "Schema"]
