@@ -122,7 +122,7 @@ class DatabaseConfig(BaseModel):
 
 
 class CacheConfig(BaseModel):
-    driver: str = "memory"
+    driver: str = "database"   # "database" | "redis"
     prefix: str = ""
     ttl: int | None = None
     redis_url: str = "redis://localhost:6379/0"

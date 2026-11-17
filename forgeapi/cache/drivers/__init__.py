@@ -1,5 +1,5 @@
 from .base import CacheDriver
-from .memory import MemoryDriver
+from .database import DatabaseDriver
 from .redis_ import RedisDriver
 
-__all__ = ["CacheDriver", "MemoryDriver", "RedisDriver"]
+__all__ = ["CacheDriver", "DatabaseDriver", "RedisDriver"]

@@ -225,6 +225,7 @@ TORTOISE_ORM = {{
                 "database.models", 
                 "forgeapi.scheduling.models", 
                 "forgeapi.queue.models", 
+                "forgeapi.cache.models", 
                 "forgeapi.permissions.models"
             ],
             "default_connection": "default",
@@ -252,7 +253,7 @@ TORTOISE_ORM = {{
     "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {{
         "models": {{
-            "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.permissions.models"],
+            "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.cache.models", "forgeapi.permissions.models"],
             "default_connection": "default",
             "migrations":         "database.migrations",
         }}
@@ -282,7 +283,7 @@ TORTOISE_ORM = {{
     "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {{
         "models": {{
-            "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.permissions.models"],
+            "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.cache.models", "forgeapi.permissions.models"],
             "default_connection": "default",
             "migrations":         "database.migrations",
         }}

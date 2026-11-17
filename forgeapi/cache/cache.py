@@ -16,7 +16,7 @@ class _Cache:
 
     def configure(
         self,
-        driver: str = "memory",
+        driver: str = "database",
         prefix: str = "",
         ttl: int | None = None,
         redis_url: str = "redis://localhost:6379/0",
@@ -26,15 +26,21 @@ class _Cache:
         if driver == "redis":
             from .drivers.redis_ import RedisDriver
             self._driver = RedisDriver(url=redis_url)
+        elif driver == "database":
+            from .drivers.database import DatabaseDriver
+            self._driver = DatabaseDriver()
         else:
-            from .drivers.memory import MemoryDriver
-            self._driver = MemoryDriver()
+            from forgeapi.exceptions import ForgeAPIConfigError
+            raise ForgeAPIConfigError(
+                f"Unknown cache driver '{driver}'.",
+                hint='Valid values: "database", "redis".',
+            )
 
     @property
     def _backend(self) -> CacheDriver:
         if self._driver is None:
-            from .drivers.memory import MemoryDriver
-            self._driver = MemoryDriver()
+            from .drivers.database import DatabaseDriver
+            self._driver = DatabaseDriver()
         return self._driver
 
     def _k(self, key: str) -> str:

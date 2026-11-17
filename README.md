@@ -1244,9 +1244,9 @@ users = await (await User.without_role("admin"))
 
 ## 13. Cache
 
-Async key-value cache. Two drivers: **memory** (default, no dependencies) and **redis** (persistent, shared across workers).
+Async key-value cache. Two drivers: **database** (default, stored in the app's DB) and **redis** (faster, shared across workers).
 
-`Core` auto-configures `Cache` from `config/cache.py` on startup (memory driver by default).
+`Core` auto-configures `Cache` from `config/cache.py` on startup (database driver by default).
 
 ```python
 from forgeapi import Cache
@@ -1316,7 +1316,7 @@ async def popular(self):
 
 | Driver | When to use |
 |---|---|
-| `memory` | Single process, development, testing. Resets on restart. |
+| `database` | Default. Table `cache` in the project DB, shared across workers, survives restarts. Needs `forgeapi.cache.models` in `TORTOISE_ORM` |
 | `redis` | Multiple workers, production. Requires `pip install forge-kits[redis]` |
 
 ### Cache configuration
@@ -1324,12 +1324,21 @@ async def popular(self):
 ```python
 # config/cache.py
 config = {
-    "driver": "memory",                        # "memory" | "redis"
+    "driver": "database",                      # "database" | "redis"
     "prefix": "",                              # key prefix, e.g. "myapp:"
     "ttl": None,                               # default TTL in seconds (None = no expiry)
     "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
 }
 ```
+
+The database driver needs the table. Add the model to `config/database.py` and run the migration:
+
+```python
+"models": ["database.models", "forgeapi.cache.models"],
+```
+
+Expired rows are deleted when they are read. To purge the ones that are never read again, call
+`DatabaseDriver().prune()` from a scheduled task.
 
 Programmatic setup (without Core):
 
@@ -2380,7 +2389,7 @@ TORTOISE_ORM = {
     "timezone": env("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {
         "models": {
-            "models": ["database.models", "forgeapi.permissions.models"],
+            "models": ["database.models", "forgeapi.cache.models", "forgeapi.permissions.models"],
             "default_connection": "default",
             "migrations": "database.migrations",
         }

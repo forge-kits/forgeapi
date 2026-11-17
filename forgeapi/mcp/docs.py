@@ -669,10 +669,11 @@ config = {
 ```
 
 ## Drivers
-- **memory** — in-process dict with TTL, no dependencies, resets on restart
-- **redis** — persistent, shared across workers; requires `pip install forge-kits[redis]`
+- **database** — default; table `cache` in the project DB, shared across workers, survives restarts.
+  Requires `"forgeapi.cache.models"` in the TORTOISE_ORM models list (then migrate)
+- **redis** — faster, shared across workers; requires `pip install forge-kits[redis]`
 
-Core auto-configures Cache from `config/cache.py` on startup (memory driver by default).
+Core auto-configures Cache from `config/cache.py` on startup (database driver by default).
 """,
 
 "support": """\
