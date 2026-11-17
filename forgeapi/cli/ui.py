@@ -13,6 +13,9 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from rich.console import Console
 from rich.text import Text
 
+from forgeapi.cli.devviews import view_for, views_for
+from forgeapi.cli.logfmt import LEVEL_STYLES, LEVEL_WIDTH, parse_line
+
 console = Console(highlight=False)
 err_console = Console(stderr=True, highlight=False)
 
@@ -162,7 +165,57 @@ def server_started(app: str, host: str, port: int, reload: bool) -> None:
     blank()
 
 
-_FILE_STYLES = {"created": "green", "updated": "cyan", "exists": "yellow", "next": "magenta"}
+_PROCESS_COLORS = ("cyan", "magenta", "yellow", "green", "blue")
+
+
+def dev_started(app: str, host: str, port: int, reload: bool, processes: list[tuple[str, str]]) -> None:
+    """Banner of ``runserver --dev``: one row per process, ``(name, what it runs)``."""
+    blank()
+    console.print(Text.assemble("  ", ("ForgeAPI", BRAND), f" {package_version()}  ", ("development server", "dim")))
+    blank()
+    width = max(len(name) for name, _ in processes)
+    for i, (name, what) in enumerate(processes):
+        console.print(Text.assemble("  ", (name.ljust(width), f"bold {_PROCESS_COLORS[i % len(_PROCESS_COLORS)]}"), "  ", what), soft_wrap=True)
+    blank()
+    info(f"Server running on [http://{host}:{port}].")
+    summary([("App", app), ("Reload", "on (web only)" if reload else "off")])
+    blank()
+    console.print(Text("  Press Ctrl+C to stop everything.", style="dim"))
+    blank()
+
+
+def process_printer(names: list[str], *, timestamps: bool = False):
+    """``emit(name, line, kind)`` for the multiplexer: ``server | INFO  message`` with a colour per view.
+
+    ``names`` are the processes; the ``logs`` view (forgeapi / app logger lines of the server) is added.
+    """
+    views = views_for(names)
+    width = max(len(n) for n in views)
+    colors = {n: _PROCESS_COLORS[i % len(_PROCESS_COLORS)] for i, n in enumerate(views)}
+
+    def emit(name: str, line: str, kind: str) -> None:
+        level, message = None, None
+        if kind == "out":
+            level, message, logger = parse_line(Text.from_ansi(line))
+            name = view_for(name, logger)
+        text = Text("  ")
+        if timestamps:
+            text.append(time.strftime("%H:%M:%S") + "  ", style="dim")
+        text.append(name.ljust(width), style=f"bold {colors.get(name, 'white')}")
+        text.append(" | ", style="dim")
+        if message is not None:
+            text.append((level or "").ljust(LEVEL_WIDTH), style=LEVEL_STYLES.get(level or "", ""))
+            text.append("  ")
+            text.append_text(message)
+        else:
+            text.append(" " * LEVEL_WIDTH + "  ")
+            text.append(line, style="dim italic")
+        console.print(text, soft_wrap=True)
+
+    return emit
+
+
+_FILE_STYLES = {"created": "green", "updated": "cyan", "exists": "yellow", "next": "magenta", "note": "yellow"}
 
 
 def file_event(action: str, path: str, note: str = "") -> None:

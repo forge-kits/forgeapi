@@ -140,6 +140,8 @@ Always use the `forgeapi runserver` abstraction:
 ```bash
 forgeapi runserver                       # localhost:8000
 forgeapi runserver --reload              # with auto-reload (development)
+forgeapi runserver --dev                 # server + queue worker + scheduler, separate processes, one tab each (pip install forge-kits[dev])
+forgeapi runserver --dev --stream --timestamps   # one interleaved stream; -i plain output; --no-restart
 forgeapi runserver --port 9000           # custom port
 forgeapi runserver --host 0.0.0.0 --port 8080
 ```

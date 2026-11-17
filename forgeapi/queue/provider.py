@@ -35,9 +35,14 @@ class QueueProvider(Provider):
     _task: asyncio.Task | None = None
 
     def boot(self) -> None:
+        from forgeapi.support.workers import workers_run_externally
+
         cfg = self.config.queue
         if not cfg.enabled:
             _log.debug("QueueProvider: disabled via config")
+            return
+        if workers_run_externally():
+            _log.debug("QueueProvider: worker runs as a separate process, not starting it here")
             return
 
         self._register_lifespan(cfg.queue)

@@ -49,15 +49,13 @@ class Core:
         self._debug = self._cfg.project.debug
 
         _forge_logger = _logging.getLogger("forgeapi")
-        if self._debug:
-            _forge_logger.setLevel(_logging.DEBUG)
-            if not _forge_logger.handlers and not _logging.root.handlers:
-                _handler = _logging.StreamHandler()
-                _handler.setFormatter(_logging.Formatter("%(asctime)s  %(levelname)s  %(name)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-                _forge_logger.addHandler(_handler)
-                _forge_logger.propagate = False
-        else:
-            _forge_logger.setLevel(_logging.WARNING)
+        _forge_logger.setLevel(_logging.DEBUG if self._debug else _logging.WARNING)
+        # without a handler Python prints warnings as a bare message; keep the same format in both modes
+        if not _forge_logger.handlers and not _logging.root.handlers:
+            _handler = _logging.StreamHandler()
+            _handler.setFormatter(_logging.Formatter("%(asctime)s  %(levelname)s  %(name)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+            _forge_logger.addHandler(_handler)
+            _forge_logger.propagate = False
 
         if self._cfg.project.name:
             self._app.title = self._cfg.project.name

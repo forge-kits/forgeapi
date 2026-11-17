@@ -36,9 +36,14 @@ class SchedulerProvider(Provider):
     _task: asyncio.Task | None = None
 
     def boot(self) -> None:
+        from forgeapi.support.workers import workers_run_externally
+
         cfg = self.config.scheduler
         if not cfg.enabled:
             _log.debug("SchedulerProvider: disabled via config")
+            return
+        if workers_run_externally():
+            _log.debug("SchedulerProvider: scheduler runs as a separate process, not starting it here")
             return
 
         schedule_path = Path(cfg.schedule)
