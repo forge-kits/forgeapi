@@ -68,6 +68,25 @@ config = {
 }
 '''
 
+_CONFIG_MAIL_TEMPLATE = '''\
+from forgeapi import env
+
+config = {{
+    "driver": "log",                          # "log" (dev: writes to the log) | "smtp"
+    "from_address": "noreply@{name}.local",
+    "from_name": "{name}",
+    "templates": "app/templates/mail",        # Jinja2 templates for Mailable classes
+    # SMTP needs: pip install forge-kits[mail]
+    # "smtp": {{
+    #     "host": env("MAIL_HOST", "localhost"),
+    #     "port": 587,
+    #     "username": env("MAIL_USERNAME", ""),
+    #     "password": env("MAIL_PASSWORD", ""),
+    #     "encryption": "starttls",           # "starttls" | "ssl" | None
+    # }},
+}}
+'''
+
 _CONFIG_STORAGE_TEMPLATE = '''\
 from forgeapi import env
 
@@ -395,7 +414,8 @@ Creates:
         ui.blank()
         root.mkdir()
 
-        for d in ["app/controllers", "app/schemas", "app/listeners", "app/policies", "app/commands",
+        # policies, commands, mail, listeners, ... are not scaffolded: their make:* command creates the folder
+        for d in ["app/controllers", "app/schemas",
                   "database/models", "database/migrations", "database/seeds"]:
             p = root / d
             p.mkdir(parents=True, exist_ok=True)
@@ -415,6 +435,7 @@ Creates:
         self._write(root / "config/broadcast.py", _CONFIG_BROADCAST_TEMPLATE.format(name=name), typer)
         self._write(root / "config/scheduler.py", _CONFIG_SCHEDULER_TEMPLATE, typer)
         self._write(root / "config/queue.py", _CONFIG_QUEUE_TEMPLATE, typer)
+        self._write(root / "config/mail.py", _CONFIG_MAIL_TEMPLATE.format(name=name), typer)
         self._write(
             root / "config/database.py",
             _CONFIG_DATABASE_TEMPLATES[driver].format(name=name),

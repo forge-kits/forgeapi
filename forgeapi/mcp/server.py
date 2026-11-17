@@ -34,6 +34,7 @@ FETCH DOCS ON DEMAND — call get_docs() as soon as the topic comes up, before a
 - file upload / storage / S3 → get_docs('storage')
 - scheduler / cron jobs → get_docs('scheduler')
 - background jobs / queue → get_docs('queue')
+- sending e-mail / Mailable → get_docs('mail')
 - WebSocket / SSE / real-time → get_docs('broadcasting')
 - query scopes / filters → get_docs('scopes')
 - model observers / hooks → get_docs('observers')
@@ -45,7 +46,7 @@ FETCH DOCS ON DEMAND — call get_docs() as soon as the topic comes up, before a
 
 All available topics: cheatsheet, workflow, core, cli, controllers, broadcasting,
 auth, permissions, policies, schemas, middleware, config, models,
-cache, storage, scheduler, queue, scopes, observers, support, tortoise, tortoise_advanced.
+cache, storage, scheduler, queue, mail, scopes, observers, support, tortoise, tortoise_advanced.
 """,
 )
 

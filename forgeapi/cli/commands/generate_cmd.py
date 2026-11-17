@@ -21,9 +21,11 @@ _ALLOWED_EXTRA: dict[str, set[str]] = {
     "observer":   set(),
     "provider":   set(),
     "command":    set(),
+    "mail":       set(),
+    "listener":   set(),
 }
 
-_MAKE_KINDS = ("controller", "model", "schema", "seed", "job", "policy", "observer", "provider", "command")
+_MAKE_KINDS = ("controller", "model", "schema", "seed", "job", "policy", "observer", "provider", "command", "mail", "listener")
 
 
 class MakeCommand(Command):
@@ -34,13 +36,15 @@ Usage: forgeapi make:<command> <Name> [flags]
 
   make:controller <Name>   Generate controller  (-m -s)
   make:model <Name>        Generate model       (-c -s)
-  make:schema <Name>       Generate stub schemas (-m -c)
+  make:schema <Name>       Generate Create / Update / Response schemas (-m -c)
   make:seed <Name>         Generate a seeder
   make:job <Name>          Generate a queue job
   make:policy <Model>      Generate a policy for a model
   make:observer <Model>    Generate a model observer
   make:provider <Name>     Generate a provider
   make:command <Name>      Generate a custom CLI command
+  make:mail <Name>         Generate a Mailable and its templates
+  make:listener <Name>     Generate a broadcast event listener
 
 Namespace controllers — each CamelCase word becomes a path segment:
   AdminUser      → controllers/admin/user_controller.py   /admin/users
@@ -161,10 +165,36 @@ Example:
   forgeapi make:command Cleanup
   # → forgeapi cleanup
 """,
+        "listener": """\
+Usage: forgeapi make:listener <Name>
+
+Generates a broadcast listener in app/listeners/. The event name comes from the class name:
+the first CamelCase word, then ":" and the rest joined with "-". Listeners are imported on
+startup when config/broadcast.py exists.
+
+Example:
+  forgeapi make:listener OrderCreated
+  # → app/listeners/order_created_listener.py   (@broadcast.on("order:created"))
+
+  forgeapi make:listener Order
+  # → @broadcast.on("order")
+""",
+        "mail": """\
+Usage: forgeapi make:mail <Name>
+
+Generates a Mailable class in app/mail/ and its templates (.html and .txt)
+in the templates directory (app/templates/mail/ unless "templates" in config/mail.py says otherwise).
+
+Example:
+  forgeapi make:mail WeeklyReport
+  # → app/mail/weekly_report.py             (class WeeklyReport)
+  # → app/templates/mail/weekly_report.html
+  # → app/templates/mail/weekly_report.txt
+""",
         "seed": """\
 Usage: forgeapi make:seed <Name>
 
-Generates a seeder file in seeds_dir (default: database/seeds/).
+Generates a seeder file in database/seeds/.
 
 Example:
   forgeapi make:seed User
@@ -245,7 +275,12 @@ Example:
             ui.success("Done.")
             return
 
-        if kind in ("job", "policy", "observer", "provider", "command"):
+        if kind == "mail":
+            self._gen_mail(class_name, module_name, st, cfg.mail.templates)
+            ui.success("Done.")
+            return
+
+        if kind in ("job", "policy", "observer", "provider", "command", "listener"):
             self._gen_simple(kind, class_name, st)
             ui.success("Done.")
             return
@@ -353,10 +388,27 @@ Example:
 
     def _gen_seed(self, class_name: str, module_name: str, st) -> None:
         content = self._render("seeder.py.jinja2", class_name=class_name)
-        seeds_dir = getattr(st, "seeds_dir", "database/seeds")
+        seeds_dir = st.seeds_dir
         self._write(Path(seeds_dir) / f"{module_name}_seeder.py", content)
 
-    _SIMPLE_SUFFIX = {"policy": "Policy", "observer": "Observer", "provider": "Provider", "command": "Command"}
+    def _gen_mail(self, class_name: str, module_name: str, st, templates_dir: str) -> None:
+        """A Mailable class plus its .html and .txt templates."""
+        subject = re.sub(r"(?<!^)(?=[A-Z])", " ", class_name).capitalize()
+        for i in range(1, len(Path(st.mail_dir).parts) + 1):
+            self._ensure_init(Path(*Path(st.mail_dir).parts[:i]))
+        context = {"class_name": class_name, "module_name": module_name, "subject": subject}
+        created = self._write(
+            Path(st.mail_dir) / f"{module_name}.py", self._render("mail.py.jinja2", **context)
+        )
+        self._write(Path(templates_dir) / f"{module_name}.html", self._render("mail.html.jinja2", **context))
+        self._write(Path(templates_dir) / f"{module_name}.txt", self._render("mail.txt.jinja2", **context))
+        if created:
+            ui.file_event("next", f'await Mail.send({class_name}("..."), to="user@example.com")')
+
+    _SIMPLE_SUFFIX = {
+        "policy": "Policy", "observer": "Observer", "provider": "Provider",
+        "command": "Command", "listener": "Listener",
+    }
 
     def _gen_simple(self, kind: str, class_name: str, st) -> None:
         """job / policy / observer / provider / command: one file, no flags."""

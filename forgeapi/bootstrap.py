@@ -24,7 +24,8 @@ class Core:
     * middleware stack        — ``config/http.py`` (cors, rate_limit, ...)
     * auth guards             — boot when ``config/auth.py`` exists
     * storage                 — boot when ``config/storage.py`` exists
-    * permissions             — boot when a model in ``models_dir`` inherits ``PermissionsMixin``
+    * mail                    — boots when ``config/mail.py`` exists
+    * permissions             — boot when a model in ``database/models`` inherits ``PermissionsMixin``
     * controllers / listeners / policies — boot when their directory exists
     * pagination and cache    — always configured (from their sections or defaults)
     * custom providers        — ``"providers"`` in ``config/project.py``
@@ -104,6 +105,10 @@ class Core:
         if cfg.provided("queue"):
             from .queue.provider import QueueProvider
             add(QueueProvider(app, cfg))
+
+        if cfg.provided("mail"):
+            from .mail.provider import MailProvider
+            add(MailProvider(app, cfg))
 
         from .policies.provider import PolicyProvider
         add(PolicyProvider(app, cfg))

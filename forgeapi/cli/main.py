@@ -44,16 +44,15 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("make", [
         ("make:controller <Name>", "Create a controller (-m model, -s schemas)"),
         ("make:model <Name>", "Create a model (-c controller, -s schemas)"),
-        ("make:schema <Name>", "Create stub schemas (-m model, -c controller)"),
+        ("make:schema <Name>", "Create Create/Update/Response schemas (-m model, -c controller)"),
         ("make:seed <Name>", "Create a seeder"),
         ("make:job <Name>", "Create a queue job"),
         ("make:policy <Model>", "Create a policy for a model"),
         ("make:observer <Model>", "Create a model observer"),
         ("make:provider <Name>", "Create a provider"),
         ("make:command <Name>", "Create a custom CLI command"),
-    ]),
-    ("generate", [
-        ("generate:schema <Model>", "Generate schemas (--payload, --response)"),
+        ("make:mail <Name>", "Create a Mailable and its templates"),
+        ("make:listener <Name>", "Create a broadcast event listener"),
     ]),
     ("db", [
         ("db:init", "Init the migration config"),

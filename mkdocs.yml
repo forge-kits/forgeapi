@@ -72,7 +72,8 @@ nav:
   - "19. Seeders": 19-seeders.md
   - "20. Scheduler": 20-scheduler.md
   - "21. Queue": 21-queue.md
-  - "22. CLI reference": 22-cli-reference.md
-  - "23. Configuration reference (config/)": 23-configuration-reference-config.md
-  - "24. MCP Server": 24-mcp-server.md
+  - "22. Mail": 22-mail.md
+  - "23. CLI reference": 23-cli-reference.md
+  - "24. Configuration reference (config/)": 24-configuration-reference-config.md
+  - "25. MCP Server": 25-mcp-server.md
   - Changelog: changelog.md

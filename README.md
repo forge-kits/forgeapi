@@ -73,9 +73,19 @@
     - [Dispatching](#dispatching)
     - [Running the worker](#running-the-worker)
     - [Failed jobs](#failed-jobs)
-22. [CLI reference](#22-cli-reference)
-23. [Configuration reference (config/)](#23-configuration-reference-config)
-24. [MCP Server](#24-mcp-server)
+22. [Mail](#22-mail)
+    - [Quick start](#quick-start)
+    - [Configuration](#mail-configuration)
+    - [Mailable](#mailable)
+    - [Templates](#templates)
+    - [Recipients and sender](#recipients-and-sender)
+    - [Sending and queueing](#sending-and-queueing)
+    - [Drivers](#drivers)
+    - [Errors](#errors)
+    - [Generating a mail](#generating-a-mail)
+23. [CLI reference](#23-cli-reference)
+24. [Configuration reference (config/)](#24-configuration-reference-config)
+25. [MCP Server](#25-mcp-server)
     - [Install](#install)
     - [Global setup for Claude Code](#global-setup-for-claude-code)
     - [Per-project setup](#per-project-setup)
@@ -141,17 +151,33 @@ my-project/
     broadcast.py             # redis url, mode (pubsub/stream), namespace — activates BroadcastProvider
     scheduler.py             # enabled, schedule file path — activates SchedulerProvider
     queue.py                 # enabled, queue name — activates QueueProvider
+    mail.py                  # driver (log / smtp), sender, templates — activates MailProvider
   app/
     controllers/             # *_controller.py files, auto-loaded by Core
     schemas/                 # Pydantic schemas
     events/                  # Event subclasses
-    listeners/               # @broadcast.on(...) handlers
-    policies/                # Policy classes, auto-discovered
   database/
     models/                  # Tortoise models
     migrations/              # migration files (tortoise CLI)
     seeds/                   # Seeder classes
 ```
+
+The directory layout is fixed (not configurable). Paths are relative to the project root. `init` creates only the folders above; the others (`app/policies`, `app/jobs`, `app/mail`, `app/listeners`, `app/commands`, ...) appear when you run the matching `make:*` command:
+
+| Directory | Holds |
+|---|---|
+| `database/models` | Tortoise models |
+| `database/seeds` | seeders |
+| `app/controllers` | `*_controller.py`, discovered recursively |
+| `app/schemas` | Pydantic schemas |
+| `app/listeners` | broadcast event listeners |
+| `app/policies` | policies |
+| `app/jobs` | queue jobs |
+| `app/observers` | model observers |
+| `app/providers` | custom providers |
+| `app/commands` | project CLI commands |
+
+The only related setting is `api_prefix` in `config/project.py` (default `/api/v1`).
 
 **`main.py`**:
 
@@ -763,56 +789,378 @@ forgeapi make:controller AdminUser     # controllers/admin/user_controller.py
 
 ## 9. Schemas
 
-### Base classes
+Schemas are Pydantic models that describe what goes into the API and what comes out of it.
+forge-kits keeps **one file per resource** with **three classes**.
+
+### Pydantic in five minutes
+
+forge-kits schemas are plain [Pydantic](https://docs.pydantic.dev) models (Pydantic v2). FastAPI uses them to check what a client sends and to shape what it gets back. If you know this page, you know everything the schemas rely on.
+
+**A model is a class with typed fields.** Creating an object checks the data and converts what it can:
 
 ```python
-from forgeapi import BaseSchema, BaseCreateSchema, BaseUpdateSchema
+from pydantic import BaseModel, ValidationError
+
+
+class User(BaseModel):
+    name: str                  # required: no default
+    age: int
+    email: str | None = None   # optional: may be missing or None
+    active: bool = True        # optional: has a default
+
+
+User(name="Ana", age="30")     # name='Ana' age=30 ...   "30" was converted to the number 30
+User(name="Ana", age="abc")    # ValidationError: age, "Input should be a valid integer"
+User(age=3)                    # ValidationError: name is missing
 ```
 
-**`BaseSchema`** — response schemas. Has `id`, `created_at`, `updated_at`. `from_attributes=True` reads directly from Tortoise instances.
+FastAPI turns a `ValidationError` on the request body into a `422` response that lists every wrong field, so you never write that check yourself.
+
+**Constraints and validators** describe what a valid value is:
 
 ```python
+from pydantic import BaseModel, Field, field_validator
+
+
+class PostCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=100)    # length limits
+    views: int = Field(0, ge=0)                         # default 0, never negative
+
+    @field_validator("title")
+    @classmethod
+    def strip(cls, value: str) -> str:                  # runs after the type check
+        return value.strip()                            # may change the value or raise ValueError
+```
+
+**Reading data.** `Model.model_validate(data)` builds a model from a dict. With `from_attributes=True` (which `BaseSchema` sets) it also reads an object's attributes, which is how a Tortoise instance becomes a response: `PostResponse.model_validate(post)`.
+
+**Writing data.** `model.model_dump()` gives a dict. Three switches decide which fields are in it:
+
+| Call | Leaves out |
+|---|---|
+| `model_dump()` | nothing |
+| `model_dump(exclude_none=True)` | fields whose value is `None` |
+| `model_dump(exclude_unset=True)` | fields the caller never passed (even if the default is not `None`) |
+| `model_dump(exclude={"age"})` | the named fields |
+
+`Schema.changes()` in forge-kits is `model_dump(exclude_unset=True)`.
+
+**In an API** each direction gets its own model: one for what comes in (`PostCreate`), one for what goes out (`PostResponse`). A field that exists only on the input model (a password) can never leak, because the output model does not declare it. That is why forge-kits uses three classes per resource.
+
+### Where they live
+
+```
+app/
+  schemas/
+    post.py        # PostCreate, PostUpdate, PostResponse
+    user.py        # UserCreate, UserUpdate, UserResponse
+```
+
+- The folder is fixed: `app/schemas/`. Input and output of one resource sit side by side in one file.
+- The file name is the model name in snake_case (`Post` → `post.py`, `AdminUser` → `admin_user.py`).
+- `forgeapi init` does not create the folder. `forgeapi make:schema` (or `make:model -s`, `make:controller -s`) creates it with the first schema.
+
+### The three schemas
+
+| Class | Used for | Built from |
+|---|---|---|
+| `PostCreate` | body of `POST` | `Schema` |
+| `PostUpdate` | body of `PATCH` | `PostCreate.partial()`: the same fields, all optional |
+| `PostResponse` | what the API returns | `BaseSchema` (reads Tortoise instances) |
+
+```python
+from forgeapi import BaseSchema, Schema
+
+
+class PostCreate(Schema):
+    title: str
+    body: str | None = None
+
+
+PostUpdate = PostCreate.partial("PostUpdate")   # title and body become optional
+
+
 class PostResponse(BaseSchema):
     title: str
-    body:  str
-
-PostResponse.model_validate(post)
+    body: str | None = None
 ```
 
-**`BaseCreateSchema`** — POST payloads. Plain `BaseModel` subclass.
+### Base classes
+
+**`BaseSchema`** – the response base.
+
+- Fields: `id` (required, `int` or `str`), `created_at` and `updated_at` (`datetime | None = None`).
+- `created_at` / `updated_at` are filled when the model has them. A model without timestamp columns still validates, those two fields are `None`.
+- `from_attributes=True`, so a Tortoise instance goes straight in: `PostResponse.model_validate(post)`.
+- Subclasses add their own fields. `id` and the timestamps are never repeated in them.
+
+**`Schema`** – the base for input schemas (request bodies). It is a Pydantic `BaseModel` with two helpers, everything else is plain Pydantic (types, `Field(...)`, validators):
+
+- `Schema.partial(name)` returns a copy where every field is optional. It is how the update schema is made, see below.
+- `payload.changes()` returns only the fields the client actually sent, as a dict (`model_dump(exclude_unset=True)`). A field sent as `null` is kept, so a PATCH can clear a value.
+
+You may use `pydantic.BaseModel` directly instead of `Schema`: nothing else in forge-kits requires it, you only lose the two helpers.
+
+### Update schema: `partial()`
+
+**The problem.** `POST` creates a post, so the client must send `title` and `body`. `PATCH` changes a post, and the client sends only what it wants to change, for example just `title`. So the update schema needs the same fields as the create schema, **all optional**. Writing it by hand means repeating every field and its limits, and forgetting to update it when a field is added:
 
 ```python
-class PostCreatePayload(BaseCreateSchema):
-    title: str
-    body:  str
+class PostCreate(Schema):
+    title: str = Field(min_length=3)
+    body: str
+
+
+class PostUpdate(Schema):                    # the same fields typed again
+    title: str | None = Field(None, min_length=3)
+    body: str | None = None
 ```
 
-**`BaseUpdateSchema`** — PATCH payloads. Enforces that every field is `Optional` at class definition time.
+**The solution.** `PostCreate.partial("PostUpdate")` returns a copy of the schema where **every field is optional** (default `None`). The update payload is derived from the create one, so there is nothing to keep in sync when a field is added.
 
 ```python
-class PostUpdatePayload(BaseUpdateSchema):
+from pydantic import Field
+from forgeapi import Schema
+
+
+class PostCreate(Schema):
+    title: str = Field(min_length=3, max_length=100)
+    views: int = Field(0, ge=0)
+
+
+PostUpdate = PostCreate.partial("PostUpdate")
+
+PostUpdate()                  # valid: nothing to change
+PostUpdate(title="New title") # valid
+PostUpdate(title="ab")        # ValidationError: too short
+PostUpdate(views=-1)          # ValidationError: must be >= 0
+```
+
+What it does and does not do:
+
+- Constraints (`Field(min_length=...)`, `ge`, `pattern`) and validators stay and run **only for the fields the client sends**.
+- The original schema is not changed: `PostCreate()` still requires `title`.
+- `name` is the class name shown in OpenAPI. Without it the name is `<Class>Partial`, so always pass it.
+- The result is a `Schema` too, so `changes()` works on it.
+- It builds a class at runtime, so editors do not autocomplete the fields of `PostUpdate`. They still appear in the OpenAPI schema and validate correctly.
+- If PATCH must accept different fields than POST, write the class by hand:
+
+```python
+class PostUpdate(Schema):
     title: str | None = None
-    body:  str | None = None
+    is_published: bool | None = None     # exists only for updates
 ```
 
-### Schema directories
+### Using schemas in a controller
 
-```
-schemas/
-  payload/
-    post.py       # PostCreatePayload, PostUpdatePayload
-  response/
-    post.py       # PostResponse
+```python
+from forgeapi.auth import CurrentUser
+from forgeapi.controllers import Controller, route
+from database.models.post import Post
+from app.schemas.post import PostCreate, PostUpdate, PostResponse
+
+
+class PostController(Controller):
+    prefix = "/posts"
+    schema = PostResponse                       # response_model for every route (see "schema class var")
+
+    @route.get("/", response_model=None)
+    async def index(self):
+        return await Post.all().order_by("-created_at").paginate(15, PostResponse)
+
+    @route.post("/", status_code=201)
+    async def create(self, payload: PostCreate, user: CurrentUser):
+        return await Post.create_from(payload, author_id=int(user.id))
+
+    @route.patch("/{id}")
+    async def update(self, id: int, payload: PostUpdate):
+        post = await Post.find_or_fail(id)
+        return await post.update_from(payload)
 ```
 
-### generate:schema
+- **Validation.** FastAPI validates the body against `PostCreate` / `PostUpdate` and answers `422` with the details when it does not match.
+- **Server-set fields.** `author_id` above comes from the logged-in user, not from the client. Remove such fields from `PostCreate`, otherwise the client has to send them (make:schema copies every model field, see below).
+- **`create_from` / `update_from`** save `payload.model_dump(exclude_none=True)`. Two consequences: a field the client left out never overwrites the database value (this is what makes PATCH partial), and a client **cannot set a field to `null`** through these methods. To let a PATCH clear a value, apply what the client sent with `changes()`, which keeps fields sent as `null`:
+
+  ```python
+  post.update_from_dict(payload.changes())
+  await post.save()
+  ```
+- **Responses.** `schema = PostResponse` on the controller sets `response_model` for all routes, which also filters out any model attribute the schema does not declare. `.paginate(15, PostResponse)` returns the paginated envelope with items serialised by the schema, so `response_model=None` is used on that route.
+
+### Generating schemas: `make:schema`
 
 ```bash
-forgeapi generate:schema Post --payload             # Create + Update payloads
-forgeapi generate:schema Post --response            # PostResponse
-forgeapi generate:schema Post --payload --response  # both
-forgeapi generate:schema Post --payload -crud       # all four classes
+forgeapi make:schema Post                       # app/schemas/post.py
+forgeapi make:schema User --exclude internal    # leave a model field out of all three classes
+forgeapi make:model Post -s                     # model + schema
+forgeapi make:controller Post --ms              # model + schema + controller
 ```
+
+If `database/models/post.py` exists, the fields are read from the model. Without a model the classes are empty stubs with a `TODO`, and the command says so.
+
+For a model with `title`, a nullable `body`, `views` (default `0`), `is_published` (default `False`) and a foreign key `author`, it writes:
+
+```python
+from __future__ import annotations
+
+from forgeapi import BaseSchema, Schema
+
+
+class PostCreate(Schema):
+    title: str
+    author_id: int
+    body: str | None = None
+    views: int = 0
+    is_published: bool = False
+
+
+PostUpdate = PostCreate.partial("PostUpdate")
+
+
+class PostResponse(BaseSchema):
+    title: str
+    body: str | None = None
+    views: int
+    is_published: bool
+    author_id: int
+```
+
+**How the fields are mapped**
+
+| Model field | Schema type |
+|---|---|
+| `CharField`, `TextField`, `EmailField`, `URLField`, `IPAddressField` | `str` |
+| `IntField`, `BigIntField`, `SmallIntField` | `int` |
+| `FloatField` | `float` |
+| `DecimalField` | `Decimal` |
+| `BooleanField` | `bool` |
+| `DatetimeField`, `DateField`, `TimeField` | `datetime`, `date`, `time` |
+| `UUIDField` | `UUID` |
+| `JSONField` | `Any` |
+| `BinaryField` | `bytes` |
+| enum fields (`CharEnumField`, `IntEnumField`) | the enum class, with its import |
+| other custom fields | their `python_type`, or `Any` when there is none |
+| `ForeignKeyField`, `OneToOneField` (`author`) | `author_id: int` |
+| reverse relations, many-to-many | skipped |
+
+**Rules the generator follows**
+
+- `id`, `created_at` and `updated_at` are not repeated: they come from `BaseSchema`.
+- `PostCreate`: required fields first, then optional ones. A nullable field becomes `X | None = None`. A field with a literal default (number, string, boolean, enum member) keeps it.
+- `PostResponse`: a nullable field is `X | None = None`, every other field is required and has no default.
+- **Credential-looking fields stay in `Create` and are left out of `Response`.** The match is on the field name: `password`, `passwd`, `secret`, `token`, `api_key`, or a name ending in `_hash`. The command prints which fields it left out, for example `PostResponse leaves out: password_hash`.
+- `--exclude a,b` removes the named model fields from **all three** classes. An unknown name only produces a warning.
+- **An existing file is never overwritten.** Re-running the command prints `exists` and changes nothing, so edit schemas freely.
+
+**Check the result before committing it.** The generator copies every model field into `PostResponse` except the credential-looking ones. A field with another name that must not leave the server (an internal note, a 2FA seed, a card number) has to be removed by hand or with `--exclude`.
+
+**Known limits** (they come from the generator, not from Pydantic)
+
+- A foreign key is always `int`. For a model whose primary key is a `UUID` or a string, change the type by hand.
+- A callable default (`default=uuid4`, `default=list`, `default=datetime.now`) is not copied. Such a field is required in `Create` unless it is nullable: give it a default by hand.
+- A primary key not named `id` is treated as an ordinary field.
+
+### Hiding and removing fields
+
+There are four tools. Pick by what you want to achieve:
+
+| Goal | Use |
+|---|---|
+| Leave a model field out of the **generated** schemas | `forgeapi make:schema User --exclude internal_note` |
+| Accept a field on input but **never send it back** | declare it in `Create`, not in `Response` (done for you for credential-looking names) |
+| One class used in both directions, but a field must not be returned | `Field(exclude=True)` on that field |
+| Drop fields for one particular call | `model.model_dump(exclude={"name"})` |
+
+**`--exclude` (generator).** Names model fields to skip in **all three** classes: `PostCreate`, `PostUpdate` and `PostResponse`.
+
+```bash
+forgeapi make:schema User --exclude internal_note,legacy_id
+```
+
+An unknown name only prints a warning. It affects the generated file only: edit the file afterwards as you like, a rerun never overwrites it.
+
+**Fields that look like credentials** (`password`, `passwd`, `secret`, `token`, `api_key`, names ending in `_hash`) are excluded from `Response` **automatically**, and stay in `Create`. Other sensitive names (an internal note, a card number) are not recognised: remove them from `Response` by hand or pass them to `--exclude`.
+
+**Separate input and output classes** are the main protection. `UserResponse` returns only the fields it declares, whatever the model has:
+
+```python
+class UserCreate(Schema):
+    email: str
+    password: str                    # accepted from the client
+
+
+class UserResponse(BaseSchema):
+    email: str                       # password is not declared, so it is never returned
+```
+
+**`Field(exclude=True)`** keeps a field when reading input and removes it from every output (`model_dump()`, JSON, FastAPI responses). Useful when one class serves both directions:
+
+```python
+from pydantic import BaseModel, Field
+
+
+class Account(BaseModel):
+    email: str
+    password: str = Field(exclude=True)
+
+
+Account(email="a@b.com", password="secret").model_dump()   # {'email': 'a@b.com'}
+# used as request body and as response_model, FastAPI accepts "password" and does not return it
+```
+
+**`model_dump(exclude=...)`** removes fields for a single call, for example before logging or saving:
+
+```python
+payload.model_dump(exclude={"password"})
+```
+
+`create_from` and `update_from` already skip `None` values (`exclude_none=True`). For a PATCH that must tell "not sent" from "sent as null", use `payload.changes()`.
+
+### Customising schemas
+
+The generated file is yours. Common edits:
+
+```python
+from pydantic import EmailStr, Field, computed_field, field_validator
+
+
+class UserCreate(Schema):
+    email: EmailStr                                   # stricter type than the generated `str`
+    password: str = Field(min_length=8)
+
+    @field_validator("email")
+    @classmethod
+    def lowercase(cls, v: str) -> str:
+        return v.lower()
+
+
+UserUpdate = UserCreate.partial("UserUpdate")  # inherits the validators and constraints
+
+
+class UserResponse(BaseSchema):
+    email: str
+    posts_count: int = 0                              # fill it before returning
+
+    @computed_field
+    @property
+    def display_name(self) -> str:
+        return self.email.split("@")[0]
+```
+
+Nested output, for a model with a loaded relation:
+
+```python
+class AuthorResponse(BaseSchema):
+    username: str
+
+
+class PostResponse(BaseSchema):
+    title: str
+    author: AuthorResponse | None = None             # needs .prefetch_related("author")
+```
+
+The MCP tool `generate_schema(name, fields, mode)` produces the same three classes as source text, for assistants that generate code without a model file.
 
 ---
 
@@ -2123,7 +2471,234 @@ forgeapi queue:flush            # delete all failed jobs
 
 ---
 
-## 22. CLI reference
+## 22. Mail
+
+Sending e-mail through a `Mailable` class: one class per kind of message, its HTML and text templates next to it.
+
+```python
+from forgeapi import Mail, Mailable
+```
+
+### Quick start
+
+```bash
+forgeapi make:mail Welcome        # app/mail/welcome.py + app/templates/mail/welcome.{html,txt}
+```
+
+```python
+# app/mail/welcome.py
+from forgeapi import Mailable
+
+
+class Welcome(Mailable):
+    subject = "Welcome!"
+    template = "welcome.html"
+    text_template = "welcome.txt"
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+```
+
+```html
+<!-- app/templates/mail/welcome.html -->
+<h1>Hi {{ name }}</h1>
+```
+
+```python
+from forgeapi import Mail
+from app.mail.welcome import Welcome
+
+await Mail.send(Welcome("Ana"), to="ana@example.com")      # now
+await Mail.queue(Welcome("Ana"), to="ana@example.com")     # later, by the queue worker
+```
+
+With the default `log` driver nothing is sent: the message is written to the log (set `debug` to `True` in `config/project.py` to see it). Switch to `smtp` when you are ready, see [Drivers](#drivers).
+
+### Mail configuration
+
+Mail boots when `config/mail.py` exists (`forgeapi init` creates it).
+
+```python
+# config/mail.py
+from forgeapi import env
+
+config = {
+    "driver": "log",                          # "log" | "smtp"
+    "from_address": "noreply@example.com",
+    "from_name": "My App",
+    "templates": "app/templates/mail",        # Jinja2 templates directory
+    "smtp": {
+        "host": env("MAIL_HOST", "localhost"),
+        "port": 587,
+        "username": env("MAIL_USERNAME", ""),
+        "password": env("MAIL_PASSWORD", ""),
+        "encryption": "starttls",             # "starttls" | "ssl" | None
+        "timeout": 30,
+    },
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `driver` | `"log"` | `"log"` writes the message to the log, `"smtp"` sends it. Any other value fails at startup. |
+| `from_address` | `""` | Sender address. **Required for sending**: without it (here or on the Mailable) sending raises an error. |
+| `from_name` | `""` | Display name next to the address: `My App <noreply@example.com>`. |
+| `templates` | `"app/templates/mail"` | Directory with the Jinja2 templates, relative to the project root. |
+| `smtp.host` / `smtp.port` | `"localhost"` / `587` | The SMTP server. |
+| `smtp.username` / `smtp.password` | `""` | Login. Empty means no authentication. |
+| `smtp.encryption` | `"starttls"` | `"starttls"` (usually port 587), `"ssl"` (usually port 465) or `None` (plain, only for a local relay). Any other value fails when the config is loaded. |
+| `smtp.timeout` | `30` | Seconds to wait for the server. |
+
+Keep credentials in `.env` and read them with `env(...)`, not in the file.
+
+### Mailable
+
+A Mailable describes one message. All class attributes are optional except that the message needs a body, so set `template`, `text_template`, `html` or `text`.
+
+| Attribute | Meaning |
+|---|---|
+| `subject` | Subject line. A class attribute, or a `@property` when it depends on the data (`return f"Order #{self.order.id}"`). |
+| `template` | HTML template name in the templates directory, e.g. `"welcome.html"`. |
+| `text_template` | Plain-text template name, e.g. `"welcome.txt"`. |
+| `html`, `text` | Inline body, used exactly as written (**not** rendered as a template). `template` / `text_template` win when both are set. |
+| `from_address`, `from_name` | Replace the sender from `config/mail.py` for this message. `from_name = ""` sends without a display name. |
+| `reply_to` | `Reply-To` address. Exists only here, there is no config default. |
+
+With both an HTML and a text body the message is `multipart/alternative` (mail clients pick one). With only one of them it is sent as that single type. Sending both is better for deliverability and for clients that block HTML.
+
+Methods:
+
+- `context()` returns the variables for the templates. By default these are the **public instance attributes** (`self.name`, `self.user`, ...), never the class attributes above. Override it to add or compute values:
+
+```python
+class Invoice(Mailable):
+    subject = "Your invoice"
+    template = "invoice.html"
+
+    def __init__(self, order):
+        self.order = order
+
+    def context(self) -> dict:
+        return {**super().context(), "total": f"{self.order.total:.2f}"}
+```
+
+- `attach(filename, content, content_type=None)` attaches bytes. The type is guessed from the file name when omitted. Returns the Mailable, so calls chain.
+- `attach_file(path, filename=None)` reads a file from disk and attaches it.
+
+```python
+mailable = Invoice(order).attach("invoice.pdf", pdf_bytes).attach_file("terms.pdf")
+```
+
+### Templates
+
+- Location: `app/templates/mail/` (the `templates` key). Names are relative to it, subfolders work: `template = "billing/invoice.html"`.
+- The directory is resolved from the folder you start the app in, so run the server and the queue worker from the project root.
+- Jinja2 syntax. `{% extends %}` and `{% include %}` work inside the directory, which is the way to share one layout:
+
+```html
+<!-- app/templates/mail/layout.html -->
+<html><body>
+  {% block content %}{% endblock %}
+  <footer>{{ app_name }}</footer>
+</body></html>
+
+<!-- app/templates/mail/welcome.html -->
+{% extends "layout.html" %}
+{% block content %}<p>Hi {{ name }}</p>{% endblock %}
+```
+
+- **Escaping.** `.html`, `.htm` and `.xml` templates are auto-escaped, so `<b>` in a user name is sent as text. `.txt` templates are not escaped.
+- **Missing variables fail.** A variable that is not in the context raises an error instead of rendering an empty string, so a half-empty e-mail cannot go out. A missing template raises an error that names the file and the directory.
+
+### Recipients and sender
+
+```python
+await Mail.send(mailable, to="a@x.com")
+await Mail.send(mailable, to=["a@x.com", "b@x.com"], cc="c@x.com", bcc=["d@x.com"])
+```
+
+- `to`, `cc`, `bcc` take one address or a list. At least one recipient is needed.
+- Plain addresses only (`ana@example.com`). Do not pass `"Ana <ana@example.com>"`.
+- `bcc` recipients receive the message but are not written into its headers.
+- The sender is the Mailable's `from_address` if set, otherwise `from_address` from the config.
+
+### Sending and queueing
+
+```python
+await Mail.send(Welcome("Ana"), to=email)                              # now
+await Mail.queue(Welcome("Ana"), to=email)                             # via the queue worker
+await Mail.queue(Welcome("Ana"), to=email, delay=60, queue="mail")     # in 60 s, on the "mail" queue
+```
+
+- **`send()`** waits for the driver. If the SMTP server rejects the message or is down, the error is raised in your code: handle it where it matters (a sign-up form probably should not fail because of a welcome e-mail, so use `queue()` there).
+- **`queue()`** renders the message **at the call**, then stores plain text/HTML in `queued_jobs` (not the Mailable object). A change to the template after the call does not affect a message already in the queue. It retries like any job (`max_tries = 3`) and lands in `failed_jobs` after that.
+- Attachments are stored in the queue table too (base64), so avoid large files in queued mail.
+- `queue()` needs the queue tables (`forgeapi.queue.models` in `config/database.py`) and a running worker (`config/queue.py` with the in-app worker, or `forgeapi queue:work`). The worker process reads `config/mail.py` itself.
+- A message without a sender, recipients or body, or with a line break in a header or file name (header injection), is rejected **before** it is sent or queued.
+
+### Drivers
+
+**`log`** (default) writes the recipients, subject, attachment names, and both bodies to the `forgeapi.mail` log at INFO level and sends nothing. Use it in development. If `debug` is off, the app logs a warning at startup that mail is only logged, so a forgotten dev setting is noticed in production.
+
+**`smtp`** sends through an SMTP server. It needs the extra package:
+
+```bash
+pip install forge-kits[mail]
+```
+
+```python
+# config/mail.py: SMTP with STARTTLS (port 587)
+config = {
+    "driver": "smtp",
+    "from_address": "noreply@example.com",
+    "from_name": "My App",
+    "smtp": {"host": env("MAIL_HOST"), "port": 587, "username": env("MAIL_USERNAME"),
+             "password": env("MAIL_PASSWORD"), "encryption": "starttls"},
+}
+# implicit TLS (port 465): "port": 465, "encryption": "ssl"
+```
+
+Without the package, choosing `smtp` fails at startup with `pip install forge-kits[mail]` in the message.
+
+**Before going live**
+- `driver` is `"smtp"` and the credentials come from the environment.
+- `from_address` is on a domain you control and its DNS (SPF, DKIM) is set up: otherwise providers send the mail to spam. This is outside forge-kits.
+- If you use `queue()`, a queue worker is running in production.
+- Send a real message to yourself first: the SMTP path is only covered by tests with a fake client.
+
+### Errors
+
+| Message | Cause |
+|---|---|
+| `Mail is not configured.` | `config/mail.py` is missing. |
+| `Mail has no sender address.` | No `from_address` in the config or on the Mailable. |
+| `Mail has no recipients.` | `to`, `cc` and `bcc` are all empty. |
+| `Mail has no body.` | None of `template`, `text_template`, `html`, `text` is set. |
+| `Mail headers must not contain line breaks.` | A `\r` or `\n` in the subject, an address, the sender name or an attachment name. |
+| `Mail template '...' not found in '...'` | The template name or the `templates` directory is wrong. |
+| `'name' is undefined` (Jinja) | The template uses a variable the Mailable does not provide. |
+| `Unknown mail driver '...'` | `driver` is not `log` or `smtp`. |
+| `The smtp mail driver requires aiosmtplib.` | The `mail` extra is not installed. |
+
+### Generating a mail
+
+```bash
+forgeapi make:mail WeeklyReport
+```
+
+creates three files and never overwrites an existing one:
+
+```
+app/mail/weekly_report.py                  class WeeklyReport(Mailable), subject "Weekly report"
+app/templates/mail/weekly_report.html      <h1>Weekly report</h1> and a greeting
+app/templates/mail/weekly_report.txt       the plain-text part
+```
+
+The generated class takes a `name` argument and the templates use `{{ name }}`: replace both with your own data together, because a template variable the class does not provide fails at send time. If `config/mail.py` sets another `templates` directory, the templates go there. `app/mail` and `app/templates/mail` are created on demand, `init` does not create them.
+
+---
+
+## 23. CLI reference
 
 ```bash
 forgeapi --help
@@ -2139,24 +2714,37 @@ forgeapi init my-project
 ### Code generation
 
 ```bash
-forgeapi make:controller Post          # controllers/post_controller.py
-forgeapi make:controller AdminUser     # controllers/admin/user_controller.py
-forgeapi make:controller Post --ms     # + model + schema stubs
-forgeapi make:model Post
-forgeapi make:model Post -cs           # + controller + schema
-forgeapi make:seed User                # database/seeds/user_seeder.py
-forgeapi make:job SendWelcomeEmail      # app/jobs/send_welcome_email.py
-forgeapi make:policy Post               # app/policies/post_policy.py (@gate.policy(Post))
-forgeapi make:observer Post             # app/observers/post_observer.py (register with Post.observe(...))
-forgeapi make:provider Metrics          # app/providers/metrics_provider.py (add to "providers")
-forgeapi make:command SendWeeklyReport  # app/commands/send_weekly_report_command.py → forgeapi send:weekly-report
-forgeapi make:schema Post              # stub schemas (3 classes with pass)
+forgeapi make:<kind> <Name> [flags]
+forgeapi make:mail -h               # help for one generator
 ```
+
+| Command | Creates | Notes |
+|---|---|---|
+| `make:controller Post` | `app/controllers/post_controller.py` | `-m` also a model, `-s` also a schema. `AdminUser` becomes `app/controllers/admin/user_controller.py` with prefix `/admin/users`. |
+| `make:model Post` | `database/models/post.py`, import added to `database/models/__init__.py` | `-c` controller, `-s` schema, `--alias Worker` writes the class into `worker.py` instead of its own file, so several models can share one file. |
+| `make:schema Post` | `app/schemas/post.py` | `PostCreate`, `PostUpdate`, `PostResponse`, fields read from the model, see [Schemas](#9-schemas). `--exclude a,b` drops fields. |
+| `make:seed User` | `database/seeds/user_seeder.py` | |
+| `make:job SendWelcomeEmail` | `app/jobs/send_welcome_email.py` | A queue `Job`, see [Queue](#21-queue). |
+| `make:policy Post` | `app/policies/post_policy.py` | `@gate.policy(Post)`. Imports the model, so create it first. A trailing `Policy` in the name is dropped. |
+| `make:observer Post` | `app/observers/post_observer.py` | Register it with `Post.observe(PostObserver)`. |
+| `make:provider Metrics` | `app/providers/metrics_provider.py` | Add its dotted path to `"providers"` in `config/project.py`. |
+| `make:command SendWeeklyReport` | `app/commands/send_weekly_report_command.py` | Runs as `forgeapi send:weekly-report`, see [Custom commands](#custom-commands). |
+| `make:mail Welcome` | `app/mail/welcome.py`, `app/templates/mail/welcome.html`, `welcome.txt` | See [Mail](#22-mail). |
+| `make:listener OrderCreated` | `app/listeners/order_created_listener.py` | `@broadcast.on("order:created")`. Needs `config/broadcast.py` to be loaded. |
+
+Rules for every generator:
+
+- Run it inside a project (a folder with `config/`). Outside one it writes nothing and says so.
+- The name is CamelCase letters and digits, starting with a letter. `SendWeeklyReport` becomes the file `send_weekly_report`.
+- An **existing file is never overwritten**: the command prints `exists` and moves on.
+- Folders are created when needed (and made packages with `__init__.py`). `forgeapi init` creates only `app/controllers`, `app/schemas` and the `database` folders, so `app/policies`, `app/jobs`, `app/mail`, `app/listeners`, ... appear with the first `make:*` for them.
+- Suffixes you type are not doubled: `make:policy PostPolicy` and `make:policy Post` give the same file.
+
+**`make:listener`** derives the event name from the class name: the first CamelCase word, then `:`, the rest joined with `-`. `OrderCreated` is `order:created`, `UserSignedUp` is `user:signed-up`, `Order` is `order`. The function is named `on_<snake_name>` and receives the emitted payload as `data: dict`. If `config/broadcast.py` is missing, the command tells you, because listeners are only loaded when it exists.
 
 ### Custom commands
 
-`make:command <Name>` generates a `Command` subclass in `commands_dir` (`app/commands` by default, set in
-`config/structure.py`). Every module there is imported on demand: the command is runnable as `forgeapi <name>`
+`make:command <Name>` generates a `Command` subclass in `app/commands`. Every module there is imported on demand: the command is runnable as `forgeapi <name>`
 and listed under "project" in `forgeapi`. The name comes from the class: `SendWeeklyReport` becomes
 `send:weekly-report`, `Cleanup` becomes `cleanup`. Names used by built-in commands (`make:*`, `db:*`, ...) are refused
 at generation time and skipped (with a warning) at run time.
@@ -2363,16 +2951,26 @@ config = {
     },
 }
 
-# config/scheduler.py — activates SchedulerProvider (see §22)
+# config/scheduler.py — activates SchedulerProvider (see §20)
 config = {
     "enabled": True,
     "schedule": "schedule.py",   # path to your schedule.py relative to project root
 }
 
-# config/queue.py — activates QueueProvider (see §23)
+# config/queue.py — activates QueueProvider (see §21)
 config = {
     "enabled": True,
     "queue": "default",   # queue name the in-process worker will consume
+}
+
+# config/mail.py — activates MailProvider (see §22)
+config = {
+    "driver": "log",                          # "log" | "smtp"
+    "from_address": "noreply@example.com",
+    "from_name": "My App",
+    "templates": "app/templates/mail",
+    # "smtp": {"host": "smtp.example.com", "port": 587, "username": "", "password": "",
+    #          "encryption": "starttls"},     # needs forge-kits[mail]
 }
 ```
 

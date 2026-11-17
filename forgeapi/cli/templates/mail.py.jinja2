@@ -1,0 +1,17 @@
+from forgeapi import Mailable
+
+
+class {{ class_name }}(Mailable):
+    subject = "{{ subject }}"
+    template = "{{ module_name }}.html"        # app/templates/mail/{{ module_name }}.html
+    text_template = "{{ module_name }}.txt"    # plain-text part (delete the line to send HTML only)
+
+    def __init__(self, name: str) -> None:
+        # Public attributes are the template variables: {% raw %}{{ name }}{% endraw %} below.
+        # A variable missing here makes sending fail, so keep the templates in sync.
+        self.name = name
+
+# Usage:
+#   from forgeapi import Mail
+#   await Mail.send({{ class_name }}("Ana"), to="ana@example.com")
+#   await Mail.queue({{ class_name }}("Ana"), to="ana@example.com")   # via the queue worker

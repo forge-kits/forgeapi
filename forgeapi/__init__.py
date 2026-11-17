@@ -17,6 +17,7 @@ from .cache import Cache
 from .storage import Storage, ImageProcessor
 from .scheduling import Scheduler, ScheduledTask
 from .queue import Job, dispatch
+from .mail import Mail, Mailable
 
 __all__ = [
     # Core
@@ -71,6 +72,9 @@ __all__ = [
     # Queue
     "Job",
     "dispatch",
+    # Mail
+    "Mail",
+    "Mailable",
 ]
 
 

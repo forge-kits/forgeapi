@@ -891,9 +891,11 @@ forgeapi make:policy Post               # app/policies/post_policy.py (@gate.pol
 forgeapi make:observer Post             # app/observers/post_observer.py (register with Post.observe(...))
 forgeapi make:provider Metrics          # app/providers/metrics_provider.py (add to "providers")
 forgeapi make:command SendReport        # app/commands/send_report_command.py → run: forgeapi send:report
+forgeapi make:mail Welcome            # app/mail/welcome.py + app/templates/mail/welcome.{html,txt}
+forgeapi make:listener OrderCreated   # app/listeners/order_created_listener.py → @broadcast.on("order:created")
 # the generated command's run(self, report_id: int, to: str = 'me', dry_run: bool = False) IS the command line:
 # forgeapi send:report 42 --to bob --dry-run   (typed, validated, -h generated; async def run is awaited)
-forgeapi generate:schema Post --payload --response
+forgeapi make:schema Post               # app/schemas/post.py: PostCreate, PostUpdate, PostResponse
 ```
 
 ## Migrations — NEVER use aerich directly, NEVER pip install aerich
@@ -1503,6 +1505,58 @@ Partial observers (only some hooks defined) are handled — only relevant signal
 are registered.
 """,
 
+"mail": """\
+# forge-kits: Mail
+
+## Import
+```python
+from forgeapi import Mail, Mailable
+```
+
+## Mailable
+```python
+class Welcome(Mailable):
+    subject = "Welcome!"
+    template = "welcome.html"        # Jinja2, from the templates dir (config/mail.py "templates")
+    text_template = "welcome.txt"    # optional plain-text part
+
+    def __init__(self, user):
+        self.user = user             # public attributes = template context
+```
+- `.html` templates are auto-escaped, `.txt` are not; a missing variable raises (no silent blanks)
+- override `context()` to build template data yourself
+- inline `html` / `text` strings are used as they are (not rendered)
+- `from_address`, `from_name`, `reply_to` on the class override the config
+- `.attach("a.pdf", bytes, "application/pdf")`, `.attach_file(path)`
+
+## Generate
+`forgeapi make:mail WeeklyReport` creates `app/mail/weekly_report.py` and
+`app/templates/mail/weekly_report.{html,txt}` (existing files are not overwritten).
+
+## Send
+```python
+await Mail.send(Welcome(user), to=user.email)                 # now; driver errors propagate
+await Mail.send(Welcome(user), to=[a, b], cc=c, bcc=d)
+await Mail.queue(Welcome(user), to=user.email, delay=60, queue="mail")   # via queue worker
+```
+`queue()` renders at call time and stores plain text/HTML (attachments base64) in `queued_jobs`;
+it needs `forgeapi.queue.models` and a worker. Message without recipients/body/sender, or with a
+line break in a header, is rejected before sending/queueing.
+
+## Configuration (config/mail.py — activates MailProvider)
+```python
+config = {
+    "driver": "log",                          # "log" (writes to log, sends nothing) | "smtp"
+    "from_address": "noreply@example.com",
+    "from_name": "My App",
+    "templates": "app/templates/mail",
+    "smtp": {"host": "smtp.example.com", "port": 587, "username": "", "password": "",
+             "encryption": "starttls", "timeout": 30},   # "starttls" | "ssl" | None
+}
+```
+The smtp driver needs `pip install forge-kits[mail]`.
+""",
+
 "queue": """\
 # forge-kits: Queue (DB-backed job queue)
 
@@ -1612,7 +1666,7 @@ def get_docs(topic: str) -> str:
 
     Topics (lightest → heaviest):
       cheatsheet, workflow, pagination, config, schemas, middleware,
-      core, cli, auth, permissions, policies, cache, storage, scheduler, queue,
+      core, cli, auth, permissions, policies, cache, storage, scheduler, queue, mail,
       scopes, observers, support, controllers, broadcasting, tortoise, tortoise_advanced, models
 
     Args:

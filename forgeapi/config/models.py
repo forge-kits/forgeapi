@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
@@ -196,6 +196,40 @@ class QueueConfig(BaseModel):
     retry_after: int = 300
 
 
+class SmtpConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 587
+    username: str = ""
+    password: str = ""
+    encryption: Literal["starttls", "ssl"] | None = "starttls"
+    timeout: float = 30
+
+
+class MailConfig(BaseModel):
+    """The ``mail`` config section (``config/mail.py``)::
+
+        config = {
+            "driver": "log",                        # "log" | "smtp"
+            "from_address": "noreply@example.com",
+            "from_name": "My App",
+            "templates": "app/templates/mail",      # Jinja2 templates directory
+            "smtp": {
+                "host": "smtp.example.com",
+                "port": 587,
+                "username": env("MAIL_USERNAME"),
+                "password": env("MAIL_PASSWORD"),
+                "encryption": "starttls",           # "starttls" | "ssl" | None
+            },
+        }
+    """
+
+    driver: str = "log"
+    from_address: str = ""
+    from_name: str = ""
+    templates: str = "app/templates/mail"
+    smtp: SmtpConfig = SmtpConfig()
+
+
 class KitConfig(BaseModel):
     """Validated application config.
 
@@ -216,6 +250,7 @@ class KitConfig(BaseModel):
     broadcast: BroadcastConfig = BroadcastConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     queue: QueueConfig = QueueConfig()
+    mail: MailConfig = MailConfig()
 
     # section names the user actually provided (vs. pure defaults) —
     # feature enablement is decided by presence, e.g. auth boots only
