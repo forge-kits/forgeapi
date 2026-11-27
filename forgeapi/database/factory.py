@@ -15,7 +15,7 @@ def _load_faker(locale: str):
     except ImportError:
         raise ForgeAPIConfigError(
             "Factories need the faker package.",
-            hint="pip install forge-kits[testing]",
+            hint="pip install forge-kits[dev]",
         ) from None
     return Faker(locale)
 

@@ -26,9 +26,8 @@ redis    = ["redis>=4.0"]
 mcp      = ["mcp>=2.2.0"]
 s3       = ["boto3>=1.26"]
 mail     = ["aiosmtplib>=3.0"]
-dev      = ["textual>=8.0"]
+dev      = ["textual>=8.0", "faker>=30.0"]
 images   = ["Pillow>=10.0"]
-testing  = ["faker>=30.0"]
 
 [project.scripts]
 forgeapi     = "forgeapi.cli.main:app"

@@ -119,8 +119,7 @@ SQLite + auth are included in the base package. Install extras only for producti
 | `s3` | `boto3` | S3 / MinIO / Cloudflare R2 storage driver |
 | `images` | `Pillow` | ImageProcessor helper |
 | `mcp` | `mcp` | forge-kits MCP server for AI-assisted development |
-| `dev` | `textual` | tabbed interface of `forgeapi runserver` |
-| `testing` | `faker` | `Factory` fake data |
+| `dev` | `textual`, `faker` | tabbed interface of `forgeapi runserver`, `Factory` fake data |
 
 ```bash
 pip install forge-kits               # SQLite included by default
@@ -128,7 +127,7 @@ pip install forge-kits[asyncpg]      # PostgreSQL
 pip install forge-kits[aiomysql]     # MySQL / MariaDB
 pip install forge-kits[redis]        # Redis cache / events
 pip install forge-kits[mcp]          # MCP server
-pip install forge-kits[dev]          # tabbed interface of `runserver`
+pip install forge-kits[dev]          # tabbed interface of `runserver`, Faker for factories
 pip install forge-kits[s3,images]    # S3 storage + image processing
 ```
 
@@ -3334,7 +3333,7 @@ Returns a structured report of all models, controllers, schemas, events, listene
 
 ## 26. Testing
 
-Tests are plain pytest. forge-kits adds only [factories](#factories) (`pip install forge-kits[testing]` for Faker).
+Tests are plain pytest. forge-kits adds only [factories](#factories) (`pip install forge-kits[dev]` for Faker).
 
 A factory needs a database, so a test sets one up the usual pytest way, in `tests/conftest.py`:
 
