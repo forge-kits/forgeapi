@@ -2,6 +2,16 @@
 
 Generated from git history by `scripts/gen_changelog.py` (Conventional Commits). Do not edit by hand.
 
+## [2.0.1](https://github.com/forge-kits/forgeapi/releases/tag/v2.0.1) - 2026-11-27
+
+### Fixes
+
+- **init:** Comment out broadcast in config/app.py so a project starts without the redis package ([`203692f`](https://github.com/forge-kits/forgeapi/commit/203692f))
+
+### Documentation
+
+- Add the Testing page to the nav ([`0e1854c`](https://github.com/forge-kits/forgeapi/commit/0e1854c))
+
 ## [2.0.0](https://github.com/forge-kits/forgeapi/releases/tag/v2.0.0) - 2026-11-27
 
 ### Features
