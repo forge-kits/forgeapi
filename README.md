@@ -159,6 +159,7 @@ my-project/
     broadcast.py             # redis url, mode (pubsub/stream), namespace — activates BroadcastProvider
     scheduler.py             # enabled, schedule file path — activates SchedulerProvider
     queue.py                 # enabled, queue name — activates QueueProvider
+    cache.py                 # driver (database / redis), prefix, default ttl
     mail.py                  # driver (log / smtp), sender, templates — activates MailProvider
   app/
     controllers/             # *_controller.py files, auto-loaded by Core

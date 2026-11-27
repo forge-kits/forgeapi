@@ -68,6 +68,17 @@ config = {
 }
 '''
 
+_CONFIG_CACHE_TEMPLATE = '''\
+from forgeapi import env
+
+config = {
+    "driver": "database",   # "database" (table from forgeapi.cache.models) | "redis" (pip install forge-kits[redis])
+    "prefix": "",           # prepended to every key, useful when projects share one Redis
+    "ttl": None,            # default lifetime in seconds, None = forever
+    # "redis_url": env("REDIS_URL", "redis://localhost:6379/0"),
+}
+'''
+
 _CONFIG_MAIL_TEMPLATE = '''\
 from forgeapi import env
 
@@ -226,11 +237,11 @@ TORTOISE_ORM = {{
     "apps": {{
         "models": {{
             "models": [
-                "database.models", 
-                "forgeapi.scheduling.models", 
-                "forgeapi.queue.models", 
-                "forgeapi.cache.models", 
-                "forgeapi.permissions.models"
+                "database.models",
+                "forgeapi.scheduling.models",
+                "forgeapi.queue.models",
+                "forgeapi.cache.models",
+                "forgeapi.permissions.models",
             ],
             "default_connection": "default",
             "migrations":         "database.migrations",
@@ -257,7 +268,13 @@ TORTOISE_ORM = {{
     "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {{
         "models": {{
-            "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.cache.models", "forgeapi.permissions.models"],
+            "models": [
+                "database.models",
+                "forgeapi.scheduling.models",
+                "forgeapi.queue.models",
+                "forgeapi.cache.models",
+                "forgeapi.permissions.models",
+            ],
             "default_connection": "default",
             "migrations":         "database.migrations",
         }}
@@ -287,7 +304,13 @@ TORTOISE_ORM = {{
     "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
     "apps": {{
         "models": {{
-            "models":             ["database.models", "forgeapi.scheduling.models", "forgeapi.queue.models", "forgeapi.cache.models", "forgeapi.permissions.models"],
+            "models": [
+                "database.models",
+                "forgeapi.scheduling.models",
+                "forgeapi.queue.models",
+                "forgeapi.cache.models",
+                "forgeapi.permissions.models",
+            ],
             "default_connection": "default",
             "migrations":         "database.migrations",
         }}
@@ -435,6 +458,7 @@ Creates:
         self._write(root / "config/broadcast.py", _CONFIG_BROADCAST_TEMPLATE.format(name=name), typer)
         self._write(root / "config/scheduler.py", _CONFIG_SCHEDULER_TEMPLATE, typer)
         self._write(root / "config/queue.py", _CONFIG_QUEUE_TEMPLATE, typer)
+        self._write(root / "config/cache.py", _CONFIG_CACHE_TEMPLATE, typer)
         self._write(root / "config/mail.py", _CONFIG_MAIL_TEMPLATE.format(name=name), typer)
         self._write(
             root / "config/database.py",
