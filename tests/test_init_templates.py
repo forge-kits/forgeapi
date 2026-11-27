@@ -36,9 +36,9 @@ def test_app_template_loads_as_a_valid_config(strategy, tmp_path, monkeypatch):
 
     assert cfg.project.name == "demo" and cfg.project.api_prefix == "/api/v1"
     assert cfg.mail.driver == "log" and cfg.mail.from_address == "noreply@demo.local"
-    assert {"auth", "http", "pagination", "storage", "cache", "mail", "broadcast"} <= cfg._provided
-    # opt-in features are commented out until their tables exist
-    assert not cfg.provided("queue") and not cfg.provided("scheduler")
+    assert {"auth", "http", "pagination", "storage", "cache", "mail"} <= cfg._provided
+    # opt-in features are commented out: queue and scheduler need tables, broadcast needs the redis package
+    assert not cfg.provided("queue") and not cfg.provided("scheduler") and not cfg.provided("broadcast")
 
 
 def test_cookie_auth_block_is_valid_and_needs_no_secret():
@@ -58,7 +58,7 @@ def test_init_does_not_switch_on_features_that_need_their_own_tables():
     from forgeapi.cli.commands.init_cmd import _config_app
 
     source = _config_app("demo", "cookie")
-    assert '# "queue": {' in source and '# "scheduler": {' in source
+    assert '# "queue": {' in source and '# "scheduler": {' in source and '# "broadcast": {' in source
 
 
 @pytest.mark.parametrize("driver", sorted(_CONFIG_DATABASE_TEMPLATES))
@@ -80,3 +80,19 @@ def test_every_key_of_the_app_template_is_known_to_its_config_model(strategy):
     for name, values in sections.items():
         model = KitConfig.model_fields[name].annotation
         assert set(values) <= set(model.model_fields), (name, set(values) - set(model.model_fields))
+
+
+def test_uncommented_broadcast_block_is_valid_config():
+    # the commented block must stay correct: uncomment it and load the result like a project would
+    import re
+
+    from forgeapi.cli.commands.init_cmd import _config_app
+    from forgeapi.config import config_from_dict
+
+    source = _config_app("demo", "cookie")
+    block = re.search(r'    # "broadcast": \{\n(.*?)\n    # \},', source, flags=re.S).group(1)
+    body = "\n".join(line.replace("    # ", "", 1) for line in block.splitlines())
+    namespace: dict = {}
+    exec(compile("from forgeapi import env\nsection = {\n" + body + "\n}", "block", "exec"), namespace)
+    cfg = config_from_dict({"broadcast": namespace["section"]})
+    assert cfg.broadcast.driver == "redis" and cfg.broadcast.driver_options["namespace"] == "demo"

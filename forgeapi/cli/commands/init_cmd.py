@@ -106,20 +106,23 @@ config = {
         # },
     },
 
-    "broadcast": {
-        "driver": "redis",
-        "driver_options": {
-            "url": env("REDIS_URL", "redis://localhost:6379"),
-            "namespace": "{name}",
-            "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent
-            # "maxlen": 1000,       # stream mode: keep last N messages per key
-            # "group": "backend",   # stream mode: consumer group name
-            # "consumer": "worker-1",
-        },
-    },
-
-    # Opt-in features. Uncomment the models in config/database.py, run `forgeapi db:makemigrations`,
-    # then uncomment the key.
+    # Opt-in features, off until the key is uncommented.
+    #
+    # Broadcasting needs the redis package: pip install forge-kits[redis]
+    # "broadcast": {
+    #     "driver": "redis",
+    #     "driver_options": {
+    #         "url": env("REDIS_URL", "redis://localhost:6379"),
+    #         "namespace": "{name}",
+    #         "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent
+    #         # "maxlen": 1000,       # stream mode: keep last N messages per key
+    #         # "group": "backend",   # stream mode: consumer group name
+    #         # "consumer": "worker-1",
+    #     },
+    # },
+    #
+    # Queue and scheduler need their tables: uncomment the models in config/database.py and run
+    # `forgeapi db:makemigrations`, then uncomment the key.
     # "queue": {"queue": "default"},               # needs forgeapi.queue.models
     # "scheduler": {"schedule": "schedule.py"},    # needs forgeapi.scheduling.models and a schedule.py
 }
