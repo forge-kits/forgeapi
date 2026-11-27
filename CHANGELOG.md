@@ -2,6 +2,16 @@
 
 Generated from git history by `scripts/gen_changelog.py` (Conventional Commits). Do not edit by hand.
 
+## [2.0.2](https://github.com/forge-kits/forgeapi/releases/tag/v2.0.2) - 2026-11-27
+
+### Fixes
+
+- **config:** Read only config/app.py and config/database.py, ignore other files in config/ ([`d613ce8`](https://github.com/forge-kits/forgeapi/commit/d613ce8))
+
+### Maintenance
+
+- **deps:** Merge the testing extra into dev ([`51cf8d1`](https://github.com/forge-kits/forgeapi/commit/51cf8d1))
+
 ## [2.0.1](https://github.com/forge-kits/forgeapi/releases/tag/v2.0.1) - 2026-11-27
 
 ### Fixes
