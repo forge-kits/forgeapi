@@ -54,23 +54,8 @@ def load_config(path: str = "") -> KitConfig:
     return KitConfig()
 
 
-_FILES = ("app.py", "database.py")
-
-
 def _from_py_dir(directory: Path) -> KitConfig:
     from forgeapi.exceptions import ForgeAPIConfigError
-
-    stray = sorted(f.name for f in directory.glob("*.py") if f.name not in _FILES and not f.name.startswith("_"))
-    if stray:
-        raise ForgeAPIConfigError(
-            f"{', '.join(f'config/{name}' for name in stray)} {'is' if len(stray) == 1 else 'are'} not read any more: "
-            "all settings except the database live in config/app.py.",
-            hint=(
-                'Move them into config/app.py: the keys of project.py go to the top level, '
-                'every other file becomes a key named after it, e.g. "auth": {...}, "mail": {...}. '
-                "Run 'forgeapi init' in a scratch dir to see the layout."
-            ),
-        )
 
     raw: dict[str, dict] = {}
     app_file = directory / "app.py"

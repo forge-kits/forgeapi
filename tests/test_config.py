@@ -100,12 +100,14 @@ class TestLoadConfig:
             load_config()
         assert "debug" in exc.value.hint
 
-    def test_old_section_files_are_rejected_with_migration_hint(self, config_dir):
-        (config_dir / "auth.py").write_text("config = {}\n")
-        (config_dir / "mail.py").write_text("config = {}\n")
-        with pytest.raises(ForgeAPIConfigError, match="config/auth.py, config/mail.py are not read") as exc:
-            load_config()
-        assert "config/app.py" in exc.value.hint
+    def test_other_files_in_config_are_ignored(self, config_dir):
+        # only app.py and database.py are read: a helper module, or a file of the old layout, is left alone
+        (config_dir / "helpers.py").write_text("X = 1\n")
+        (config_dir / "auth.py").write_text("config = {'default': 'old'}\n")
+        write_app(config_dir, "'name': 'ok'")
+        cfg = load_config()
+        assert cfg.project.name == "ok"
+        assert not cfg.provided("auth")
 
     def test_underscore_files_are_ignored(self, config_dir):
         (config_dir / "__init__.py").write_text("")

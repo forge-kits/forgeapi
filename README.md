@@ -3074,7 +3074,7 @@ config = {
 }
 ```
 
-A top-level key that is neither a project setting nor a dict raises `ForgeAPIConfigError` (a typo such as `"debg"` is caught). The old layout with one file per section (`config/auth.py`, `config/mail.py`, ...) is not read: the error lists the files to move into `config/app.py`.
+A top-level key that is neither a project setting nor a dict raises `ForgeAPIConfigError` (a typo such as `"debg"` is caught). Only `config/app.py` and `config/database.py` are read, any other file in `config/` is ignored.
 
 ### config/database.py
 
