@@ -85,7 +85,7 @@ class Command:
                 pass
             raise ForgeAPIError(
                 f"Cannot connect to the database: {exc}",
-                hint="check DB_* in .env and that the database server is running (forgeapi doctor)",
+                hint="check DB_* in .env and that the database server is running",
             ) from exc
         try:
             await Tortoise.generate_schemas(safe=True)
@@ -93,5 +93,5 @@ class Command:
             await Tortoise.close_connections()
             raise ForgeAPIError(
                 f"Cannot create the database tables: {exc}",
-                hint="check that the database user may create tables (forgeapi doctor)",
+                hint="check that the database user may create tables",
             ) from exc

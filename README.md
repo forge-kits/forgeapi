@@ -2902,7 +2902,6 @@ forgeapi queue:flush              # delete all failed jobs
 ```bash
 forgeapi routers   # list all registered routes (METHOD, PATH, HANDLER)
 forgeapi models    # list all Tortoise model classes, tables, and fields
-forgeapi doctor    # check env, config, Tortoise models, scheduler file, DB connection and tables (--no-db to skip DB)
 ```
 
 ---

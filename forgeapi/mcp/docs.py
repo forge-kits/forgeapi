@@ -960,7 +960,6 @@ migration history, so the migrations replay from the first one. It cannot be com
 ```bash
 forgeapi routers    # list all registered routes with methods and paths
 forgeapi models     # list all discovered Tortoise models
-forgeapi doctor     # diagnose env, config, Tortoise models, schedule.py, DB connection/tables (--no-db skips DB)
 ```
 
 ## Scheduler

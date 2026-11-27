@@ -27,7 +27,6 @@ from forgeapi.cli.commands.queue_cmd import QueueCommand
 from forgeapi.cli.commands.models_cmd import ModelsCommand
 from forgeapi.cli.commands.runserver_cmd import RunserverCommand
 from forgeapi.cli.commands.mcp_cmd import McpCommand
-from forgeapi.cli.commands.doctor_cmd import DoctorCommand
 from forgeapi.config.layout import layout
 from forgeapi.support.project import find_project_root
 
@@ -38,7 +37,6 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("runserver", "Start the dev server (--port, --host, --reload)"),
         ("routers", "List all registered routes"),
         ("models", "List all discovered Tortoise models"),
-        ("doctor [--no-db]", "Diagnose env, config, models and DB"),
     ]),
     ("make", [
         ("make:controller <Name>", "Create a controller (-m model, -s schemas)"),
@@ -138,7 +136,6 @@ _registry = CommandRegistry([
     _schedule_cmd,
     _queue_cmd,
     _mcp_cmd,
-    DoctorCommand(),
 ])
 _registry.register_prefix("make:", _make_cmd)
 _registry.register_prefix("db:", _db_cmd)

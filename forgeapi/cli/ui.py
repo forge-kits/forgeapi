@@ -124,13 +124,6 @@ def route(method: str, path: str, handler: str, method_width: int) -> None:
     dotted(left, handler)
 
 
-def check(level: str, title: str, hint: str = "") -> None:
-    """One ``doctor`` result: ``level`` is ``ok``, ``warn`` or ``fail``."""
-    console.print(Text.assemble("  ", _badge(level, _BADGES[level][0].center(4)), "  ", title), soft_wrap=True)
-    if hint and level != "ok":
-        console.print(Text.assemble("          ", (f"→ {hint}", "dim")), soft_wrap=True)
-
-
 def table(columns: list[str], rows: list[list[str | Text]]) -> None:
     from rich import box
     from rich.padding import Padding

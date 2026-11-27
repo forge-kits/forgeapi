@@ -187,53 +187,6 @@ def test_scheduler_registry():
     assert registry["job-b"]._schedule_config == {"hour": 10, "minute": 0}
 
 
-# ── doctor ────────────────────────────────────────────────────────────────────
-
-def _doctor_schedule(tmp_path, monkeypatch, body):
-    from forgeapi.cli.commands.doctor_cmd import DoctorCommand
-    from forgeapi.config import KitConfig
-
-    f = tmp_path / "schedule.py"
-    f.write_text(body)
-    monkeypatch.chdir(tmp_path)
-    doc = DoctorCommand()
-    doc._check_scheduler(KitConfig())
-    return doc.results
-
-
-def test_doctor_schedule_valid(tmp_path, monkeypatch):
-    res = _doctor_schedule(tmp_path, monkeypatch, (
-        "from forgeapi import Scheduler\nscheduler = Scheduler()\n"
-        "scheduler.call(lambda: None).cron('*/5 * * * *').name('a')\n"
-    ))
-    assert [r[0] for r in res] == ["ok"]
-
-
-def test_doctor_schedule_missing_schedule_and_dupes(tmp_path, monkeypatch):
-    res = _doctor_schedule(tmp_path, monkeypatch, (
-        "from forgeapi import Scheduler\nscheduler = Scheduler()\n"
-        "scheduler.call(lambda: None).name('a')\n"
-        "scheduler.call(lambda: None).daily().name('b')\n"
-        "scheduler.call(lambda: None).daily().name('b')\n"
-    ))
-    titles = " ".join(r[1] for r in res)
-    assert all(r[0] == "fail" for r in res)
-    assert "without a schedule: a" in titles and "duplicate job names: b" in titles
-
-
-def test_doctor_schedule_no_scheduler_var(tmp_path, monkeypatch):
-    res = _doctor_schedule(tmp_path, monkeypatch, "x = 1\n")
-    assert res[0][0] == "fail"
-
-
-def test_doctor_engine_detection():
-    from forgeapi.cli.commands.doctor_cmd import DoctorCommand
-    cfg = {"connections": {"default": {"engine": "tortoise.backends.mysql"}}}
-    assert "mysql" in DoctorCommand._engine(cfg)
-    assert "mysql" in DoctorCommand._engine({"connections": {"default": "MySQL://u@h/db"}})
-    assert "mysql" not in DoctorCommand._engine({"connections": {"default": {"engine": "tortoise.backends.sqlite"}}})
-
-
 # ── make:job / policy / observer / provider ──────────────────────────────────
 
 @pytest.fixture
@@ -360,7 +313,7 @@ def test_unreachable_database_gives_readable_error(broken_db_project, capsys, cm
     assert info.value.exit_code == 1
     first_line = err.strip().splitlines()[0]
     assert "ERROR" in first_line and "Cannot connect to the database" in first_line
-    assert "Hint:" in err and "forgeapi doctor" in err
+    assert "Hint:" in err
     assert "Traceback" not in err
 
 
@@ -657,16 +610,6 @@ def test_commands_that_need_no_project_run_anywhere(tmp_path, monkeypatch, args)
     result = CliRunner().invoke(app, args)
     assert "No ForgeAPI project found" not in result.output
     assert result.exit_code == 0, result.output
-
-
-def test_doctor_is_not_blocked_outside_a_project(tmp_path, monkeypatch):
-    from typer.testing import CliRunner
-    from forgeapi.cli.main import app
-
-    monkeypatch.chdir(tmp_path)
-    result = CliRunner().invoke(app, ["doctor", "--no-db"])
-    assert "No ForgeAPI project found" not in result.output
-    assert "config/ directory not found" in result.output     # it reports the problem instead
 
 
 # ── forgeapi init: default User model + initial migration ──────────────────────
