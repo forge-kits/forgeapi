@@ -14,7 +14,8 @@ class AuthStrategy(ABC):
     * Raise only :class:`~forgeapi.exceptions.ForgeAPIAuthError` subclasses
       for invalid credentials — never ``HTTPException``.  The
       :class:`~forgeapi.auth.guard.Guard` translates domain errors to HTTP.
-    * Never touch the database or user models — the guard resolves users.
+    * Never touch user models — the guard resolves users.  A strategy that keeps
+      server-side sessions does it through its own session store.
     * Declare extra capabilities by implementing the protocols in
       :mod:`forgeapi.auth.contracts` (``SessionIssuer``, ...).
     """
@@ -22,6 +23,9 @@ class AuthStrategy(ABC):
     #: ``WWW-Authenticate`` challenge scheme sent with 401 responses,
     #: or ``None`` to omit the header (e.g. cookie sessions).
     challenge: Optional[str] = None
+
+    def bind(self, guard_name: str) -> None:
+        """Called once by the guard that owns this strategy.  Does nothing by default."""
 
     @abstractmethod
     async def authenticate(self, request: Request) -> Optional[Union[str, int]]:

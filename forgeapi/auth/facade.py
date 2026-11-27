@@ -24,11 +24,12 @@ class Auth:
 
     Shortcuts (use the default guard)::
 
-        token = auth.token(user)
+        await auth.login(user)
+        await auth.logout()
 
     Specific guard::
 
-        token = auth.token(admin_user, guard="admin")
+        await auth.login(admin_user, guard="admin")
 
     Get a guard instance to build dependencies::
 
@@ -57,7 +58,7 @@ class Auth:
             from forgeapi.auth import auth, Guard
             from forgeapi.auth.strategies import CookieStrategy
 
-            g = Guard("web", CookieStrategy(secret="s3cr3t"), user_model=User)
+            g = Guard("web", CookieStrategy(), user_model=User)
             auth.register("web", g)
 
         Args:
@@ -73,7 +74,7 @@ class Auth:
         )
 
     def set_default(self, name: str) -> None:
-        """Set which guard :meth:`token`, etc. use by default.
+        """Set which guard :meth:`login`, etc. use by default.
 
         Called automatically by ``Core``.
 
@@ -91,7 +92,7 @@ class Auth:
         Example::
 
             CurrentAdmin = auth.guard("admin").current_user()
-            token = auth.guard().token(user)   # default guard
+            await auth.guard().login(user)   # default guard
         """
         from forgeapi.exceptions import ForgeAPIConfigError
         resolved = name or self._default
@@ -140,7 +141,7 @@ class Auth:
 
         Example::
 
-            strategy = auth.create_strategy("cookie", {"secret": "s3cr3t"})
+            strategy = auth.create_strategy("cookie", {"lifetime": 7200})
         """
         factory = self._factories.get(name) or self._builtin_strategy(name)
         return factory.from_config(cfg or {})
@@ -167,46 +168,34 @@ class Auth:
     # Shortcuts — all delegate to the default (or named) guard
     # ------------------------------------------------------------------
 
-    def token(self, user, *, guard: str | None = None) -> str:
-        """Create a session token for *user*.
-
-        Args:
-            user:  DB model instance.
-            guard: Guard name override (uses default when omitted).
+    async def login(self, user, *, guard: str | None = None) -> None:
+        """Log *user* in.  The session cookie is set on the response of the current request.
 
         Example::
 
-            token = auth.token(user)
-            token = auth.token(admin_user, guard="admin")
+            await auth.login(user)
+            await auth.login(admin, guard="admin")
         """
-        return self.guard(guard).token(user)
+        await self.guard(guard).login(user)
 
-    def set_cookie(self, response, data: dict, *, guard: str | None = None) -> None:
-        """Sign ``data`` and write a session cookie (``SessionIssuer`` strategies).
-
-        Args:
-            response: FastAPI ``Response`` object.
-            data:     Session payload — include ``"sub"`` (user id), optionally ``"username"``.
-            guard:    Guard name override.
+    async def logout(self, *, guard: str | None = None) -> None:
+        """Log the current request out and remove its cookie.
 
         Example::
 
-            auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+            await auth.logout()
         """
-        self.guard(guard).set_cookie(response, data)
+        await self.guard(guard).logout()
 
-    def delete_cookie(self, response, *, guard: str | None = None) -> None:
-        """Remove the session cookie (``SessionIssuer`` strategies).
-
-        Args:
-            response: FastAPI ``Response`` object.
-            guard:    Guard name override.
+    async def logout_others(self, user, *, guard: str | None = None) -> int:
+        """End every session of *user* except the current one.  Returns how many.
 
         Example::
 
-            auth.delete_cookie(response)
+            await auth.logout_others(user)   # after the password was changed
         """
-        self.guard(guard).delete_cookie(response)
+        return await self.guard(guard).logout_others(user)
+
 
 
 # ---------------------------------------------------------------------------

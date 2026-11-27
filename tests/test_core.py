@@ -194,9 +194,8 @@ class TestMultiGuardConfig:
             "config = {\n"
             "    'default': 'api',\n"
             "    'guards': {\n"
-            "        'api':   {'strategy': 'cookie', 'secret': 'api_secret_key_for_tests!!!!!',\n"
-            "                  'model': 'tests.fakes.FakeUser'},\n"
-            "        'admin': {'strategy': 'cookie', 'secret': 'admin_secret_key_for_tests!!!',\n"
+            "        'api':   {'strategy': 'cookie', 'model': 'tests.fakes.FakeUser'},\n"
+            "        'admin': {'strategy': 'cookie', 'cookie_name': 'admin_session',\n"
             "                  'model': 'tests.fakes.FakeUser'},\n"
             "    },\n"
             "}\n"
@@ -206,11 +205,7 @@ class TestMultiGuardConfig:
         assert isolated_auth.guard("admin").name == "admin"
         assert isolated_auth.guard().name == "api"  # default
 
-        # guards are isolated — different secrets
-        from types import SimpleNamespace
-        from forgeapi.exceptions import SessionInvalidError
-        user = SimpleNamespace(id=1)
-        token = isolated_auth.token(user, guard="api")
-        isolated_auth.guard("api").strategy._verify(token)  # own secret: valid
-        with pytest.raises(SessionInvalidError):
-            isolated_auth.guard("admin").strategy._verify(token)
+        # guards are isolated: each strategy knows its guard and has its own cookie
+        assert isolated_auth.guard("api").strategy._guard == "api"
+        assert isolated_auth.guard("admin").strategy._guard == "admin"
+        assert isolated_auth.guard("admin").strategy._cookie_name == "admin_session"

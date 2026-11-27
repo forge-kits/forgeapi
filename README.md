@@ -148,7 +148,7 @@ After `forgeapi init my-project`:
 ```
 my-project/
   main.py                    # entry point — FastAPI app + Core(app)
-  .env                       # secrets (COOKIE_SECRET, DB_* etc.)
+  .env                       # secrets (DB_* etc.)
   config/                    # config directory (see §24)
     project.py               # name, api_prefix, debug, extra providers
     http.py                  # cors, rate_limit, request_id, access_log, middleware
@@ -314,12 +314,12 @@ Auth has its own domain-exception hierarchy (`ForgeAPIAuthError` subclasses:
 
 Auth is based on **Guards**. A Guard combines a **strategy** (how to verify credentials) with a required **user model** (which Tortoise model to load from the DB). A guard without `"model"` is a configuration error.
 
-Available strategies: **cookie** (HMAC-signed session cookie), **telegram** (Telegram Mini App initData).
+Available strategies: **cookie** (server-side sessions in the database, identified by a cookie), **telegram** (Telegram Mini App initData).
 
 ```
 Auth (facade)   — guard registry + strategy factories, pure delegation
- └─ Guard       — the only layer that speaks HTTP (401) and touches the DB
-     └─ AuthStrategy — pure domain: extract/verify credentials, issue sessions
+ └─ Guard       — the only layer that speaks HTTP (401) and loads users from the DB
+     └─ AuthStrategy — extract/verify credentials, keep sessions (never touches user models)
 ```
 
 ### Step 1 — define guards in config/auth.py
@@ -335,7 +335,6 @@ config = {
     "guards": {
         "api": {
             "strategy": "cookie",           # cookie | telegram | custom
-            "secret": env("COOKIE_SECRET"),
             "model": "database.models.user.User",   # required — user is always loaded from the DB
         },
     },
@@ -367,7 +366,7 @@ async def feed(self, user: OptionalUser):
 ### Error semantics (uniform across strategies)
 
 - credentials **absent** → 401 for `CurrentUser`, `None` for `OptionalUser`
-- credentials **present but invalid** (expired / bad signature / user gone
+- credentials **present but invalid** (expired / unknown session / user gone
   from the DB) → **401 always**, even for `OptionalUser`
 - every 401 carries `WWW-Authenticate: Bearer error="<code>"` with a
   machine-readable code: `session_expired`, `session_invalid`, `user_not_found`, `missing_credentials`
@@ -375,7 +374,7 @@ async def feed(self, user: OptionalUser):
 ### What the user object contains
 
 The dependency returns your **Tortoise model instance** loaded from the DB
-(looked up by primary key from the session `sub` claim), so all its fields and
+(looked up by primary key from the session), so all its fields and
 methods are available. `CurrentUser` and `OptionalUser` are typed `Any`; use
 `guard("api").current_user()` for a dependency typed as the guard's model.
 
@@ -384,25 +383,26 @@ methods are available. `CurrentUser` and `OptionalUser` are typed `Any`; use
 ```python
 from forgeapi.auth import auth
 
-# Cookie strategy
-auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
-auth.delete_cookie(response)
+# Cookie strategy, the cookie is set through AuthMiddleware, no response needed
+await auth.login(user)                 # start a session
+await auth.logout()                    # end it and remove the cookie
+await auth.logout_others(user)         # every other device, e.g. after a password change
 ```
 
 ### Login / Logout endpoint pattern (cookie)
 
 ```python
 @route.post("/login")
-async def login(self, payload: LoginPayload, response: Response) -> dict:
+async def login(self, payload: LoginPayload) -> dict:
     user = await User.get_or_none(email=payload.email)
     if not user or not user.verify_password(payload.password):
         raise HTTPException(401, "Invalid credentials")
-    auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+    await auth.login(user)
     return {"message": "Logged in"}
 
 @route.post("/logout")
-async def logout(self, response: Response) -> dict:
-    auth.delete_cookie(response)
+async def logout(self) -> dict:
+    await auth.logout()
     return {"message": "Logged out"}
 ```
 
@@ -413,13 +413,15 @@ async def logout(self, response: Response) -> dict:
 config = {
     "default": "api",
     "guards": {
-        "api":   {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+        "api":   {"strategy": "cookie",
                   "model": "database.models.user.User"},
-        "admin": {"strategy": "cookie", "secret": env("ADMIN_COOKIE_SECRET"),
+        "admin": {"strategy": "cookie", "cookie_name": "admin_session",
                   "model": "database.models.admin.Admin"},
     },
 }
 ```
+
+Each guard has its own sessions, so a cookie of one guard never logs in to another. Give guards that share a browser different `cookie_name` values.
 
 ```python
 from forgeapi.auth import guard
@@ -437,7 +439,7 @@ from forgeapi.auth import auth
 from forgeapi.auth.guard import Guard
 from forgeapi.auth.strategies import CookieStrategy
 
-auth.register("api", Guard(name="api", strategy=CookieStrategy(secret_key="..."), user_model=User))
+auth.register("api", Guard(name="api", strategy=CookieStrategy(), user_model=User))
 auth.set_default("api")
 ```
 
@@ -465,18 +467,21 @@ auth.extend("apikey", ApiKeyStrategy)
 The guard loads the user from the DB by that id, using the guard's `user_model`.
 
 Strategies raise **only** `ForgeAPIAuthError` subclasses — never
-`HTTPException`, never touch the DB.
+`HTTPException`, never touch user models.
 
 ### Cookie strategy
 
-Stores a signed JSON session in an `HttpOnly` cookie (HMAC-SHA256).
+Keeps login sessions in the `auth_sessions` table. The cookie holds only a random token, the table holds its SHA-256 hash. A logout deletes the session, so a copied cookie stops working at once.
+
+Needs `"forgeapi.auth.models"` in the models list of `config/database.py` (`forgeapi init` adds it) and a migration. `Core` adds `AuthMiddleware` when `config/auth.py` exists, it sets the cookie for `auth.login()` and `auth.logout()`.
+
+Expired sessions are deleted when they are read, and one login in 50 deletes all the expired ones.
 
 | Config key | Default | Description |
 |---|---|---|
-| `secret` | — | HMAC secret (use `env("COOKIE_SECRET")`) |
-| `secret_env` | `"COOKIE_SECRET"` | Env var name to read when `secret` is not set |
 | `cookie_name` | `"session"` | Cookie name |
-| `max_age` | `3600` | Session lifetime, seconds |
+| `lifetime` | `3600` | Seconds of inactivity after which the session expires, every request moves it forward |
+| `absolute_lifetime` | `None` | Seconds after which the session ends however active it is |
 | `httponly` | `True` | `HttpOnly` flag |
 | `secure` | `True` | Set `False` only for local HTTP development |
 | `samesite` | `"lax"` | SameSite policy |
@@ -2952,7 +2957,7 @@ config = {
 config = {
     "default": "api",
     "guards": {
-        "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+        "api": {"strategy": "cookie",
                 "model": "database.models.user.User"},
     },
 }

@@ -273,7 +273,7 @@ class TestControllerRouteRegistration:
         class CountController(Controller):
             @route.get("/")
             async def index(self):
-                calls.append(id(self))
+                calls.append(self)   # keeps the instance alive, a freed one can give its id to the next
                 return {"id": id(self)}
 
         app = FastAPI()

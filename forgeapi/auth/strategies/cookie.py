@@ -1,56 +1,40 @@
-import base64
-import binascii
-import hashlib
-import hmac
-import json
-import os
-import time
 from typing import Optional, Union
 
-from fastapi import Request, Response
+from fastapi import Request
+from tortoise import timezone
 
 from forgeapi.exceptions import SessionExpiredError, SessionInvalidError
 from forgeapi.logging import log
+
+from ..contracts import SessionCookie
+from ..sessions import SessionStore
 from .base import AuthStrategy
 
 _log = log.channel("auth.cookie")
 
 
 class CookieStrategy(AuthStrategy):
-    """Session cookie authentication strategy.
+    """Login sessions kept in the ``auth_sessions`` table, identified by a cookie.
 
-    Stores a signed JSON payload in an HTTP cookie.  The signature is an
-    HMAC-SHA256 digest computed from the base64-encoded payload, preventing
-    tampering without requiring a database round-trip.
+    The cookie holds only a random token.  A logout deletes the session, so a
+    copied cookie stops working at once.  Needs ``"forgeapi.auth.models"`` in the
+    models list of ``config/database.py``.
+
+    Log in and out with the facade, it sets the cookie itself::
+
+        await auth.login(user)
+        await auth.logout()
 
     Args:
-        secret_key: HMAC signing secret.  Falls back to the ``COOKIE_SECRET``
-            environment variable if omitted.
         cookie_name: Name of the session cookie.  Defaults to ``"session"``.
-        max_age: Cookie lifetime in seconds.  Defaults to ``3600`` (1 hour).
+        lifetime: Seconds of inactivity after which the session expires.  Every
+            request moves the expiry forward.  Defaults to ``3600``.
+        absolute_lifetime: Seconds after which the session ends however active
+            it is.  Defaults to ``None`` (no limit).
         httponly: Set the ``HttpOnly`` flag.  Defaults to ``True``.
-        secure: Set the ``Secure`` flag (HTTPS only).  Defaults to ``False``.
+        secure: Set the ``Secure`` flag (HTTPS only).  Defaults to ``True``.
         samesite: ``SameSite`` policy: ``"lax"``, ``"strict"``, or ``"none"``.
             Defaults to ``"lax"``.
-
-    Raises:
-        ValueError: If neither ``secret_key`` nor ``COOKIE_SECRET`` is set.
-
-    Example::
-
-        strategy = CookieStrategy(secret_key="s3cr3t")
-
-        # in a login endpoint
-        @router.post("/login")
-        async def login(response: Response):
-            strategy.set_cookie(response, {"sub": "42", "username": "alice"})
-            return {"ok": True}
-
-        # in a logout endpoint
-        @router.post("/logout")
-        async def logout(response: Response):
-            strategy.delete_cookie(response)
-            return {"ok": True}
     """
 
     challenge = None  # cookie sessions have no standard WWW-Authenticate scheme
@@ -59,26 +43,13 @@ class CookieStrategy(AuthStrategy):
     def from_config(cls, cfg: dict) -> "CookieStrategy":
         """Build from a guard config dict.
 
-        Recognised keys: ``secret`` (raw value), ``secret_env`` (env var name,
-        default ``COOKIE_SECRET``), ``cookie_name``, ``max_age`` (seconds),
-        ``httponly``, ``secure``, ``samesite``.
+        Recognised keys: ``cookie_name``, ``lifetime`` (seconds),
+        ``absolute_lifetime`` (seconds), ``httponly``, ``secure``, ``samesite``.
         """
-        from forgeapi.exceptions import ForgeAPIConfigError
-
-        env_name = cfg.get("secret_env", "COOKIE_SECRET")
-        secret = cfg.get("secret") or os.getenv(env_name, "")
-        if not secret:
-            raise ForgeAPIConfigError(
-                "Cookie secret is not set.",
-                hint=(
-                    f"Set the {env_name} environment variable, "
-                    "or add 'secret' to the guard config."
-                ),
-            )
         return cls(
-            secret_key=secret,
             cookie_name=cfg.get("cookie_name", "session"),
-            max_age=cfg.get("max_age", 3600),
+            lifetime=cfg.get("lifetime", 3600),
+            absolute_lifetime=cfg.get("absolute_lifetime"),
             httponly=cfg.get("httponly", True),
             secure=cfg.get("secure", True),
             samesite=cfg.get("samesite", "lax"),
@@ -86,25 +57,21 @@ class CookieStrategy(AuthStrategy):
 
     def __init__(
         self,
-        secret_key: Optional[str] = None,
         cookie_name: str = "session",
-        max_age: int = 3600,
+        lifetime: int = 3600,
+        absolute_lifetime: Optional[int] = None,
         httponly: bool = True,
         secure: bool = True,
         samesite: str = "lax",
     ) -> None:
-        self._secret = secret_key or os.getenv("COOKIE_SECRET", "")
-        if not self._secret:
-            from forgeapi.exceptions import ForgeAPIConfigError
-            raise ForgeAPIConfigError(
-                "Cookie secret key is not set.",
-                hint="Pass secret_key= to CookieStrategy or set the COOKIE_SECRET environment variable.",
-            )
         self._cookie_name = cookie_name
-        self._max_age = max_age
+        self._lifetime = lifetime
+        self._absolute_lifetime = absolute_lifetime
         self._httponly = httponly
         self._secure = secure
         self._samesite = samesite
+        self._guard = "default"
+        self._store = SessionStore()
         if not secure:
             _log.warning(
                 "CookieStrategy: secure=False — session cookies will be sent over plain HTTP. "
@@ -112,119 +79,80 @@ class CookieStrategy(AuthStrategy):
             )
         _log.debug("CookieStrategy ready: cookie='%s' httponly=%s secure=%s", cookie_name, httponly, secure)
 
-    def create_session(self, data: dict) -> str:
-        """Encode and sign session data for use as a cookie value.
+    def bind(self, guard_name: str) -> None:
+        # a session belongs to one guard, so a cookie of one guard never logs in to another
+        self._guard = guard_name
 
-        Args:
-            data: Any JSON-serialisable dict.  Include ``"sub"`` (user id) and
-                ``"username"``; ``"sub"`` becomes the user id the guard
-                loads from the DB.  An ``"exp"`` (Unix timestamp) claim is added automatically.
-
-        Returns:
-            Signed cookie string in the form ``<b64payload>.<signature>``.
-
-        Example::
-
-            value = strategy.create_session({"sub": "42", "username": "alice"})
-            response.set_cookie("session", value)
-        """
-        data = {**data, "exp": int(time.time()) + self._max_age}
-        payload = base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
-        return f"{payload}.{self._sign(payload)}"
-
-    def set_cookie(self, response: Response, data: dict) -> None:
-        """Sign ``data`` and write it as a session cookie on the response.
-
-        Args:
-            response: FastAPI ``Response`` (or ``JSONResponse``) object.
-            data: Session payload (see :meth:`create_session`).
-
-        Example::
-
-            @router.post("/login")
-            async def login(payload: LoginPayload, response: Response):
-                strategy.set_cookie(response, {"sub": user.id, "username": user.username})
-                return {"ok": True}
-        """
-        response.set_cookie(
-            key=self._cookie_name,
-            value=self.create_session(data),
-            max_age=self._max_age,
-            path="/",
-            httponly=self._httponly,
-            secure=self._secure,
-            samesite=self._samesite,
-        )
-
-    def delete_cookie(self, response: Response) -> None:
-        """Remove the session cookie from the response.
-
-        Args:
-            response: FastAPI ``Response`` object.
-
-        Example::
-
-            @router.post("/logout")
-            async def logout(response: Response):
-                strategy.delete_cookie(response)
-                return {"ok": True}
-        """
-        response.delete_cookie(
-            self._cookie_name,
-            path="/",
+    def _cookie(self, value: Optional[str]) -> SessionCookie:
+        return SessionCookie(
+            name=self._cookie_name,
+            value=value,
+            max_age=self._lifetime,
             httponly=self._httponly,
             secure=self._secure,
             samesite=self._samesite,
         )
 
     async def authenticate(self, request: Request) -> Optional[Union[str, int]]:
-        """Read and verify the session cookie from the request.
-
-        Args:
-            request: Incoming FastAPI/Starlette request.
+        """Look the session cookie up and return its user id.
 
         Returns:
-            The user id (``sub`` claim) on success, ``None`` if the cookie
-            is absent.
+            The user id on success, ``None`` if the cookie is absent.
 
         Raises:
             :class:`~forgeapi.exceptions.SessionExpiredError`: If the session expired.
-            :class:`~forgeapi.exceptions.SessionInvalidError`: If the cookie is
-                malformed, has no ``sub`` claim, or its signature does not match.
+            :class:`~forgeapi.exceptions.SessionInvalidError`: If no such session exists
+                (never issued, or logged out).
         """
-        raw = request.cookies.get(self._cookie_name)
-        if not raw:
+        token = request.cookies.get(self._cookie_name)
+        if not token:
             _log.debug("Cookie auth: no '%s' cookie in request", self._cookie_name)
             return None
 
-        data = self._verify(raw)
-        if data.get("exp", 0) <= time.time():
-            _log.warning("Cookie auth rejected: session expired (sub=%s)", data.get("sub"))
+        session = await self._store.find(token, self._guard)
+        if session is None:
+            _log.warning("Cookie auth rejected: unknown session")
+            raise SessionInvalidError("Session not found")
+        if self._expired(session):
+            await self._store.destroy(token, self._guard)
+            _log.warning("Cookie auth rejected: session expired (user=%s)", session.user_id)
             raise SessionExpiredError("Session has expired")
-        _log.debug("Cookie auth OK: user_id=%s", data.get("sub"))
-        user_id = data.get("sub")
-        if user_id is None or user_id == "":
-            _log.warning("Cookie auth rejected: session has no 'sub' claim")
-            raise SessionInvalidError("Session has no user id")
-        return user_id
 
-    def _sign(self, value: str) -> str:
-        raw = hmac.new(self._secret.encode(), value.encode(), hashlib.sha256).digest()
-        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        await self._store.touch(session, self._lifetime)
+        _log.debug("Cookie auth OK: user_id=%s", session.user_id)
+        return session.user_id
 
-    def _verify(self, cookie_value: str) -> dict:
-        try:
-            payload, sig = cookie_value.rsplit(".", 1)
-        except ValueError:
-            _log.warning("Cookie auth rejected: malformed cookie value")
-            raise SessionInvalidError("Malformed session cookie")
+    def _expired(self, session) -> bool:
+        now = timezone.now()
+        if session.expires_at <= now:
+            return True
+        if self._absolute_lifetime is not None:
+            return (now - session.created_at).total_seconds() >= self._absolute_lifetime
+        return False
 
-        if not hmac.compare_digest(self._sign(payload), sig):
-            _log.warning("Cookie auth rejected: signature mismatch")
-            raise SessionInvalidError("Session cookie signature mismatch")
+    async def login(self, request: Request, user_id) -> SessionCookie:
+        """Start a session for the user and return the cookie that carries it.
 
-        try:
-            return json.loads(base64.urlsafe_b64decode(payload + "==").decode())
-        except (json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
-            _log.warning("Cookie auth rejected: invalid session payload: %s", exc)
-            raise SessionInvalidError("Invalid session")
+        A session the request already has is ended first, so a token set before
+        the login cannot be reused after it.
+        """
+        old = request.cookies.get(self._cookie_name)
+        if old:
+            await self._store.destroy(old, self._guard)
+        token = await self._store.create(
+            user_id=str(user_id), guard=self._guard, lifetime=self._lifetime, request=request,
+        )
+        return self._cookie(token)
+
+    async def logout(self, request: Request) -> SessionCookie:
+        """End the session of the request and return the cookie that removes it."""
+        token = request.cookies.get(self._cookie_name)
+        if token:
+            await self._store.destroy(token, self._guard)
+        return self._cookie(None)
+
+    async def logout_others(self, request: Request, user_id) -> int:
+        """End every session of the user except the one of this request.  Returns how many."""
+        return await self._store.destroy_for_user(
+            str(user_id), self._guard, keep_token=request.cookies.get(self._cookie_name),
+        )

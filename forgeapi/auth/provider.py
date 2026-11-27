@@ -14,6 +14,12 @@ class AuthProvider(Provider):
     belongs in boot.
     """
 
+    def register(self) -> None:
+        from .middleware import AuthMiddleware
+
+        # login() and logout() set their cookies through it
+        self.app.add_middleware(AuthMiddleware)
+
     def boot(self) -> None:
         from forgeapi.exceptions import ForgeAPIConfigError
         from .facade import auth as facade
@@ -25,7 +31,7 @@ class AuthProvider(Provider):
                 "config/auth.py exists but defines no guards.",
                 hint=(
                     'Add at least one guard: config = {"default": "api", '
-                    '"guards": {"api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"), '
+                    '"guards": {"api": {"strategy": "cookie", '
                     '"model": "database.models.user.User"}}}'
                 ),
             )

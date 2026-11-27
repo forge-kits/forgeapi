@@ -59,9 +59,9 @@ class AuthConfig(BaseModel):
         config = {
             "default": "api",
             "guards": {
-                "api":   {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+                "api":   {"strategy": "cookie",
                           "model": "database.models.user.User"},
-                "admin": {"strategy": "cookie", "secret": env("ADMIN_COOKIE_SECRET"),
+                "admin": {"strategy": "cookie", "cookie_name": "admin_session",
                           "model": "database.models.admin.Admin"},
             },
         }

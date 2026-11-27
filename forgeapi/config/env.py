@@ -17,7 +17,7 @@ def env(key: str, default: Any = None) -> Any:
 
         config = {
             "guards": {
-                "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+                "api": {"strategy": "cookie",
                         "model": "database.models.user.User"},
             },
         }

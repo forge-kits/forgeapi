@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import secrets
 import subprocess
 from pathlib import Path
 
@@ -116,18 +115,16 @@ config = {
 
 _CONFIG_AUTH_TEMPLATES = {
     "cookie": '''\
-from forgeapi import env
-
 config = {
     "default": "web",
     "guards": {
         "web": {
             "strategy": "cookie",
             "model": "database.models.user.User",
-            "secret": env("COOKIE_SECRET"),
             "cookie_name": "session",
+            "lifetime": 3600,   # seconds of inactivity until the session expires
             "httponly": True,
-            "secure": False,   # set True behind HTTPS
+            "secure": False,    # set True behind HTTPS
         },
     },
 }
@@ -241,6 +238,7 @@ TORTOISE_ORM = {{
                 "forgeapi.scheduling.models",
                 "forgeapi.queue.models",
                 "forgeapi.cache.models",
+                "forgeapi.auth.models",
                 "forgeapi.permissions.models",
             ],
             "default_connection": "default",
@@ -273,6 +271,7 @@ TORTOISE_ORM = {{
                 "forgeapi.scheduling.models",
                 "forgeapi.queue.models",
                 "forgeapi.cache.models",
+                "forgeapi.auth.models",
                 "forgeapi.permissions.models",
             ],
             "default_connection": "default",
@@ -309,6 +308,7 @@ TORTOISE_ORM = {{
                 "forgeapi.scheduling.models",
                 "forgeapi.queue.models",
                 "forgeapi.cache.models",
+                "forgeapi.auth.models",
                 "forgeapi.permissions.models",
             ],
             "default_connection": "default",
@@ -345,7 +345,7 @@ DB_NAME={name}
 }
 
 _ENV_VARS = {
-    "cookie":   "APP_TIMEZONE=UTC\nCOOKIE_SECRET={cookie_secret}\n\n{db_env}",
+    "cookie":   "APP_TIMEZONE=UTC\n\n{db_env}",
     "telegram": "APP_TIMEZONE=UTC\nTELEGRAM_BOT_TOKEN=\n\n{db_env}",
 }
 
@@ -421,7 +421,7 @@ Creates:
         ui.blank()
 
         strategy = ui.choose("Auth strategy", [
-            ("cookie", "cookie", "Cookie session (HMAC-signed, httpOnly)"),
+            ("cookie", "cookie", "Cookie session (kept in the database, httpOnly)"),
             ("telegram", "telegram", "Telegram Mini App (initData validation)"),
         ])
         ui.blank()
@@ -469,7 +469,6 @@ Creates:
         self._write(
             root / ".env",
             _ENV_VARS[strategy].format(
-                cookie_secret=secrets.token_hex(32),
                 db_env=db_env,
             ),
             typer,

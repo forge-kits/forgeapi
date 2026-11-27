@@ -6,11 +6,16 @@ from forgeapi.exceptions import ForgeAPIAuthError
 from forgeapi.logging import log
 
 from .contracts import SessionIssuer
+from .middleware import current_state
 
 if TYPE_CHECKING:
     from .strategies.base import AuthStrategy
 
 _log = log.channel("auth.guard")
+
+
+def _user_id(user: Any) -> Any:
+    return user.pk if hasattr(user, "pk") else user.id
 
 
 class Guard:
@@ -32,7 +37,7 @@ class Guard:
         from forgeapi.auth import auth, Guard
         from forgeapi.auth.strategies import CookieStrategy
 
-        api_guard = Guard("web", CookieStrategy(secret="..."), user_model=User)
+        api_guard = Guard("web", CookieStrategy(), user_model=User)
         auth.register("web", api_guard)
 
     Usage in controllers::
@@ -65,6 +70,7 @@ class Guard:
             )
         self.name = name
         self._strategy = strategy
+        strategy.bind(name)
         self._user_model = user_model
         # cached Annotated types — built once per guard instance
         self._current_dep: Any = None
@@ -167,51 +173,37 @@ class Guard:
         return self._optional_dep
 
     # ------------------------------------------------------------------
-    # Token / session helpers — dispatched via capability protocols
+    # Login / logout — dispatched via the SessionIssuer capability
     # ------------------------------------------------------------------
 
-    def token(self, user: Any) -> str:
-        """Create a signed session value for *user* (``SessionIssuer`` strategies).
+    async def login(self, user: Any) -> None:
+        """Log *user* in: start a session and set its cookie on the response.
 
-        Example::
+        Works inside a request, no ``response`` needed::
 
-            token = guard("web").token(user)
+            await guard("web").login(user)
         """
-        payload = self._build_payload(user)
-        if isinstance(self._strategy, SessionIssuer):
-            return self._strategy.create_session(payload)
-        raise NotImplementedError(
-            f"token() is not supported for {type(self._strategy).__name__} — "
-            "the strategy does not implement SessionIssuer."
-        )
+        issuer = self._issuer("login")
+        state = current_state()
+        state.queue(await issuer.login(state.request, _user_id(user)))
 
-    def set_cookie(self, response, data: dict) -> None:
-        """Sign *data* and write a session cookie on *response* (``SessionIssuer`` strategies).
+    async def logout(self) -> None:
+        """Log the current request out: end its session and remove the cookie."""
+        issuer = self._issuer("logout")
+        state = current_state()
+        state.queue(await issuer.logout(state.request))
 
-        Example::
+    async def logout_others(self, user: Any) -> int:
+        """End every session of *user* except the current one (after a password change).  Returns how many."""
+        return await self._issuer("logout_others").logout_others(current_state().request, _user_id(user))
 
-            guard("web").set_cookie(response, {"sub": str(user.id)})
-        """
+    def _issuer(self, operation: str) -> SessionIssuer:
         if not isinstance(self._strategy, SessionIssuer):
             raise NotImplementedError(
-                f"set_cookie() is not supported for {type(self._strategy).__name__} — "
+                f"{operation}() is not supported for {type(self._strategy).__name__} — "
                 "the strategy does not implement SessionIssuer."
             )
-        self._strategy.set_cookie(response, data)
-
-    def delete_cookie(self, response) -> None:
-        """Remove the session cookie from *response* (``SessionIssuer`` strategies).
-
-        Example::
-
-            guard("web").delete_cookie(response)
-        """
-        if not isinstance(self._strategy, SessionIssuer):
-            raise NotImplementedError(
-                f"delete_cookie() is not supported for {type(self._strategy).__name__} — "
-                "the strategy does not implement SessionIssuer."
-            )
-        self._strategy.delete_cookie(response)
+        return self._strategy
 
     # ------------------------------------------------------------------
     # Internals
@@ -234,30 +226,3 @@ class Guard:
         if required:
             return Annotated[model, Depends(_resolve)]
         return Annotated[Optional[model], Depends(_resolve)]
-
-    def _build_payload(self, user: Any) -> dict:
-        """Build session claims for *user*.
-
-        A model can control its claims by defining ``auth_claims() -> dict``
-        (``"sub"`` is filled from ``user.id`` when omitted)::
-
-            class User(ModelMixin, Model):
-                def auth_claims(self) -> dict:
-                    return {"username": self.username, "role": self.role}
-
-        Without the hook: ``sub`` from ``user.id`` plus the first present
-        attribute of ``username`` / ``email`` / ``name``.
-        """
-        claims_hook = getattr(user, "auth_claims", None)
-        if callable(claims_hook):
-            payload = dict(claims_hook())
-            payload.setdefault("sub", str(getattr(user, "id", "")))
-            return payload
-
-        payload = {"sub": str(getattr(user, "id", ""))}
-        for field in ("username", "email", "name"):
-            val = getattr(user, field, None)
-            if val is not None:
-                payload[field] = str(val)
-                break
-        return payload

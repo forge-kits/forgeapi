@@ -41,7 +41,7 @@ PostUpdate = PostCreate.partial("PostUpdate")           # PATCH: every field opt
 class PostResponse(BaseSchema): title: str              # + id/created_at/updated_at inherited
 
 user: CurrentUser   # 401 if missing  |  user: OptionalUser  # None if missing
-auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+await auth.login(user)   # starts a session, the cookie is set on the response
 
 # app/broadcasting.py
 from forgeapi import BroadcastManager
@@ -226,7 +226,7 @@ config = {"cors": ["*"], "rate_limit": 60, "request_id": True, "access_log": Tru
 
 # config/auth.py
 config = {"default": "api", "guards": {
-    "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+    "api": {"strategy": "cookie",
             "model": "database.models.user.User"}   # model is required
 }}
 
@@ -431,7 +431,6 @@ config = {
     "guards": {
         "api": {
             "strategy": "cookie",
-            "secret": env("COOKIE_SECRET"),
             "model": "database.models.user.User",   # required — user is always loaded from the DB
         },
     },
@@ -454,36 +453,41 @@ async def feed(self, user: OptionalUser) -> dict:
 
 ## What `user` is
 `CurrentUser` / `OptionalUser` always return an instance of the guard's DB `model`
-(looked up by pk from the session `sub` claim). A guard without `"model"` in
+(looked up by pk from the session). A guard without `"model"` in
 `config/auth.py` raises ForgeAPIConfigError at startup.
 
 ## Cookie session operations
+Sessions live in the `auth_sessions` table (add `"forgeapi.auth.models"` to the models list in
+`config/database.py`, then migrate). The cookie holds a random token. No `response` is needed,
+`AuthMiddleware` (added by `Core`) sets the cookie.
 ```python
 from forgeapi.auth import auth
 
-auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
-auth.delete_cookie(response)
+await auth.login(user)               # start a session
+await auth.logout()                  # end it, remove the cookie
+await auth.logout_others(user)       # every other device, e.g. after a password change
 ```
+Guard keys: `cookie_name`, `lifetime` (idle seconds, default 3600), `absolute_lifetime`, `httponly`, `secure`, `samesite`.
 
 ## Login / Logout pattern (cookie)
 ```python
 @route.post("/login")
-async def login(self, payload: LoginPayload, response: Response) -> dict:
+async def login(self, payload: LoginPayload) -> dict:
     user = await User.get_or_none(email=payload.email)
     if not user or not user.verify_password(payload.password):
         raise HTTPException(401, "Invalid credentials")
-    auth.set_cookie(response, {"sub": str(user.id), "username": user.username})
+    await auth.login(user)
     return {"message": "Logged in"}
 
 @route.post("/logout")
-async def logout(self, response: Response) -> dict:
-    auth.delete_cookie(response)
+async def logout(self) -> dict:
+    await auth.logout()
     return {"message": "Logged out"}
 ```
 
 ## Error semantics
 - credentials absent → 401 for `CurrentUser`, `None` for `OptionalUser`
-- credentials present but invalid (expired/bad signature/user gone) → 401 always
+- credentials present but invalid (expired, unknown session, user gone) → 401 always
 - `WWW-Authenticate: Bearer error="<code>"` — codes: `session_expired`, `session_invalid`, `user_not_found`, `missing_credentials`
 
 ## Multiple guards
@@ -491,7 +495,7 @@ async def logout(self, response: Response) -> dict:
 from forgeapi.auth import guard
 
 CurrentAdmin = guard("admin").current_user()
-token = auth.guard("admin").set_cookie(response, {"sub": str(admin.id)})
+await auth.guard("admin").login(admin)   # each guard has its own sessions
 ```
 
 ## Custom strategies
@@ -1003,7 +1007,7 @@ config = {
 config = {
     "default": "api",
     "guards": {
-        "api": {"strategy": "cookie", "secret": env("COOKIE_SECRET"),
+        "api": {"strategy": "cookie",
                 "model": "database.models.user.User"},
     },
 }

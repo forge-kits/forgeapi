@@ -1,6 +1,7 @@
 from .facade import auth, Auth
 from .guard import Guard
-from .contracts import SessionIssuer
+from .contracts import SessionCookie, SessionIssuer
+from .middleware import AuthMiddleware
 from .dependencies import CurrentUser, OptionalUser
 from .strategies import AuthStrategy, CookieStrategy, TelegramStrategy
 
@@ -25,7 +26,7 @@ def guard(name: str | None = None) -> Guard:
 __all__ = [
     "auth", "Auth",
     "guard", "Guard",
-    "SessionIssuer",
+    "SessionIssuer", "SessionCookie", "AuthMiddleware",
     "CurrentUser", "OptionalUser",
     "AuthStrategy", "CookieStrategy", "TelegramStrategy",
 ]
