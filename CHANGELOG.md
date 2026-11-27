@@ -2,6 +2,20 @@
 
 Generated from git history by `scripts/gen_changelog.py` (Conventional Commits). Do not edit by hand.
 
+## [2.0.0](https://github.com/forge-kits/forgeapi/releases/tag/v2.0.0) - 2026-11-27
+
+### Features
+
+- **BREAKING** **config:** Keep every setting but the database in config/app.py, add config() ([`86a730a`](https://github.com/forge-kits/forgeapi/commit/86a730a))
+- **BREAKING** **init:** Generate the auth tables in the project, add Factory, make queue, scheduler and broadcast switch on by their config file ([`429845c`](https://github.com/forge-kits/forgeapi/commit/429845c))
+- **BREAKING** **auth:** Keep cookie sessions in the database, add auth.login() and auth.logout() ([`13077a6`](https://github.com/forge-kits/forgeapi/commit/13077a6))
+- **init:** Add config/cache.py, list the models of config/database.py one per line ([`759024c`](https://github.com/forge-kits/forgeapi/commit/759024c))
+- **BREAKING** **cli:** Runserver shows the tabbed dev terminal when Textual is installed ([`c98408a`](https://github.com/forge-kits/forgeapi/commit/c98408a))
+
+### Refactoring
+
+- **BREAKING** **cli:** Remove forgeapi doctor ([`cc169ae`](https://github.com/forge-kits/forgeapi/commit/cc169ae))
+
 ## [1.9.1](https://github.com/forge-kits/forgeapi/releases/tag/v1.9.1) - 2026-11-17
 
 ### Features
