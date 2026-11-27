@@ -76,4 +76,5 @@ nav:
   - "23. CLI reference": 23-cli-reference.md
   - "24. Configuration reference (config/)": 24-configuration-reference-config.md
   - "25. MCP Server": 25-mcp-server.md
+  - "26. Testing": 26-testing.md
   - Changelog: changelog.md
