@@ -1,4 +1,4 @@
-"""Which view (tab) a line of ``runserver --dev`` output belongs to."""
+"""Which view (tab) a line of the dev ``runserver`` output belongs to."""
 from __future__ import annotations
 
 #: View that collects the forgeapi / app logger lines of the server process (broadcast, auth, mail, ...).

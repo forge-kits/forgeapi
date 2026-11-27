@@ -1,6 +1,6 @@
 """Switch for the in-app queue worker and scheduler.
 
-``forgeapi runserver --dev`` runs them as separate processes and sets this variable for the
+the dev ``forgeapi runserver`` runs them as separate processes and sets this variable for the
 web process, so the same jobs are not executed twice.  Set it yourself when you run
 ``forgeapi queue:work`` / ``forgeapi schedule:work`` as their own processes (for example in production).
 """

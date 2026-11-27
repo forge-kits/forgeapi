@@ -1,6 +1,6 @@
 """Run several commands side by side, stream their output, and keep them alive.
 
-Used by ``forgeapi runserver --dev``: the server, the queue worker and the scheduler in one terminal.
+Used by the dev ``forgeapi runserver``: the server, the queue worker and the scheduler in one terminal.
 The multiplexer knows nothing about how output is shown: it calls ``emit`` for every line and ``on_state``
 when a process changes state, so the same code drives the plain stream and the tabbed interface.
 """

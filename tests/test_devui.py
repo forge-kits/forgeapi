@@ -1,4 +1,4 @@
-"""The tabbed interface of `runserver --dev`, driven headless with a fake multiplexer."""
+"""The tabbed interface of the dev `runserver`, driven headless with a fake multiplexer."""
 import asyncio
 
 import pytest

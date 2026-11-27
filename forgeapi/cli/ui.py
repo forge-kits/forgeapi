@@ -169,7 +169,7 @@ _PROCESS_COLORS = ("cyan", "magenta", "yellow", "green", "blue")
 
 
 def dev_started(app: str, host: str, port: int, reload: bool, processes: list[tuple[str, str]]) -> None:
-    """Banner of ``runserver --dev``: one row per process, ``(name, what it runs)``."""
+    """Banner of the dev ``runserver``: one row per process, ``(name, what it runs)``."""
     blank()
     console.print(Text.assemble("  ", ("ForgeAPI", BRAND), f" {package_version()}  ", ("development server", "dim")))
     blank()

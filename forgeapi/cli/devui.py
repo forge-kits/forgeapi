@@ -1,4 +1,4 @@
-"""Tabbed terminal interface of ``forgeapi runserver --dev`` (needs ``pip install forge-kits[dev]``).
+"""Tabbed terminal interface of ``forgeapi runserver`` (needs ``pip install forge-kits[dev]``).
 
 One tab per process plus a ``logs`` tab for what the application and forgeapi log, or one interleaved stream.
 Search, per-process restart and timestamps work in both.  The data sits in :class:`DevApp`, so

@@ -117,7 +117,7 @@ SQLite + auth are included in the base package. Install extras only for producti
 | `s3` | `boto3` | S3 / MinIO / Cloudflare R2 storage driver |
 | `images` | `Pillow` | ImageProcessor helper |
 | `mcp` | `mcp` | forge-kits MCP server for AI-assisted development |
-| `dev` | `textual` | tabbed interface of `forgeapi runserver --dev` |
+| `dev` | `textual` | tabbed interface of `forgeapi runserver` |
 
 ```bash
 pip install forge-kits               # SQLite included by default
@@ -125,7 +125,7 @@ pip install forge-kits[asyncpg]      # PostgreSQL
 pip install forge-kits[aiomysql]     # MySQL / MariaDB
 pip install forge-kits[redis]        # Redis cache / events
 pip install forge-kits[mcp]          # MCP server
-pip install forge-kits[dev]          # tabbed interface of `runserver --dev`
+pip install forge-kits[dev]          # tabbed interface of `runserver`
 pip install forge-kits[s3,images]    # S3 storage + image processing
 ```
 
@@ -2820,13 +2820,12 @@ forgeapi db:fresh --force     # DROP all tables (irreversible)
 > Never use `uvicorn` directly — always use `forgeapi runserver`
 
 ```bash
-forgeapi runserver                  # only the web server
+forgeapi runserver                  # with forge-kits[dev]: server + queue worker + scheduler, one terminal. Otherwise only the web server
 forgeapi runserver --reload
 forgeapi runserver --port 9000 --host 0.0.0.0 --reload
-forgeapi runserver --dev            # server + queue worker + scheduler, one terminal
 ```
 
-#### `runserver --dev`
+#### Dev interface of `runserver`
 
 Runs everything the project needs in development as **separate processes** in one terminal, with a tab for each:
 
@@ -2840,7 +2839,7 @@ Runs everything the project needs in development as **separate processes** in on
 
 ```bash
 pip install forge-kits[dev]         # the tabbed interface (Textual)
-forgeapi runserver --dev
+forgeapi runserver
 ```
 
 | Process | Starts when | Command it runs |
@@ -2850,18 +2849,6 @@ forgeapi runserver --dev
 | `schedule` | `config/scheduler.py` exists, `"enabled"` is true and the schedule file exists | `forgeapi schedule:work` |
 
 The `logs` tab is not a process: it collects what the application and forgeapi log in the server process (broadcast, auth, cache, mail, your own `Log.channel(...)`), so `server` keeps only uvicorn and the HTTP requests (`forgeapi.access`). A line is routed by the name of the logger that wrote it.
-
-**Modes**
-
-| Flag | Mode |
-|---|---|
-| `-t`, `--tabs` | One tab per process plus `logs` (the default when there is a terminal and Textual is installed) |
-| `-s`, `--stream` | One interleaved stream, every line prefixed with its tab name |
-| `-i`, `--inline` | Plain prefixed output, no interface: `server   \| INFO      message` |
-| `--timestamps` | Show the time of every line (any mode) |
-| `--no-restart` | Do not restart a worker that crashed |
-
-Without a terminal (CI, a pipe) the output is plain, as with `--inline`. Without Textual installed the same happens and a one-line hint says so.
 
 **Keys** (tabs and stream)
 
@@ -2881,15 +2868,15 @@ The dot before a tab name shows the process state: green running, yellow startin
 
 **How the processes are handled**
 
-- **No double work.** Without `--dev` the queue worker and the scheduler run *inside* the web process. With `--dev` they are separate processes and the embedded copies are switched off (the server process gets `FORGEAPI_EXTERNAL_WORKERS=1`), so a job is never executed twice.
+- **No double work.** Without the dev interface (Textual not installed) the queue worker and the scheduler run *inside* the web process. In the dev interface they are separate processes and the embedded copies are switched off (the server process gets `FORGEAPI_EXTERNAL_WORKERS=1`), so a job is never executed twice.
 - **Start order.** The processes start one after another, each when the previous one reports that it is up (up to 20 s, then the rest start anyway). This avoids several processes creating tables in the same SQLite file at once ("database is locked").
-- **Crashes.** A worker that exits on its own is restarted after a growing pause (1 s, 2 s, 4 s, up to 10 s) and the tab says so. After 5 exits within a minute it is given up (red dot) and the tab says `not restarting (press r)`. `r` starts it again. `--no-restart` turns this off. If the `server` itself exits, everything stops and `runserver` exits with the server's code (uvicorn's reloader already survives errors in your code, a server exit means something else is wrong, such as a busy port).
+- **Crashes.** A worker that exits on its own is restarted after a growing pause (1 s, 2 s, 4 s, up to 10 s) and the tab says so. After 5 exits within a minute it is given up (red dot) and the tab says `not restarting (press r)`. `r` starts it again. If the `server` itself exits, everything stops and `runserver` exits with the server's code (uvicorn's reloader already survives errors in your code, a server exit means something else is wrong, such as a busy port).
 - **Reload.** Code changes reload the **server** only. The queue worker and the scheduler keep the code they started with: press `r` on their tab after changing a job or `schedule.py`.
 - **Stopping.** Each process gets the same signal Ctrl+C would send it, so uvicorn and the workers shut down gracefully. A process that does not stop within 5 s is terminated, then killed.
 - **One look for every line.** uvicorn, the forgeapi commands and the forgeapi logger print their levels differently. Here each line is shown as `LEVEL message` with the same colours: `DEBUG` grey, `INFO` cyan, `DONE` green, `WARNING` yellow, `ERROR` red. A line without a level (a `print` in your job) is shown with an empty level column.
 - **Own processes.** `FORGEAPI_EXTERNAL_WORKERS=1` is also the switch to use when you run `forgeapi queue:work` and `forgeapi schedule:work` yourself (for example as separate services in production): set it for the web process and the embedded copies stay off.
 
-`--dev` is for development. In production run the server, `queue:work` and `schedule:work` (or a cron job for `schedule:run`) under your process manager.
+The dev interface is for development. In production run the server, `queue:work` and `schedule:work` (or a cron job for `schedule:run`) under your process manager.
 
 ### Scheduler
 

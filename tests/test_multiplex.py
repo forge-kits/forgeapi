@@ -1,4 +1,4 @@
-"""`forgeapi runserver --dev`: the multiplexer, the process plan and the in-app worker switch."""
+"""`forgeapi runserver` in the dev interface: the multiplexer, the process plan and the in-app worker switch."""
 import asyncio
 import sys
 import time
@@ -308,44 +308,32 @@ async def test_no_auto_restart_leaves_the_worker_exited():
         await task
 
 
-# ── runserver --dev: mode and flags ──────────────────────────────────────────
+# ── runserver: tabbed interface when Textual is installed ────────────────────
 
-from forgeapi.cli.commands.runserver_cmd import RunserverCommand, choose_mode  # noqa: E402
-
-
-@pytest.mark.parametrize("requested,interactive,textual,expected", [
-    (None, True, True, ("tabs", "")),
-    ("stream", True, True, ("stream", "")),
-    ("tabs", True, True, ("tabs", "")),
-    ("inline", True, True, ("inline", "")),
-    (None, False, True, ("inline", "")),                  # no terminal: plain output, no noise
-    ("tabs", False, True, ("inline", "")),
-])
-def test_choose_mode(requested, interactive, textual, expected):
-    assert choose_mode(requested, interactive=interactive, has_textual=textual) == expected
+from forgeapi.cli.commands.runserver_cmd import RunserverCommand  # noqa: E402
 
 
-def test_without_textual_it_falls_back_and_says_why():
-    mode, hint = choose_mode(None, interactive=True, has_textual=False)
-    assert mode == "inline" and "forge-kits[dev]" in hint
-    assert choose_mode("inline", interactive=True, has_textual=False) == ("inline", "")   # asked for it: no hint
+def _runserver(monkeypatch, args, *, textual):
+    import importlib.util
+    import sys
+    import types
 
-
-@pytest.mark.parametrize("args,expected", [
-    (["--dev"], dict(mode=None, timestamps=False, auto_restart=True)),
-    (["--dev", "--stream", "--timestamps"], dict(mode="stream", timestamps=True, auto_restart=True)),
-    (["--dev", "-t", "--no-restart"], dict(mode="tabs", timestamps=False, auto_restart=False)),
-    (["--dev", "-i"], dict(mode="inline", timestamps=False, auto_restart=True)),
-])
-def test_runserver_dev_flags(monkeypatch, args, expected):
     seen = {}
-    monkeypatch.setattr(RunserverCommand, "_run_dev", lambda self, app, host, port, reload, **kw: seen.update(kw, reload=reload))
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=lambda *a, **kw: seen.update(plain=True)))
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: object() if name == "textual" and textual else (None if name == "textual" else real(name, *a)))
+    monkeypatch.setattr(RunserverCommand, "_run_dev", lambda self, app, host, port, reload: seen.update(dev=True, reload=reload))
     RunserverCommand().handle("runserver", args)
-    assert {k: seen[k] for k in expected} == expected and seen["reload"] is True
+    return seen
 
 
-def test_no_reload_flag_in_dev(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(RunserverCommand, "_run_dev", lambda self, app, host, port, reload, **kw: seen.update(reload=reload))
-    RunserverCommand().handle("runserver", ["--dev", "--no-reload"])
-    assert seen["reload"] is False
+def test_runserver_shows_tabs_when_textual_is_installed(monkeypatch):
+    assert _runserver(monkeypatch, [], textual=True) == {"dev": True, "reload": True}
+
+
+def test_runserver_is_plain_without_textual(monkeypatch):
+    assert _runserver(monkeypatch, [], textual=False) == {"plain": True}
+
+
+def test_no_reload_flag_in_tabs(monkeypatch):
+    assert _runserver(monkeypatch, ["--no-reload"], textual=True)["reload"] is False

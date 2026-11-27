@@ -1,4 +1,4 @@
-"""Uniform look for the output of the processes in `runserver --dev`."""
+"""Uniform look for the output of the processes in the dev `runserver`."""
 import io
 
 import pytest

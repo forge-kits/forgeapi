@@ -542,6 +542,7 @@ def test_runserver_shows_url_without_logo(monkeypatch, capsys):
     started = {}
     fake = types.SimpleNamespace(run=lambda app, **kw: started.update(app=app, **kw))
     monkeypatch.setitem(sys.modules, "uvicorn", fake)
+    monkeypatch.setitem(sys.modules, "textual", None)    # without Textual: only the web server
     RunserverCommand().handle("runserver", ["--port", "9000", "--reload"])
     out = capsys.readouterr().out
     assert "███████╗" not in out
