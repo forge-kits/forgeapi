@@ -267,7 +267,7 @@ def test_make_mail_creates_class_and_templates(mk_project):
 
 def test_make_mail_uses_templates_dir_from_config(mk_project):
     (mk_project / "config").mkdir()
-    (mk_project / "config/mail.py").write_text("config = {'templates': 'resources/mail'}\n")
+    (mk_project / "config/app.py").write_text("config = {'mail': {'templates': 'resources/mail'}}\n")
     _run_make("mail", "Welcome")
     assert (mk_project / "resources/mail/welcome.html").exists()
     assert (mk_project / "app/mail/welcome.py").exists()
@@ -573,7 +573,7 @@ def test_find_project_root_walks_up(tmp_path):
     from forgeapi.support.project import find_project_root
 
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "project.py").write_text("config = {}\n")
+    (tmp_path / "config" / "app.py").write_text("config = {}\n")
     deep = tmp_path / "app" / "x"
     deep.mkdir(parents=True)
     assert find_project_root(deep) == tmp_path.resolve()
@@ -604,7 +604,7 @@ def test_make_in_project_subdirectory_uses_project_root(tmp_path, monkeypatch):
     from forgeapi.cli.main import app
 
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "project.py").write_text("config = {}\n")
+    (tmp_path / "config" / "app.py").write_text("config = {}\n")
     sub = tmp_path / "app" / "deep"
     sub.mkdir(parents=True)
     monkeypatch.chdir(sub)
@@ -652,11 +652,11 @@ def test_init_creates_user_model_and_guard_points_to_it(tmp_path, monkeypatch, s
     if strategy == "telegram":
         assert "password" not in src and "email" not in src
     assert "from .user import User" in (root / "database/models/__init__.py").read_text()
-    assert '"model": "database.models.user.User"' in (root / "config/auth.py").read_text()
+    assert '"model": "database.models.user.User"' in (root / "config/app.py").read_text()
 
 
-@pytest.mark.parametrize("name", ["config/queue.py", "config/scheduler.py", "schedule.py"])
-def test_init_leaves_out_queue_and_scheduler(tmp_path, monkeypatch, name):
+@pytest.mark.parametrize("name", ["config/queue.py", "config/scheduler.py", "schedule.py", "config/auth.py", "config/project.py"])
+def test_init_writes_one_app_config_and_leaves_out_queue_and_scheduler(tmp_path, monkeypatch, name):
     root = _init_project(tmp_path, monkeypatch, "cookie")
     assert not (root / name).exists()
 
@@ -793,7 +793,8 @@ def test_make_listener(mk_project, capsys):
     assert '@broadcast.on("order:created")' in src
     assert "async def on_order_created(data: dict)" in src
     assert (mk_project / "app/listeners/__init__.py").exists()
-    assert "config/broadcast.py" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert '"broadcast" section to config/app.py' in out
     compile(src, "listener.py", "exec")
 
 

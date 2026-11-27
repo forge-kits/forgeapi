@@ -23,7 +23,7 @@ Usage: forgeapi queue:<subcommand>
   queue:flush             Delete all failed jobs
 
 --queue takes one or more queue names (comma-separated, highest priority first).
-Default: "queue" from config/queue.py (or "default"). A Job goes to the queue named
+Default: "queue" from the "queue" section of config/app.py (or "default"). A Job goes to the queue named
 in its `queue` attribute, so run a worker for every queue you use.
 
 Examples:

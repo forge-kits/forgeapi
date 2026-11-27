@@ -33,7 +33,7 @@ def current_state() -> _RequestState:
     if state is None:
         raise ForgeAPIConfigError(
             "auth.login() and auth.logout() work inside a request, and need AuthMiddleware.",
-            hint="Boot the app with Core(app) and a config/auth.py, or add AuthMiddleware yourself.",
+            hint="Boot the app with Core(app) and an \"auth\" section in config/app.py, or add AuthMiddleware yourself.",
         )
     return state
 

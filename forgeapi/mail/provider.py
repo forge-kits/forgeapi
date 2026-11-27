@@ -7,16 +7,16 @@ _log = log.channel("mail.provider")
 class MailProvider(Provider):
     """Configures the :class:`~forgeapi.mail.mail.Mail` facade.
 
-    Boots when ``config/mail.py`` exists::
+    Boots when ``"mail"`` is in ``config/app.py``::
 
-        config = {
+        "mail": {
             "driver": "log",                       # "log" | "smtp"
             "from_address": "noreply@example.com",
             "from_name": "My App",
             "templates": "app/templates/mail",
             "smtp": {"host": "smtp.example.com", "port": 587,
                      "username": "...", "password": "...", "encryption": "starttls"},
-        }
+        },
     """
 
     def register(self) -> None:

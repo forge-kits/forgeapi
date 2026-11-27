@@ -52,7 +52,7 @@ class CookieStrategy(AuthStrategy):
         if model is None:
             raise ForgeAPIConfigError(
                 "The cookie guard has no session_model.",
-                hint='add "session_model": "database.models.session.Session" to the guard in config/auth.py',
+                hint='add "session_model": "database.models.session.Session" to the guard in config/app.py',
             )
         if isinstance(model, str):
             from forgeapi.foundation import import_string

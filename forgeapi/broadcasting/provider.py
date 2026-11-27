@@ -14,22 +14,22 @@ _log = log.channel("broadcasting.provider")
 class BroadcastProvider(Provider):
     """Configures the global broadcast facade and wires startup/shutdown.
 
-    Activated when ``config/broadcast.py`` exists.
+    Activated when ``"broadcast"`` is in ``config/app.py``.
 
-    config/broadcast.py example::
+    The ``"broadcast"`` section of ``config/app.py``::
 
-        config = {
+        "broadcast": {
             "driver": "redis",
             "driver_options": {
                 "url": "redis://localhost:6379",
                 "namespace": "myapp",
                 "mode": "pubsub",
             },
-        }
+        },
 
     Stream mode example::
 
-        config = {
+        "broadcast": {
             "driver": "redis",
             "driver_options": {
                 "url": "redis://localhost:6379",
@@ -39,7 +39,7 @@ class BroadcastProvider(Provider):
                 "consumer": "worker-1",
                 "maxlen": 1000,
             },
-        }
+        },
     """
 
     def register(self) -> None:
@@ -57,7 +57,7 @@ class BroadcastProvider(Provider):
             if Path(listeners_dir).exists():
                 _log.warning(
                     "BroadcastProvider: listeners dir '%s' exists but "
-                    "config/broadcast.py is missing — handlers will NOT run.",
+                    "'broadcast' is missing from config/app.py — handlers will NOT run.",
                     listeners_dir,
                 )
             return

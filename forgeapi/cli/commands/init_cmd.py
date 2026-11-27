@@ -10,127 +10,124 @@ from forgeapi.cli import ui
 from forgeapi.cli.base import Command
 
 
-_CONFIG_PROJECT_TEMPLATE = '''\
+_AUTH_BLOCKS = {
+    "cookie": '''\
+    "auth": {
+        "default": "web",
+        "guards": {
+            "web": {
+                "strategy": "cookie",
+                "model": "database.models.user.User",
+                "session_model": "database.models.session.Session",
+                "cookie_name": "session",
+                "lifetime": 3600,   # seconds of inactivity until the session expires
+                "httponly": True,
+                "secure": False,    # set True behind HTTPS
+            },
+        },
+    },
+''',
+    "telegram": '''\
+    "auth": {
+        "default": "api",
+        "guards": {
+            "api": {
+                "strategy": "telegram",
+                "model": "database.models.user.User",
+                "bot_token": env("BOT_TOKEN"),
+                "max_age": 86400,   # seconds
+            },
+        },
+    },
+''',
+}
+
+# config/app.py: every setting except the database. A feature is on while its key is there.
+_CONFIG_APP_TEMPLATE = '''\
 from forgeapi import env
 
-config = {{
+config = {
+    # project
     "name": "{name}",
     "version": "0.1.0",
     "description": "",
-    "api_prefix": "/api/v1",            # URL prefix of every controller route
-    "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
-    "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name (e.g. "Europe/Sofia") — scheduler, queue
-    # Extra forgeapi.foundation.Provider classes to run on startup:
-    "providers": [],
-}}
-'''
+    "api_prefix": "/api/v1",                 # URL prefix of every controller route
+    "debug": env("APP_DEBUG", False),        # verbose forgeapi logging, never in production
+    "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name (e.g. "Europe/Sofia"), used by the scheduler and the queue
+    "providers": [],                         # extra forgeapi.foundation.Provider classes to run on startup
 
-_CONFIG_HTTP_TEMPLATE = '''\
-config = {
-    "cors": ["*"],        # True → all origins; list → specific; False → off
-    "allow_credentials": False,
-    "rate_limit": 60,     # req/min per IP; False → off
-    "request_id": False,   # inject X-Request-ID header
-    "access_log": False,   # log method/path/status/duration per request
-    "middleware": [],     # custom middleware classes or (cls, kwargs) tuples
-}
-'''
+    # A feature is on while its key is here. Comment the key out to switch it off.
+{auth}
+    "http": {
+        "cors": ["*"],         # True = all origins, list = specific, False = off
+        "cors_allow_credentials": False,   # needs explicit origins in "cors", not "*"
+        "rate_limit": 60,      # req/min per IP, False = off
+        "request_id": False,   # inject X-Request-ID header
+        "access_log": False,   # log method/path/status/duration per request
+        "middleware": [],      # custom middleware classes or (cls, kwargs) tuples
+    },
 
-_CONFIG_BROADCAST_TEMPLATE = '''\
-from forgeapi import env
+    "pagination": {
+        "default_limit": 20,
+        "max_limit": 100,
+    },
 
-config = {{
-    "driver": "redis",
-    "driver_options": {{
-        "url": env("REDIS_URL", "redis://localhost:6379"),
-        "namespace": "{name}",
-        "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent
-        # "maxlen": 1000,       # stream mode: keep last N messages per key
-        # "group": "backend",   # stream mode: consumer group name
-        # "consumer": "worker-1",
-    }},
-}}
-'''
+    "storage": {
+        "driver": "local",        # "local" | "s3"
+        "root": "storage/app",    # local: filesystem root
+        "base_url": "/storage",   # local: public URL prefix
+        # S3 / MinIO / Cloudflare R2:
+        # "bucket": "my-bucket",
+        # "region": "us-east-1",
+        # "access_key": env("AWS_ACCESS_KEY_ID"),
+        # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+        # "endpoint_url": "",     # MinIO / R2 endpoint
+    },
 
-_CONFIG_CACHE_TEMPLATE = '''\
-from forgeapi import env
+    "cache": {
+        "driver": "database",   # "database" (table from forgeapi.cache.models) | "redis" (pip install forge-kits[redis])
+        "prefix": "",           # prepended to every key, useful when projects share one Redis
+        "ttl": None,            # default lifetime in seconds, None = forever
+        # "redis_url": env("REDIS_URL", "redis://localhost:6379/0"),
+    },
 
-config = {
-    "driver": "database",   # "database" (table from forgeapi.cache.models) | "redis" (pip install forge-kits[redis])
-    "prefix": "",           # prepended to every key, useful when projects share one Redis
-    "ttl": None,            # default lifetime in seconds, None = forever
-    # "redis_url": env("REDIS_URL", "redis://localhost:6379/0"),
-}
-'''
+    "mail": {
+        "driver": "log",                          # "log" (dev: writes to the log) | "smtp"
+        "from_address": "noreply@{name}.local",
+        "from_name": "{name}",
+        "templates": "app/templates/mail",        # Jinja2 templates for Mailable classes
+        # SMTP needs: pip install forge-kits[mail]
+        # "smtp": {
+        #     "host": env("MAIL_HOST", "localhost"),
+        #     "port": 587,
+        #     "username": env("MAIL_USERNAME", ""),
+        #     "password": env("MAIL_PASSWORD", ""),
+        #     "encryption": "starttls",           # "starttls" | "ssl" | None
+        # },
+    },
 
-_CONFIG_MAIL_TEMPLATE = '''\
-from forgeapi import env
-
-config = {{
-    "driver": "log",                          # "log" (dev: writes to the log) | "smtp"
-    "from_address": "noreply@{name}.local",
-    "from_name": "{name}",
-    "templates": "app/templates/mail",        # Jinja2 templates for Mailable classes
-    # SMTP needs: pip install forge-kits[mail]
-    # "smtp": {{
-    #     "host": env("MAIL_HOST", "localhost"),
-    #     "port": 587,
-    #     "username": env("MAIL_USERNAME", ""),
-    #     "password": env("MAIL_PASSWORD", ""),
-    #     "encryption": "starttls",           # "starttls" | "ssl" | None
-    # }},
-}}
-'''
-
-_CONFIG_STORAGE_TEMPLATE = '''\
-from forgeapi import env
-
-config = {
-    "driver": "local",        # "local" | "s3"
-    "root": "storage/app",    # local: filesystem root
-    "base_url": "/storage",   # local: public URL prefix
-    # S3 / MinIO / Cloudflare R2:
-    # "bucket": "my-bucket",
-    # "region": "us-east-1",
-    # "access_key": env("AWS_ACCESS_KEY_ID"),
-    # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
-    # "endpoint_url": "",     # MinIO / R2 endpoint
-}
-'''
-
-_CONFIG_AUTH_TEMPLATES = {
-    "cookie": '''\
-config = {
-    "default": "web",
-    "guards": {
-        "web": {
-            "strategy": "cookie",
-            "model": "database.models.user.User",
-            "session_model": "database.models.session.Session",
-            "cookie_name": "session",
-            "lifetime": 3600,   # seconds of inactivity until the session expires
-            "httponly": True,
-            "secure": False,    # set True behind HTTPS
+    "broadcast": {
+        "driver": "redis",
+        "driver_options": {
+            "url": env("REDIS_URL", "redis://localhost:6379"),
+            "namespace": "{name}",
+            "mode": "pubsub",       # "pubsub" = fire-and-forget | "stream" = persistent
+            # "maxlen": 1000,       # stream mode: keep last N messages per key
+            # "group": "backend",   # stream mode: consumer group name
+            # "consumer": "worker-1",
         },
     },
-}
-''',
-    "telegram": '''\
-from forgeapi import env
 
-config = {
-    "default": "api",
-    "guards": {
-        "api": {
-            "strategy": "telegram",
-            "model": "database.models.user.User",
-            "bot_token": env("BOT_TOKEN"),
-            "max_age": 86400,   # seconds
-        },
-    },
+    # Opt-in features. Uncomment the models in config/database.py, run `forgeapi db:makemigrations`,
+    # then uncomment the key.
+    # "queue": {"queue": "default"},               # needs forgeapi.queue.models
+    # "scheduler": {"schedule": "schedule.py"},    # needs forgeapi.scheduling.models and a schedule.py
 }
-''',
-}
+'''
+
+
+def _config_app(name: str, strategy: str) -> str:
+    return _CONFIG_APP_TEMPLATE.replace("{auth}", _AUTH_BLOCKS[strategy]).replace("{name}", name)
 
 _USER_MODEL_TEMPLATES = {
     "cookie": '''\
@@ -228,13 +225,6 @@ class PasswordResetToken(Model):
         table = "password_reset_tokens"
 '''
 
-_CONFIG_PAGINATION_TEMPLATE = '''\
-config = {
-    "default_limit": 20,
-    "max_limit": 100,
-}
-'''
-
 # config/database.py per driver — TORTOISE_ORM lives here
 # connection params in config/database); the loader derives the dotted
 # path for the tortoise CLI from the file location, no "config" dict needed.
@@ -260,7 +250,7 @@ TORTOISE_ORM = {{
         }}
     }},
     "use_tz": True,
-    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
+    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/app.py
     "apps": {{
         "models": {{
             "models": [
@@ -293,7 +283,7 @@ TORTOISE_ORM = {{
         }}
     }},
     "use_tz": True,
-    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
+    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/app.py
     "apps": {{
         "models": {{
             "models": [
@@ -330,7 +320,7 @@ TORTOISE_ORM = {{
         }}
     }},
     "use_tz": True,
-    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
+    "timezone": os.getenv("APP_TIMEZONE", "UTC"),   # same .env value as config/app.py
     "apps": {{
         "models": {{
             "models": [
@@ -471,14 +461,7 @@ Creates:
                 root / "database/models/password_reset_token.py", _PASSWORD_RESET_TOKEN_MODEL_TEMPLATE, typer
             )
         self._write(root / "app/controllers/controller.py", _CONTROLLER_BASE, typer)
-        self._write(root / "config/project.py", _CONFIG_PROJECT_TEMPLATE.format(name=name), typer)
-        self._write(root / "config/http.py", _CONFIG_HTTP_TEMPLATE, typer)
-        self._write(root / "config/auth.py", _CONFIG_AUTH_TEMPLATES[strategy], typer)
-        self._write(root / "config/pagination.py", _CONFIG_PAGINATION_TEMPLATE, typer)
-        self._write(root / "config/storage.py", _CONFIG_STORAGE_TEMPLATE, typer)
-        self._write(root / "config/broadcast.py", _CONFIG_BROADCAST_TEMPLATE.format(name=name), typer)
-        self._write(root / "config/cache.py", _CONFIG_CACHE_TEMPLATE, typer)
-        self._write(root / "config/mail.py", _CONFIG_MAIL_TEMPLATE.format(name=name), typer)
+        self._write(root / "config/app.py", _config_app(name, strategy), typer)
         self._write(
             root / "config/database.py",
             _CONFIG_DATABASE_TEMPLATES[driver].format(name=name),

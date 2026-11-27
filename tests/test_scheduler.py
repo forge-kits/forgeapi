@@ -299,7 +299,7 @@ class TestTimezone:
 
     def test_default_uses_project_config(self, monkeypatch, tmp_path):
         (tmp_path / "config").mkdir()
-        (tmp_path / "config" / "project.py").write_text('config = {"timezone": "Asia/Tokyo"}\n')
+        (tmp_path / "config" / "app.py").write_text('config = {"timezone": "Asia/Tokyo"}\n')
         monkeypatch.chdir(tmp_path)
         assert Scheduler().timezone == "Asia/Tokyo"
 
@@ -325,7 +325,7 @@ class TestQueueTimezone:
     def test_queue_default_reads_project_config(self, monkeypatch, tmp_path):
         from forgeapi.queue.queue import Queue
         (tmp_path / "config").mkdir()
-        (tmp_path / "config" / "project.py").write_text('config = {"timezone": "Asia/Tokyo"}\n')
+        (tmp_path / "config" / "app.py").write_text('config = {"timezone": "Asia/Tokyo"}\n')
         monkeypatch.chdir(tmp_path)
         assert Queue().timezone == "Asia/Tokyo"
 

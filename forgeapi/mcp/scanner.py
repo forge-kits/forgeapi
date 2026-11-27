@@ -18,6 +18,28 @@ _find_project_root = find_project_root
 # Config reader  (AST-based, no imports)
 # ---------------------------------------------------------------------------
 
+def _tolerant_literal(node: ast.AST):
+    """Evaluate a literal, keeping what cannot be evaluated (``env("X")``) as its source text."""
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        pass
+    if isinstance(node, ast.Dict):
+        out: dict = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:
+                continue
+            try:
+                key = ast.literal_eval(key_node)
+            except (ValueError, TypeError, SyntaxError):
+                continue
+            out[key] = _tolerant_literal(value_node)
+        return out
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_tolerant_literal(item) for item in node.elts]
+    return ast.unparse(node)
+
+
 def _read_config_py(path: Path) -> dict:
     """Read the `config = {...}` assignment from a config/*.py file safely."""
     if not path.exists():
@@ -31,11 +53,17 @@ def _read_config_py(path: Path) -> dict:
             continue
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id == "config":
-                try:
-                    return ast.literal_eval(node.value)
-                except (ValueError, TypeError):
-                    return {}
+                value = _tolerant_literal(node.value)
+                return value if isinstance(value, dict) else {}
     return {}
+
+
+def _read_app_config(config_dir: Path) -> tuple[dict, dict]:
+    """``config/app.py`` as ``(project settings, feature sections)``: the dict values are the features."""
+    app = _read_config_py(config_dir / "app.py")
+    sections = {key: value for key, value in app.items() if isinstance(value, dict)}
+    project = {key: value for key, value in app.items() if not isinstance(value, dict)}
+    return project, sections
 
 
 # ---------------------------------------------------------------------------
@@ -306,13 +334,13 @@ def scan_project(path: str = ".") -> str:
         return (
             f"No forge-kits project found at or above '{given}'.\n"
             "A forge-kits project needs a config/ directory with at least one of:\n"
-            "  config/project.py, config/database.py, config/auth.py\n\n"
+            "  config/app.py, config/database.py\n\n"
             "Run `forgeapi init <name>` to scaffold a new project."
         )
 
     config_dir  = root / "config"
-    project_cfg = _read_config_py(config_dir / "project.py")
-    auth_cfg    = _read_config_py(config_dir / "auth.py")
+    project_cfg, sections_cfg = _read_app_config(config_dir)
+    auth_cfg    = sections_cfg.get("auth", {})
 
     struct      = _STRUCTURE
     base_prefix = project_cfg.get("api_prefix", _DEFAULT_API_PREFIX)
@@ -387,9 +415,9 @@ def project_info(path: str = ".") -> str:
         )
 
     config_dir  = root / "config"
-    project_cfg = _read_config_py(config_dir / "project.py")
-    auth_cfg    = _read_config_py(config_dir / "auth.py")
-    pag_cfg     = _read_config_py(config_dir / "pagination.py")
+    project_cfg, sections_cfg = _read_app_config(config_dir)
+    auth_cfg    = sections_cfg.get("auth", {})
+    pag_cfg     = sections_cfg.get("pagination", {})
 
     struct = _STRUCTURE
     pag    = {**{"default_limit": 20, "max_limit": 100}, **pag_cfg}

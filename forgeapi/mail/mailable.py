@@ -31,7 +31,7 @@ class Mailable:
     text_template: str | None = None
     html: str | None = None
     text: str | None = None
-    #: Override the sender from config/mail.py for this mailable only.
+    #: Override the sender from the \"mail\" section of config/app.py for this mailable only.
     from_address: str | None = None
     from_name: str | None = None
     reply_to: str | None = None

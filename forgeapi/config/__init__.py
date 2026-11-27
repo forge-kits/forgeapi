@@ -1,3 +1,4 @@
+from .access import config
 from .env import env
 from .loader import load_config
 from .models import (
@@ -16,6 +17,7 @@ from .models import (
 from .layout import layout
 
 __all__ = [
+    "config",
     "env",
     "load_config",
     "config_from_dict",

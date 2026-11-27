@@ -28,7 +28,7 @@ class AuthProvider(Provider):
         guards = self.config.auth.guards
         if not guards:
             raise ForgeAPIConfigError(
-                "config/auth.py exists but defines no guards.",
+                "config/app.py has an \"auth\" section but it defines no guards.",
                 hint=(
                     'Add at least one guard: config = {"default": "api", '
                     '"guards": {"api": {"strategy": "cookie", '

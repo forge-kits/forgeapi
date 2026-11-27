@@ -4,7 +4,7 @@ from datetime import datetime
 
 
 def config_queue_retry_after() -> int:
-    """``queue.retry_after`` from ``config/queue.py`` (300 when unset or config unreadable)."""
+    """``queue.retry_after`` from the ``"queue"`` section of ``config/app.py`` (300 when unset or config unreadable)."""
     try:
         from forgeapi.config import load_config
 
@@ -14,7 +14,7 @@ def config_queue_retry_after() -> int:
 
 
 def config_timezone() -> str | None:
-    """``timezone`` from ``config/project.py``, or ``None`` (also when config is unreadable)."""
+    """``timezone`` from ``config/app.py``, or ``None`` (also when config is unreadable)."""
     try:
         from forgeapi.config import load_config
 

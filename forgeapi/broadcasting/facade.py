@@ -20,7 +20,7 @@ def get() -> "BroadcastManager":
     if _instance is None:
         raise RuntimeError(
             "BroadcastManager is not configured. "
-            "Add config/broadcast.py to enable broadcasting, "
+            "Add a \"broadcast\" section to config/app.py to enable broadcasting, "
             "or create a BroadcastManager instance manually."
         )
     return _instance

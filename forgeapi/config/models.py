@@ -32,17 +32,18 @@ class ProjectConfig(BaseModel):
 
 
 class HttpConfig(BaseModel):
-    """The ``http`` config section — global middleware stack (``config/http.py``).
+    """The ``"http"`` section of ``config/app.py`` — global middleware stack.
 
     ::
 
-        config = {
+        "http": {
             "cors": ["*"],       # True → all origins; list → specific; False → off
+            "cors_allow_credentials": False,   # cookies across origins, needs explicit origins
             "rate_limit": 60,    # req/min per IP; True → 60; False → off
             "request_id": True,  # inject X-Request-ID header
             "access_log": True,  # log method/path/status/duration per request
             "middleware": [],    # custom classes or (cls, kwargs) tuples
-        }
+        },
     """
 
     cors: bool | list[str] = False
@@ -54,9 +55,9 @@ class HttpConfig(BaseModel):
 
 
 class AuthConfig(BaseModel):
-    """The ``auth`` config section — named guards (``config/auth.py``)::
+    """The ``"auth"`` section of ``config/app.py`` — named guards::
 
-        config = {
+        "auth": {
             "default": "api",
             "guards": {
                 "api":   {"strategy": "cookie",
@@ -64,7 +65,7 @@ class AuthConfig(BaseModel):
                 "admin": {"strategy": "cookie", "cookie_name": "admin_session",
                           "model": "database.models.admin.Admin"},
             },
-        }
+        },
 
     Guard dict keys: ``strategy`` (cookie | telegram | custom name
     registered via ``auth.extend()``), required ``model`` (dotted path to the
@@ -116,9 +117,9 @@ class CacheConfig(BaseModel):
 
 
 class StorageConfig(BaseModel):
-    """The ``storage`` config section (``config/storage.py``)::
+    """The ``"storage"`` section of ``config/app.py``::
 
-        config = {
+        "storage": {
             "driver": "local",        # "local" | "s3"
             "root": "storage/app",    # local: filesystem root
             "base_url": "/storage",   # local: public URL prefix
@@ -129,7 +130,7 @@ class StorageConfig(BaseModel):
             # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
             # "endpoint_url": "",     # MinIO: "http://localhost:9000"
             # "acl": "",
-        }
+        },
     """
 
     driver: str = "local"
@@ -144,9 +145,9 @@ class StorageConfig(BaseModel):
 
 
 class BroadcastConfig(BaseModel):
-    """The ``broadcast`` config section (``config/broadcast.py``)::
+    """The ``"broadcast"`` section of ``config/app.py``::
 
-        config = {
+        "broadcast": {
             "driver": "redis",
             "driver_options": {
                 "url": "redis://localhost:6379",
@@ -157,7 +158,7 @@ class BroadcastConfig(BaseModel):
                 # "group": "backend",
                 # "consumer": "worker-1",
             },
-        }
+        },
     """
 
     driver: str = "redis"
@@ -165,23 +166,23 @@ class BroadcastConfig(BaseModel):
 
 
 class SchedulerConfig(BaseModel):
-    """The ``scheduler`` config section (``config/scheduler.py``)::
+    """The ``"scheduler"`` section of ``config/app.py``::
 
-        config = {
+        "scheduler": {
             "schedule": "schedule.py",  # path to the schedule definition file
-        }
+        },
     """
 
     schedule: str = "schedule.py"
 
 
 class QueueConfig(BaseModel):
-    """The ``queue`` config section (``config/queue.py``)::
+    """The ``"queue"`` section of ``config/app.py``::
 
-        config = {
+        "queue": {
             "queue": "default",  # default queue name for the worker
             "retry_after": 300,  # seconds before a reserved (stuck) job is picked up again
-        }
+        },
     """
 
     queue: str = "default"
@@ -200,9 +201,9 @@ class SmtpConfig(BaseModel):
 
 
 class MailConfig(BaseModel):
-    """The ``mail`` config section (``config/mail.py``)::
+    """The ``"mail"`` section of ``config/app.py``::
 
-        config = {
+        "mail": {
             "driver": "log",                        # "log" | "smtp"
             "from_address": "noreply@example.com",
             "from_name": "My App",
@@ -214,7 +215,7 @@ class MailConfig(BaseModel):
                 "password": env("MAIL_PASSWORD"),
                 "encryption": "starttls",           # "starttls" | "ssl" | None
             },
-        }
+        },
     """
 
     driver: str = "log"
@@ -228,7 +229,7 @@ class KitConfig(BaseModel):
     """Validated application config.
 
     Known sections are typed models; unknown sections (e.g. a custom
-    ``config/services.py``) are kept as raw dicts and reachable via
+    a custom ``"services"`` key of ``config/app.py``) are kept as raw dicts and reachable via
     :meth:`get`.
     """
 
@@ -264,7 +265,15 @@ class KitConfig(BaseModel):
             cfg.get("services.stripe.key", default="")
         """
         node: Any = self
-        for part in key.split("."):
+        parts = key.split(".")
+        # project settings sit at the top level of config/app.py, so "name" means "project.name"
+        if (
+            parts[0] not in type(self).model_fields
+            and not (self.model_extra and parts[0] in self.model_extra)
+            and parts[0] in ProjectConfig.model_fields
+        ):
+            parts.insert(0, "project")
+        for part in parts:
             if isinstance(node, BaseModel):
                 if part in type(node).model_fields:
                     node = getattr(node, part)

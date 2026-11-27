@@ -152,18 +152,9 @@ After `forgeapi init my-project`:
 my-project/
   main.py                    # entry point — FastAPI app + Core(app)
   .env                       # secrets (DB_* etc.)
-  config/                    # config directory (see §24)
-    project.py               # name, api_prefix, debug, extra providers
-    http.py                  # cors, rate_limit, request_id, access_log, middleware
-    auth.py                  # named guards (cookie / telegram)
-    pagination.py            # default_limit, max_limit
+  config/                    # settings (see §24)
+    app.py                   # name, api_prefix, debug, providers, and a key per feature: auth, http, mail, ...
     database.py              # TORTOISE_ORM dict lives here
-    storage.py               # driver, root, base_url (or S3 config)
-    broadcast.py             # redis url, mode (pubsub/stream), namespace — activates BroadcastProvider
-    scheduler.py             # schedule file path — the file activates SchedulerProvider
-    queue.py                 # queue name — the file activates QueueProvider
-    cache.py                 # driver (database / redis), prefix, default ttl
-    mail.py                  # driver (log / smtp), sender, templates — activates MailProvider
   app/
     controllers/             # *_controller.py files, auto-loaded by Core
     schemas/                 # Pydantic schemas
@@ -190,7 +181,7 @@ The directory layout is fixed (not configurable). Paths are relative to the proj
 | `app/providers` | custom providers |
 | `app/commands` | project CLI commands |
 
-The only related setting is `api_prefix` in `config/project.py` (default `/api/v1`).
+The only related setting is `api_prefix` in `config/app.py` (default `/api/v1`).
 
 **`main.py`**:
 
@@ -227,18 +218,18 @@ core = Core(app)
 
 | Module | Activated by |
 |---|---|
-| Middleware stack | `config/http.py` (`cors`, `rate_limit`, `request_id`, `access_log`, `middleware`) |
-| Auth guards | `config/auth.py` exists |
-| Storage | `config/storage.py` exists — configures the `Storage` facade |
-| Broadcasting | `config/broadcast.py` exists — creates global `broadcast`, connects on startup, disconnects on shutdown |
-| Scheduler | `config/scheduler.py` exists — loads `schedule.py`, starts worker task on startup |
-| Queue worker | `config/queue.py` exists — starts worker task on startup |
+| Middleware stack | `"http"` in `config/app.py` (`cors`, `rate_limit`, `request_id`, `access_log`, `middleware`) |
+| Auth guards | `"auth"` is in `config/app.py` |
+| Storage | `"storage"` is in `config/app.py` — configures the `Storage` facade |
+| Broadcasting | `"broadcast"` is in `config/app.py` — creates global `broadcast`, connects on startup, disconnects on shutdown |
+| Scheduler | `"scheduler"` is in `config/app.py` — loads `schedule.py`, starts worker task on startup |
+| Queue worker | `"queue"` is in `config/app.py` — starts worker task on startup |
 | Controllers | `app/controllers` exists — all `*_controller.py` imported recursively |
-| Event listeners | `config/broadcast.py` exists — all files in `app/listeners` imported |
+| Event listeners | `"broadcast"` is in `config/app.py` — all files in `app/listeners` imported |
 | Policies | `app/policies` exists — all `*_policy.py` imported |
 | Permissions | a model in `database/models` inherits `PermissionsMixin` (no config needed) |
 | Pagination, Cache | always configured (from their sections or defaults) |
-| Custom providers | `"providers"` list in `config/project.py` |
+| Custom providers | `"providers"` list in `config/app.py` |
 
 `Core(app)` with no config files never raises — zero-config is a supported
 starting point.
@@ -246,7 +237,7 @@ starting point.
 ### Custom providers
 
 ```python
-# config/project.py
+# config/app.py
 config = {"providers": ["app.providers.MetricsProvider"]}
 ```
 
@@ -276,7 +267,7 @@ core.include_router(admin_router, prefix="/admin")   # prefix: /api/v1/admin
 ### Debug mode
 
 ```python
-# config/project.py
+# config/app.py
 from forgeapi import env
 config = {"debug": env("APP_DEBUG", False)}
 ```
@@ -326,20 +317,22 @@ Auth (facade)   — guard registry + strategy factories, pure delegation
      └─ AuthStrategy — extract/verify credentials, keep sessions (never touches user models)
 ```
 
-### Step 1 — define guards in config/auth.py
+### Step 1 — define guards in config/app.py
 
-Auth boots automatically when `config/auth.py` exists — nothing to pass to `Core`.
+Auth boots automatically when `config/app.py` has an `"auth"` key — nothing to pass to `Core`.
 
 ```python
-# config/auth.py
+# config/app.py
 from forgeapi import env
 
 config = {
-    "default": "api",
-    "guards": {
-        "api": {
-            "strategy": "cookie",           # cookie | telegram | custom
-            "model": "database.models.user.User",   # required — user is always loaded from the DB
+    "auth": {
+        "default": "api",
+        "guards": {
+            "api": {
+                "strategy": "cookie",           # cookie | telegram | custom
+                "model": "database.models.user.User",   # required — user is always loaded from the DB
+            },
         },
     },
 }
@@ -413,14 +406,16 @@ async def logout(self) -> dict:
 ### Multiple guards
 
 ```python
-# config/auth.py
+# config/app.py
 config = {
-    "default": "api",
-    "guards": {
-        "api":   {"strategy": "cookie",
-                  "model": "database.models.user.User"},
-        "admin": {"strategy": "cookie", "cookie_name": "admin_session",
-                  "model": "database.models.admin.Admin"},
+    "auth": {
+        "default": "api",
+        "guards": {
+            "api":   {"strategy": "cookie",
+                      "model": "database.models.user.User"},
+            "admin": {"strategy": "cookie", "cookie_name": "admin_session",
+                      "model": "database.models.admin.Admin"},
+        },
     },
 }
 ```
@@ -464,7 +459,7 @@ class ApiKeyStrategy(AuthStrategy):
         return lookup_user_id(key)      # user id (primary key)
 
 auth.extend("apikey", ApiKeyStrategy)
-# now usable in config/auth.py: {"strategy": "apikey", ...}
+# now usable in the "auth" section of config/app.py: {"strategy": "apikey", ...}
 ```
 
 `authenticate()` returns only the user id (`str` or `int`), or `None` when credentials are absent.
@@ -477,7 +472,7 @@ Strategies raise **only** `ForgeAPIAuthError` subclasses — never
 
 Keeps login sessions in the `sessions` table of your project. The cookie holds only a random token, the table holds its SHA-256 hash. A logout deletes the session, so a copied cookie stops working at once.
 
-`forgeapi init` creates the model in `database/models/session.py` (and `password_reset_token.py` next to it), so you can change the table. The guard points to it with `"session_model"`. The model needs the fields `id` (64 characters, primary key), `user_id`, `guard`, `ip_address`, `user_agent`, `created_at`, `last_activity` and `expires_at`, add your own freely. `Core` adds `AuthMiddleware` when `config/auth.py` exists, it sets the cookie for `auth.login()` and `auth.logout()`.
+`forgeapi init` creates the model in `database/models/session.py` (and `password_reset_token.py` next to it), so you can change the table. The guard points to it with `"session_model"`. The model needs the fields `id` (64 characters, primary key), `user_id`, `guard`, `ip_address`, `user_agent`, `created_at`, `last_activity` and `expires_at`, add your own freely. `Core` adds `AuthMiddleware` when `config/app.py` has an `"auth"` key, it sets the cookie for `auth.login()` and `auth.logout()`.
 
 Expired sessions are deleted when they are read, and one login in 50 deletes all the expired ones.
 
@@ -578,10 +573,12 @@ Query params: `?cursor=<token>&per_page=20`.
 ### Configuration
 
 ```python
-# config/pagination.py
+# config/app.py
 config = {
-    "default_limit": 20,
-    "max_limit": 100,
+    "pagination": {
+        "default_limit": 20,
+        "max_limit": 100,
+    },
 }
 ```
 
@@ -595,37 +592,41 @@ Always configured by `Core` — defaults apply when the file is absent.
 
 ### Config-driven setup (with Core)
 
-Add `config/broadcast.py` — `Core(app)` does the rest: creates the global `broadcast` proxy, imports all listeners, and manages connect/disconnect via FastAPI startup/shutdown hooks.
+Add a `"broadcast"` key to `config/app.py` — `Core(app)` does the rest: creates the global `broadcast` proxy, imports all listeners, and manages connect/disconnect via FastAPI startup/shutdown hooks.
 
 All driver-specific options go under `driver_options` — the manager itself is driver-agnostic.
 
 ```python
-# config/broadcast.py — pubsub mode
+# config/app.py — pubsub mode
 from forgeapi import env
 
 config = {
-    "driver": "redis",
-    "driver_options": {
-        "url": env("REDIS_URL", "redis://localhost:6379"),
-        "namespace": "shop",
-        "mode": "pubsub",
+    "broadcast": {
+        "driver": "redis",
+        "driver_options": {
+            "url": env("REDIS_URL", "redis://localhost:6379"),
+            "namespace": "shop",
+            "mode": "pubsub",
+        },
     },
 }
 ```
 
 ```python
-# config/broadcast.py — stream mode (persistent, survives restarts)
+# config/app.py — stream mode (persistent, survives restarts)
 from forgeapi import env
 
 config = {
-    "driver": "redis",
-    "driver_options": {
-        "url": env("REDIS_URL", "redis://localhost:6379"),
-        "namespace": "shop",
-        "mode": "stream",
-        "group": "backend",
-        "consumer": "worker-1",
-        "maxlen": 1000,        # keep last N messages per stream key
+    "broadcast": {
+        "driver": "redis",
+        "driver_options": {
+            "url": env("REDIS_URL", "redis://localhost:6379"),
+            "namespace": "shop",
+            "mode": "stream",
+            "group": "backend",
+            "consumer": "worker-1",
+            "maxlen": 1000,        # keep last N messages per stream key
+        },
     },
 }
 ```
@@ -1664,7 +1665,7 @@ users = await (await User.without_role("admin"))
 
 Async key-value cache. Two drivers: **database** (default, stored in the app's DB) and **redis** (faster, shared across workers).
 
-`Core` auto-configures `Cache` from `config/cache.py` on startup (database driver by default).
+`Core` auto-configures `Cache` from the `"cache"` section of `config/app.py` on startup (database driver by default).
 
 ```python
 from forgeapi import Cache
@@ -1740,12 +1741,14 @@ async def popular(self):
 ### Cache configuration
 
 ```python
-# config/cache.py
+# config/app.py
 config = {
-    "driver": "database",                      # "database" | "redis"
-    "prefix": "",                              # key prefix, e.g. "myapp:"
-    "ttl": None,                               # default TTL in seconds (None = no expiry)
-    "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
+    "cache": {
+        "driver": "database",                      # "database" | "redis"
+        "prefix": "",                              # key prefix, e.g. "myapp:"
+        "ttl": None,                               # default TTL in seconds (None = no expiry)
+        "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
+    },
 }
 ```
 
@@ -1771,19 +1774,21 @@ Cache.configure(driver="redis", prefix="myapp:", ttl=3600, redis_url="redis://lo
 ## 14. Storage
 
 File storage abstraction with Local and S3-compatible drivers. Configured via
-`config/storage.py` — the `Storage` facade boots automatically when the file
-exists.
+the `"storage"` key of `config/app.py` — the `Storage` facade boots automatically when the key
+is there.
 
 ### Storage configuration
 
 ```python
-# config/storage.py
+# config/app.py
 from forgeapi import env
 
 config = {
-    "driver": "local",        # "local" | "s3"
-    "root": "storage/app",    # local: filesystem root
-    "base_url": "/storage",   # local: public URL prefix
+    "storage": {
+        "driver": "local",        # "local" | "s3"
+        "root": "storage/app",    # local: filesystem root
+        "base_url": "/storage",   # local: public URL prefix
+    },
 }
 ```
 
@@ -1836,18 +1841,20 @@ url = Storage.disk("public").url("logo.png")
 ### S3 / S3-compatible
 
 ```python
-# config/storage.py
+# config/app.py
 from forgeapi import env
 
 config = {
-    "driver": "s3",
-    "bucket": "my-bucket",
-    "region": "eu-central-1",
-    "access_key": env("AWS_ACCESS_KEY_ID"),
-    "secret_key": env("AWS_SECRET_ACCESS_KEY"),
-    # MinIO / Cloudflare R2:
-    # "endpoint_url": env("S3_ENDPOINT_URL"),
-    # "acl": "public-read",
+    "storage": {
+        "driver": "s3",
+        "bucket": "my-bucket",
+        "region": "eu-central-1",
+        "access_key": env("AWS_ACCESS_KEY_ID"),
+        "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+        # MinIO / Cloudflare R2:
+        # "endpoint_url": env("S3_ENDPOINT_URL"),
+        # "acl": "public-read",
+    },
 }
 ```
 
@@ -2054,13 +2061,15 @@ class TimingMiddleware(Middleware):
 Register via config (primary path) or `core.use()` (manual escape hatch):
 
 ```python
-# config/http.py
+# config/app.py
 from app.middleware import TimingMiddleware, TenantMiddleware
 config = {
-    "middleware": [
-        TimingMiddleware,
-        (TenantMiddleware, {"default_tenant": "acme"}),   # (cls, kwargs) tuple
-    ],
+    "http": {
+        "middleware": [
+            TimingMiddleware,
+            (TenantMiddleware, {"default_tenant": "acme"}),   # (cls, kwargs) tuple
+        ],
+    },
 }
 ```
 
@@ -2111,16 +2120,18 @@ class ActiveUserGuard(Guard):
 
 ### Built-in middleware
 
-All configured in `config/http.py`:
+All configured in the `"http"` key of `config/app.py`:
 
 ```python
-# config/http.py
+# config/app.py
 config = {
-    "cors": ["*"],        # True → all origins; list → specific; False → off
-    "rate_limit": 60,     # req/min per IP; True → 60; False → off
-    "request_id": True,   # inject X-Request-ID header
-    "access_log": True,   # log method/path/status/duration per request
-    "middleware": [],     # custom classes or (cls, kwargs) tuples
+    "http": {
+        "cors": ["*"],        # True → all origins; list → specific; False → off
+        "rate_limit": 60,     # req/min per IP; True → 60; False → off
+        "request_id": True,   # inject X-Request-ID header
+        "access_log": True,   # log method/path/status/duration per request
+        "middleware": [],     # custom classes or (cls, kwargs) tuples
+    },
 }
 ```
 
@@ -2270,7 +2281,7 @@ async def send_daily_report():
 
 ### Timing methods
 
-**Timezone:** schedules run in `timezone` from `config/project.py` (e.g. `env("APP_TIMEZONE", "Europe/Sofia")`),
+**Timezone:** schedules run in `timezone` from `config/app.py` (e.g. `env("APP_TIMEZONE", "Europe/Sofia")`),
 or `Scheduler(timezone="Europe/Sofia")`. Without either, the server's local time is used.
 Stored `next_run_at` / `last_run_at` are wall-clock times in that timezone, so changing it shifts existing schedules.
 Daylight saving is not compensated: a job scheduled in an hour that does not exist runs right after the clock jumps.
@@ -2323,12 +2334,14 @@ forgeapi schedule:list
 
 ### In-process with Core (config-driven)
 
-Add `config/scheduler.py` — `Core(app)` starts the scheduler as a background task on startup and cancels it on shutdown. No lifespan boilerplate needed.
+Add a `"scheduler"` key to `config/app.py` — `Core(app)` starts the scheduler as a background task on startup and cancels it on shutdown. No lifespan boilerplate needed.
 
 ```python
-# config/scheduler.py
+# config/app.py
 config = {
-    "schedule": "schedule.py",   # path to your schedule.py
+    "scheduler": {
+        "schedule": "schedule.py",   # path to your schedule.py
+    },
 }
 ```
 
@@ -2343,7 +2356,7 @@ core = Core(app)
 
 ### Manual lifespan (without Core)
 
-If you need to run the scheduler in-process without using `config/scheduler.py`:
+If you need to run the scheduler in-process without using the `"scheduler"` key:
 
 ```python
 import asyncio
@@ -2443,7 +2456,7 @@ forgeapi queue:run         # process all currently pending jobs once (use from c
 A worker only processes the queue(s) it is told to. A Job goes to the queue named in its `queue` attribute (default `"default"`), so start a worker per queue:
 
 ```bash
-forgeapi queue:work                        # queue from config/queue.py ("queue"), default "default"
+forgeapi queue:work                        # queue from the "queue" key of config/app.py, default "default"
 forgeapi queue:work --queue=emails         # only "emails"
 forgeapi queue:work --queue=high,default   # several; earlier ones are drained first
 forgeapi queue:run --queue=emails
@@ -2451,12 +2464,14 @@ forgeapi queue:run --queue=emails
 
 **In-process with Core (config-driven):**
 
-Add `config/queue.py` — `Core(app)` starts the queue worker as a background task on startup.
+Add a `"queue"` key to `config/app.py` — `Core(app)` starts the queue worker as a background task on startup.
 
 ```python
-# config/queue.py
+# config/app.py
 config = {
-    "queue": "default",   # queue name to consume
+    "queue": {
+        "queue": "default",   # queue name to consume
+    },
 }
 ```
 
@@ -2484,13 +2499,13 @@ async def lifespan(app):
     await asyncio.gather(task, return_exceptions=True)
 ```
 
-**Timezone:** `available_at` and retry delays use `timezone` from `config/project.py`
+**Timezone:** `available_at` and retry delays use `timezone` from `config/app.py`
 (or `Queue(timezone="Europe/Sofia")`); without either, the server's local time.
 Pending jobs keep their stored `available_at` when the timezone changes.
 
 ### Stuck jobs
 
-A job reserved by a worker that then dies (crash, `kill -9`, deploy) is picked up again once its reservation is older than `retry_after` seconds (`config/queue.py`, default 300; or `Queue(retry_after=...)`). Each pickup counts as an attempt. If all `max_tries` were used up this way, the job moves to `failed_jobs` without running again (`MaxAttemptsExceeded`) and `failed()` is called.
+A job reserved by a worker that then dies (crash, `kill -9`, deploy) is picked up again once its reservation is older than `retry_after` seconds (the `"queue"` section of `config/app.py`, default 300; or `Queue(retry_after=...)`). Each pickup counts as an attempt. If all `max_tries` were used up this way, the job moves to `failed_jobs` without running again (`MaxAttemptsExceeded`) and `failed()` is called.
 
 Set `retry_after` above your slowest job's runtime, otherwise a long job still running may be started a second time by another worker.
 
@@ -2572,28 +2587,30 @@ await Mail.send(Welcome("Ana"), to="ana@example.com")      # now
 await Mail.queue(Welcome("Ana"), to="ana@example.com")     # later, by the queue worker
 ```
 
-With the default `log` driver nothing is sent: the message is written to the log (set `debug` to `True` in `config/project.py` to see it). Switch to `smtp` when you are ready, see [Drivers](#drivers).
+With the default `log` driver nothing is sent: the message is written to the log (set `debug` to `True` in `config/app.py` to see it). Switch to `smtp` when you are ready, see [Drivers](#drivers).
 
 ### Mail configuration
 
-Mail boots when `config/mail.py` exists (`forgeapi init` creates it).
+Mail boots when `config/app.py` has a `"mail"` key (`forgeapi init` adds it).
 
 ```python
-# config/mail.py
+# config/app.py
 from forgeapi import env
 
 config = {
-    "driver": "log",                          # "log" | "smtp"
-    "from_address": "noreply@example.com",
-    "from_name": "My App",
-    "templates": "app/templates/mail",        # Jinja2 templates directory
-    "smtp": {
-        "host": env("MAIL_HOST", "localhost"),
-        "port": 587,
-        "username": env("MAIL_USERNAME", ""),
-        "password": env("MAIL_PASSWORD", ""),
-        "encryption": "starttls",             # "starttls" | "ssl" | None
-        "timeout": 30,
+    "mail": {
+        "driver": "log",                          # "log" | "smtp"
+        "from_address": "noreply@example.com",
+        "from_name": "My App",
+        "templates": "app/templates/mail",        # Jinja2 templates directory
+        "smtp": {
+            "host": env("MAIL_HOST", "localhost"),
+            "port": 587,
+            "username": env("MAIL_USERNAME", ""),
+            "password": env("MAIL_PASSWORD", ""),
+            "encryption": "starttls",             # "starttls" | "ssl" | None
+            "timeout": 30,
+        },
     },
 }
 ```
@@ -2621,7 +2638,7 @@ A Mailable describes one message. All class attributes are optional except that 
 | `template` | HTML template name in the templates directory, e.g. `"welcome.html"`. |
 | `text_template` | Plain-text template name, e.g. `"welcome.txt"`. |
 | `html`, `text` | Inline body, used exactly as written (**not** rendered as a template). `template` / `text_template` win when both are set. |
-| `from_address`, `from_name` | Replace the sender from `config/mail.py` for this message. `from_name = ""` sends without a display name. |
+| `from_address`, `from_name` | Replace the sender from the `"mail"` section for this message. `from_name = ""` sends without a display name. |
 | `reply_to` | `Reply-To` address. Exists only here, there is no config default. |
 
 With both an HTML and a text body the message is `multipart/alternative` (mail clients pick one). With only one of them it is sent as that single type. Sending both is better for deliverability and for clients that block HTML.
@@ -2707,13 +2724,15 @@ pip install forge-kits[mail]
 ```
 
 ```python
-# config/mail.py: SMTP with STARTTLS (port 587)
+# config/app.py: SMTP with STARTTLS (port 587)
 config = {
-    "driver": "smtp",
-    "from_address": "noreply@example.com",
-    "from_name": "My App",
-    "smtp": {"host": env("MAIL_HOST"), "port": 587, "username": env("MAIL_USERNAME"),
-             "password": env("MAIL_PASSWORD"), "encryption": "starttls"},
+    "mail": {
+        "driver": "smtp",
+        "from_address": "noreply@example.com",
+        "from_name": "My App",
+        "smtp": {"host": env("MAIL_HOST"), "port": 587, "username": env("MAIL_USERNAME"),
+                 "password": env("MAIL_PASSWORD"), "encryption": "starttls"},
+    },
 }
 # implicit TLS (port 465): "port": 465, "encryption": "ssl"
 ```
@@ -2730,7 +2749,7 @@ Without the package, choosing `smtp` fails at startup with `pip install forge-ki
 
 | Message | Cause |
 |---|---|
-| `Mail is not configured.` | `config/mail.py` is missing. |
+| `Mail is not configured.` | `config/app.py` has no `"mail"` key. |
 | `Mail has no sender address.` | No `from_address` in the config or on the Mailable. |
 | `Mail has no recipients.` | `to`, `cc` and `bcc` are all empty. |
 | `Mail has no body.` | None of `template`, `text_template`, `html`, `text` is set. |
@@ -2754,7 +2773,7 @@ app/templates/mail/weekly_report.html      <h1>Weekly report</h1> and a greeting
 app/templates/mail/weekly_report.txt       the plain-text part
 ```
 
-The generated class takes a `name` argument and the templates use `{{ name }}`: replace both with your own data together, because a template variable the class does not provide fails at send time. If `config/mail.py` sets another `templates` directory, the templates go there. `app/mail` and `app/templates/mail` are created on demand, `init` does not create them.
+The generated class takes a `name` argument and the templates use `{{ name }}`: replace both with your own data together, because a template variable the class does not provide fails at send time. If the `"mail"` section of `config/app.py` sets another `templates` directory, the templates go there. `app/mail` and `app/templates/mail` are created on demand, `init` does not create them.
 
 ---
 
@@ -2788,10 +2807,10 @@ forgeapi make:mail -h               # help for one generator
 | `make:policy Post` | `app/policies/post_policy.py` | `@gate.policy(Post)`. Imports the model, so create it first. A trailing `Policy` in the name is dropped. |
 | `make:factory Post` | `database/factories/post_factory.py` | Test factory, list the values in `definition()`. |
 | `make:observer Post` | `app/observers/post_observer.py` | Register it with `Post.observe(PostObserver)`. |
-| `make:provider Metrics` | `app/providers/metrics_provider.py` | Add its dotted path to `"providers"` in `config/project.py`. |
+| `make:provider Metrics` | `app/providers/metrics_provider.py` | Add its dotted path to `"providers"` in `config/app.py`. |
 | `make:command SendWeeklyReport` | `app/commands/send_weekly_report_command.py` | Runs as `forgeapi send:weekly-report`, see [Custom commands](#custom-commands). |
 | `make:mail Welcome` | `app/mail/welcome.py`, `app/templates/mail/welcome.html`, `welcome.txt` | See [Mail](#22-mail). |
-| `make:listener OrderCreated` | `app/listeners/order_created_listener.py` | `@broadcast.on("order:created")`. Needs `config/broadcast.py` to be loaded. |
+| `make:listener OrderCreated` | `app/listeners/order_created_listener.py` | `@broadcast.on("order:created")`. Needs the `"broadcast"` key in `config/app.py`. |
 
 Rules for every generator:
 
@@ -2801,7 +2820,7 @@ Rules for every generator:
 - Folders are created when needed (and made packages with `__init__.py`). `forgeapi init` creates only `app/controllers`, `app/schemas` and the `database` folders, so `app/policies`, `app/jobs`, `app/mail`, `app/listeners`, ... appear with the first `make:*` for them.
 - Suffixes you type are not doubled: `make:policy PostPolicy` and `make:policy Post` give the same file.
 
-**`make:listener`** derives the event name from the class name: the first CamelCase word, then `:`, the rest joined with `-`. `OrderCreated` is `order:created`, `UserSignedUp` is `user:signed-up`, `Order` is `order`. The function is named `on_<snake_name>` and receives the emitted payload as `data: dict`. If `config/broadcast.py` is missing, the command tells you, because listeners are only loaded when it exists.
+**`make:listener`** derives the event name from the class name: the first CamelCase word, then `:`, the rest joined with `-`. `OrderCreated` is `order:created`, `UserSignedUp` is `user:signed-up`, `Order` is `order`. The function is named `on_<snake_name>` and receives the emitted payload as `data: dict`. If `config/app.py` has no `"broadcast"` key, the command tells you, because listeners are only loaded when it exists.
 
 ### Custom commands
 
@@ -2896,8 +2915,8 @@ forgeapi runserver
 | Process | Starts when | Command it runs |
 |---|---|---|
 | `server` | always | `uvicorn <app> --reload` (reload is on, `--no-reload` turns it off) |
-| `queue` | `config/queue.py` exists | `forgeapi queue:work` |
-| `schedule` | `config/scheduler.py` exists and the schedule file exists | `forgeapi schedule:work` |
+| `queue` | `config/app.py` has a `"queue"` key | `forgeapi queue:work` |
+| `schedule` | `config/app.py` has a `"scheduler"` key and the schedule file exists | `forgeapi schedule:work` |
 
 The `logs` tab is not a process: it collects what the application and forgeapi log in the server process (broadcast, auth, cache, mail, your own `Log.channel(...)`), so `server` keeps only uvicorn and the HTTP requests (`forgeapi.access`). A line is routed by the name of the logger that wrote it.
 
@@ -2941,7 +2960,7 @@ forgeapi schedule:list            # show all tasks and their DB state
 ### Queue
 
 ```bash
-forgeapi queue:work [--queue=a,b] # start infinite worker loop (queue names; default from config/queue.py)
+forgeapi queue:work [--queue=a,b] # start infinite worker loop (queue names; default from the "queue" key of config/app.py)
 forgeapi queue:run  [--queue=a,b] # process all pending jobs once (use from cron)
 forgeapi queue:failed             # list failed jobs
 forgeapi queue:retry <id>         # move a failed job back to the queue
@@ -2977,91 +2996,85 @@ env("COOKIE_SECRET")      # → str | None
 
 ### Known sections
 
+`config/app.py` holds the project settings at the top level and one key per feature. A feature is on while its key is there, comment the key out to switch it off:
+
 ```python
-# config/project.py
+# config/app.py
 from forgeapi import env
+
 config = {
+    # project
     "name": "my-app",
     "version": "0.1.0",
-    "api_prefix": "/api/v1",           # URL prefix of every controller route
-    "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
-    "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name; scheduler runs in this timezone (default: server local time)
-    "providers": [],                    # extra Provider classes / dotted paths
-}
+    "api_prefix": "/api/v1",                 # URL prefix of every controller route
+    "debug": env("APP_DEBUG", False),        # verbose forgeapi logging, never in production
+    "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name, the scheduler runs in this timezone (default: server local time)
+    "providers": [],                         # extra Provider classes / dotted paths
 
-# config/http.py
-config = {
-    "cors": ["*"],
-    "rate_limit": 60,
-    "request_id": True,
-    "access_log": True,
-    "middleware": [],
-}
-
-# config/auth.py — see §5 for guard keys
-config = {
-    "default": "api",
-    "guards": {
-        "api": {"strategy": "cookie",
-                "model": "database.models.user.User"},
+    "http": {
+        "cors": ["*"],
+        "rate_limit": 60,
+        "request_id": True,
+        "access_log": True,
+        "middleware": [],
     },
-}
 
-# config/pagination.py
-config = {"default_limit": 20, "max_limit": 100}
-
-# config/cache.py
-config = {"driver": "database", "prefix": "", "ttl": None,
-          "redis_url": "redis://localhost:6379/0"}
-
-# config/storage.py
-config = {
-    "driver": "local",        # "local" | "s3"
-    "root": "storage/app",    # local: filesystem root
-    "base_url": "/storage",   # local: public URL prefix
-    # S3 / MinIO / R2:
-    # "bucket": "my-bucket",
-    # "region": "us-east-1",
-    # "access_key": env("AWS_ACCESS_KEY_ID"),
-    # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
-    # "endpoint_url": "",     # MinIO / R2 endpoint
-    # "acl": "public-read",
-}
-
-# config/broadcast.py — activates BroadcastProvider (see §7)
-config = {
-    "driver": "redis",          # driver alias — register custom with register_driver()
-    "driver_options": {
-        "url": env("REDIS_URL", "redis://localhost:6379"),
-        "namespace": "forge",
-        "mode": "pubsub",       # "pubsub" | "stream"
-        # stream mode only:
-        # "maxlen": None,       # keep last N messages per stream key
-        # "group": "backend",   # consumer group name
-        # "consumer": "worker-1",
+    "auth": {                                # see §5 for guard keys
+        "default": "api",
+        "guards": {
+            "api": {"strategy": "cookie",
+                    "model": "database.models.user.User",
+                    "session_model": "database.models.session.Session"},
+        },
     },
-}
 
-# config/scheduler.py — activates SchedulerProvider (see §20)
-config = {
-    "schedule": "schedule.py",   # path to your schedule.py relative to project root
-}
+    "pagination": {"default_limit": 20, "max_limit": 100},
 
-# config/queue.py — activates QueueProvider (see §21)
-config = {
-    "queue": "default",   # queue name the in-process worker will consume
-}
+    "cache": {"driver": "database", "prefix": "", "ttl": None,
+              "redis_url": "redis://localhost:6379/0"},
 
-# config/mail.py — activates MailProvider (see §22)
-config = {
-    "driver": "log",                          # "log" | "smtp"
-    "from_address": "noreply@example.com",
-    "from_name": "My App",
-    "templates": "app/templates/mail",
-    # "smtp": {"host": "smtp.example.com", "port": 587, "username": "", "password": "",
-    #          "encryption": "starttls"},     # needs forge-kits[mail]
+    "storage": {
+        "driver": "local",        # "local" | "s3"
+        "root": "storage/app",    # local: filesystem root
+        "base_url": "/storage",   # local: public URL prefix
+        # S3 / MinIO / R2:
+        # "bucket": "my-bucket",
+        # "region": "us-east-1",
+        # "access_key": env("AWS_ACCESS_KEY_ID"),
+        # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+        # "endpoint_url": "",     # MinIO / R2 endpoint
+        # "acl": "public-read",
+    },
+
+    "broadcast": {                           # activates BroadcastProvider (see §7)
+        "driver": "redis",          # driver alias, register a custom one with register_driver()
+        "driver_options": {
+            "url": env("REDIS_URL", "redis://localhost:6379"),
+            "namespace": "forge",
+            "mode": "pubsub",       # "pubsub" | "stream"
+            # stream mode only:
+            # "maxlen": None,       # keep last N messages per stream key
+            # "group": "backend",   # consumer group name
+            # "consumer": "worker-1",
+        },
+    },
+
+    "mail": {                                # activates MailProvider (see §22)
+        "driver": "log",                     # "log" | "smtp"
+        "from_address": "noreply@example.com",
+        "from_name": "My App",
+        "templates": "app/templates/mail",
+        # "smtp": {"host": "smtp.example.com", "port": 587, "username": "", "password": "",
+        #          "encryption": "starttls"},     # needs forge-kits[mail]
+    },
+
+    # opt-in, each needs its models in config/database.py (see §20 and §21)
+    # "scheduler": {"schedule": "schedule.py"},   # path to your schedule.py relative to project root
+    # "queue": {"queue": "default"},              # queue name the in-process worker will consume
 }
 ```
+
+A top-level key that is neither a project setting nor a dict raises `ForgeAPIConfigError` (a typo such as `"debg"` is caught). The old layout with one file per section (`config/auth.py`, `config/mail.py`, ...) is not read: the error lists the files to move into `config/app.py`.
 
 ### config/database.py
 
@@ -3081,7 +3094,7 @@ TORTOISE_ORM = {
         "default": os.getenv("DATABASE_URL", "sqlite://./db.sqlite3"),
     },
     "use_tz": True,
-    "timezone": env("APP_TIMEZONE", "UTC"),   # same .env value as config/project.py
+    "timezone": env("APP_TIMEZONE", "UTC"),   # same .env value as config/app.py
     "apps": {
         "models": {
             "models": ["database.models", "forgeapi.cache.models", "forgeapi.permissions.models"],
@@ -3092,28 +3105,40 @@ TORTOISE_ORM = {
 }
 ```
 
-`use_tz` / `timezone` are Tortoise options (defaults: `True` / `"UTC"`). Keep `timezone` in sync with `config/project.py` by reading the same `APP_TIMEZONE` from `.env`. Don't name the variable `TIMEZONE`: Tortoise overwrites `os.environ["TIMEZONE"]` on init.
+`use_tz` / `timezone` are Tortoise options (defaults: `True` / `"UTC"`). Keep `timezone` in sync with `config/app.py` by reading the same `APP_TIMEZONE` from `.env`. Don't name the variable `TIMEZONE`: Tortoise overwrites `os.environ["TIMEZONE"]` on init.
 
 An explicit `config = {"tortoise_orm": "app.settings.TORTOISE_ORM"}` is only
 needed when the dict lives somewhere non-standard.
 
 ### Custom sections
 
-Any extra file becomes a section, reachable with dot access:
+Any extra dict key of `config/app.py` becomes a section, reachable with dot access:
 
 ```python
-# config/services.py
-config = {"stripe": {"key": env("STRIPE_KEY")}}
+# config/app.py
+config = {
+    # ...
+    "services": {"stripe": {"key": env("STRIPE_KEY")}},
+}
 ```
 
 ```python
-core.config.get("services.stripe.key", default="")
-core.config.get("auth.guards.api.strategy")
+from forgeapi.config import config
+
+config("services.stripe.key")            # from anywhere, no Core object needed
+config("services.stripe.key", "")        # with a default for a missing key
+config("name")                           # project settings by their plain name
+config("auth.guards.api.strategy")       # built-in sections work the same way
+config()                                 # the whole KitConfig
 ```
+
+The config is read once and kept. `Core(app)` hands over the one it loaded, in a script or a worker without `Core` the first call reads `config/`. `config.clear()` forgets it, so the next call reads again (use it in tests). `core.config.get("services.stripe.key", default="")` does the same through the `Core` object.
+
+The function lives in `forgeapi.config`, not in `forgeapi`: a name `forgeapi.config` is the package itself.
 
 Known sections are validated by Pydantic models; misconfiguration raises
 `ForgeAPIConfigError` with a hint. Feature enablement is decided by section
-**presence** — e.g. auth boots only when the project provides `config/auth.py`.
+**presence**, e.g. auth boots only when `config/app.py` has an `"auth"` key.
 
 ---
 

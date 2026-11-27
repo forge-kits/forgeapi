@@ -34,7 +34,7 @@ class TestZeroConfig:
 class TestProviderPhases:
     def _write_providers_config(self, tmp_path, provider_names: str):
         (tmp_path / "config").mkdir(exist_ok=True)
-        (tmp_path / "config" / "project.py").write_text(
+        (tmp_path / "config" / "app.py").write_text(
             "import tests.test_core as tc\n"
             f"config = {{'providers': [{provider_names}]}}\n"
         )
@@ -95,10 +95,10 @@ class TestConventions:
 
     def test_auth_section_enables_auth(self, in_tmp_cwd, isolated_auth):
         (in_tmp_cwd / "config").mkdir()
-        (in_tmp_cwd / "config" / "auth.py").write_text(
-            "config = {'guards': {'api': "
+        (in_tmp_cwd / "config" / "app.py").write_text(
+            "config = {'auth': {'guards': {'api': "
             "{'strategy': 'cookie', 'session_model': 'tests.fakes.FakeSession', "
-            "'model': 'tests.fakes.FakeUser'}}}\n"
+            "'model': 'tests.fakes.FakeUser'}}}}\n"
         )
         core = Core(FastAPI())
         assert core.auth is not None
@@ -107,9 +107,9 @@ class TestConventions:
     def test_guard_without_model_raises_helpful_error(self, in_tmp_cwd, isolated_auth):
         from forgeapi.exceptions import ForgeAPIConfigError
         (in_tmp_cwd / "config").mkdir()
-        (in_tmp_cwd / "config" / "auth.py").write_text(
-            "config = {'guards': {'api': "
-            "{'strategy': 'cookie', 'session_model': 'tests.fakes.FakeSession'}}}\n"
+        (in_tmp_cwd / "config" / "app.py").write_text(
+            "config = {'auth': {'guards': {'api': "
+            "{'strategy': 'cookie', 'session_model': 'tests.fakes.FakeSession'}}}}\n"
         )
         with pytest.raises(ForgeAPIConfigError, match="no user model"):
             Core(FastAPI())
@@ -117,14 +117,14 @@ class TestConventions:
     def test_empty_auth_guards_raise_helpful_error(self, in_tmp_cwd):
         from forgeapi.exceptions import ForgeAPIConfigError
         (in_tmp_cwd / "config").mkdir()
-        (in_tmp_cwd / "config" / "auth.py").write_text("config = {}\n")
+        (in_tmp_cwd / "config" / "app.py").write_text("config = {'auth': {}}\n")
         with pytest.raises(ForgeAPIConfigError, match="no guards"):
             Core(FastAPI())
 
     def test_http_section_configures_middleware(self, in_tmp_cwd):
         (in_tmp_cwd / "config").mkdir()
-        (in_tmp_cwd / "config" / "http.py").write_text(
-            "config = {'cors': ['https://x.com'], 'rate_limit': 5, 'access_log': False}\n"
+        (in_tmp_cwd / "config" / "app.py").write_text(
+            "config = {'http': {'cors': ['https://x.com'], 'rate_limit': 5, 'access_log': False}}\n"
         )
         app = FastAPI()
         Core(app)
@@ -162,8 +162,8 @@ class TestEnvHelper:
 class TestCustomSections:
     def test_custom_section_via_dot_access(self, in_tmp_cwd):
         (in_tmp_cwd / "config").mkdir()
-        (in_tmp_cwd / "config" / "services.py").write_text(
-            "config = {'stripe': {'key': 'sk_test_123'}}\n"
+        (in_tmp_cwd / "config" / "app.py").write_text(
+            "config = {'services': {'stripe': {'key': 'sk_test_123'}}}\n"
         )
         cfg = load_config()
         assert cfg.get("services.stripe.key") == "sk_test_123"
@@ -190,8 +190,8 @@ def isolated_auth():
 class TestMultiGuardConfig:
     def test_guards_built_from_config(self, in_tmp_cwd, isolated_auth):
         (in_tmp_cwd / "config").mkdir()
-        (in_tmp_cwd / "config" / "auth.py").write_text(
-            "config = {\n"
+        (in_tmp_cwd / "config" / "app.py").write_text(
+            "config = {'auth': {\n"
             "    'default': 'api',\n"
             "    'guards': {\n"
             "        'api':   {'strategy': 'cookie', 'model': 'tests.fakes.FakeUser',\n"
@@ -199,7 +199,7 @@ class TestMultiGuardConfig:
             "        'admin': {'strategy': 'cookie', 'cookie_name': 'admin_session',\n"
             "                  'model': 'tests.fakes.FakeUser', 'session_model': 'tests.fakes.FakeSession'},\n"
             "    },\n"
-            "}\n"
+            "}}\n"
         )
         Core(FastAPI())
         assert isolated_auth.guard("api").name == "api"

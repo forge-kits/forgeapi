@@ -49,7 +49,7 @@ class MailMessage:
         if not self.from_address:
             raise ForgeAPIError(
                 "Mail has no sender address.",
-                hint='Set "from_address" in config/mail.py or on the Mailable.',
+                hint='Set "from_address" in the \"mail\" section of config/app.py or on the Mailable.',
             )
         if not self.recipients:
             raise ForgeAPIError("Mail has no recipients.", hint="Pass to= to Mail.send() / Mail.queue().")

@@ -185,7 +185,7 @@ def test_schedule_command_reads_the_file_from_the_scheduler_config(tmp_path, mon
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config").mkdir()
-    (tmp_path / "config/scheduler.py").write_text("config = {'schedule': 'jobs/plan.py'}\n")
+    (tmp_path / "config/app.py").write_text("config = {'scheduler': {'schedule': 'jobs/plan.py'}}\n")
     (tmp_path / "jobs").mkdir()
     (tmp_path / "jobs/plan.py").write_text("from forgeapi import Scheduler\nscheduler = Scheduler()\n")
     scheduler, cfg = ScheduleCommand()._load()

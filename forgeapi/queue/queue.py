@@ -42,7 +42,7 @@ class Queue:
     @property
     def timezone(self) -> str | None:
         """IANA timezone: ``Queue(timezone=...)``, else ``timezone`` from
-        ``config/project.py``, else the server's local time."""
+        ``config/app.py``, else the server's local time."""
         if not self._tz_resolved:
             from forgeapi.support.clock import config_timezone
 
@@ -53,7 +53,7 @@ class Queue:
     @property
     def retry_after(self) -> int:
         """Seconds after which a reserved job counts as stuck: ``Queue(retry_after=...)``,
-        else ``queue.retry_after`` from ``config/queue.py`` (default 300)."""
+        else ``queue.retry_after`` from the ``"queue"`` section of ``config/app.py`` (default 300)."""
         if self._retry_after is None:
             from forgeapi.support.clock import config_queue_retry_after
 

@@ -11,12 +11,12 @@ _log = log.channel("queue.provider")
 class QueueProvider(Provider):
     """Runs a Queue worker in a background task.
 
-    Activated when ``config/queue.py`` exists::
+    Activated when ``"queue"`` is in ``config/app.py``::
 
-        # config/queue.py
-        config = {
+        # config/app.py
+        "queue": {
             "queue": "default",  # queue name this worker processes
-        }
+        },
 
     The provider starts ``Queue(name=...).work()`` on startup
     (an infinite poll loop) and cancels it on shutdown.

@@ -41,7 +41,7 @@ class _Mail:
             )
 
     def _ensure_configured(self) -> None:
-        """Configure from ``config/mail.py`` when ``Core`` did not (e.g. a queue worker process)."""
+        """Configure from the ``"mail"`` section of ``config/app.py`` when ``Core`` did not (e.g. a queue worker process)."""
         if self._driver is not None:
             return
         from forgeapi.config import load_config
@@ -50,7 +50,7 @@ class _Mail:
         if not cfg.provided("mail"):
             raise ForgeAPIConfigError(
                 "Mail is not configured.",
-                hint='Create config/mail.py, e.g. config = {"driver": "log", "from_address": "noreply@example.com"}.',
+                hint='Add a \"mail\" section to config/app.py, e.g. "mail": {"driver": "log", "from_address": "noreply@example.com"}.',
             )
         m = cfg.mail
         self.configure(

@@ -27,5 +27,5 @@ class TemplateRenderer:
         except TemplateNotFound as exc:
             raise ForgeAPIConfigError(
                 f"Mail template '{name}' not found in '{self._directory}'.",
-                hint='Check the Mailable template name and "templates" in config/mail.py.',
+                hint='Check the Mailable template name and "templates" in the \"mail\" section of config/app.py.',
             ) from exc

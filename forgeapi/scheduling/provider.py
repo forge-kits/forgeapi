@@ -13,12 +13,12 @@ _log = log.channel("scheduling.provider")
 class SchedulerProvider(Provider):
     """Loads ``schedule.py`` and runs the Scheduler in a background task.
 
-    Activated when ``config/scheduler.py`` exists::
+    Activated when ``"scheduler"`` is in ``config/app.py``::
 
-        # config/scheduler.py
-        config = {
+        # config/app.py
+        "scheduler": {
             "schedule": "schedule.py",  # path to your schedule definition
-        }
+        },
 
     Your ``schedule.py`` must define a ``scheduler`` variable::
 

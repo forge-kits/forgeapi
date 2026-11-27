@@ -7,9 +7,9 @@ _log = log.channel("storage.provider")
 class StorageProvider(Provider):
     """Configures the :class:`~forgeapi.storage.storage.Storage` facade.
 
-    Reads from ``config/storage.py``::
+    Reads the ``"storage"`` section of ``config/app.py``::
 
-        config = {
+        "storage": {
             "driver": "local",        # "local" | "s3"
             "root": "storage/app",
             "base_url": "/storage",
@@ -19,7 +19,7 @@ class StorageProvider(Provider):
             # "access_key": env("AWS_ACCESS_KEY_ID"),
             # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
             # "endpoint_url": "",
-        }
+        },
     """
 
     def register(self) -> None:

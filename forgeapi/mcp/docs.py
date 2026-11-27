@@ -200,38 +200,35 @@ register_tortoise(app, config=TORTOISE_ORM, generate_schemas=False, add_exceptio
 
 | Module | Activated by |
 |---|---|
-| Middleware | `config/http.py` — cors, rate_limit, request_id, access_log |
-| Auth guards | `config/auth.py` exists |
-| Storage | `config/storage.py` exists |
+| Middleware | `"http"` in `config/app.py` — cors, rate_limit, request_id, access_log |
+| Auth guards | `"auth"` is in `config/app.py` |
+| Storage | `"storage"` is in `config/app.py` |
 | Controllers | `app/controllers` exists — all `*_controller.py` auto-imported |
 | Broadcast listeners | `app/listeners` exists |
 | Policies | `app/policies` exists |
 | Permissions | any model inherits `PermissionsMixin` — auto-detected |
 | Pagination, Cache | always configured (defaults or from their sections) |
-| Custom providers | `"providers"` list in `config/project.py` |
+| Custom providers | `"providers"` list in `config/app.py` |
 
 ## config/ directory
 
-Each `config/<section>.py` defines `config = {...}`. Section name = filename.
-All sections are optional. Unknown sections become custom config accessible via
-`core.config.get("section.key")`.
+`config/app.py` defines `config = {...}`: the project settings at the top level and one key per
+feature. A feature is on while its key is there. Unknown dict keys become custom config accessible
+via `core.config.get("section.key")`. `config/database.py` stays a separate file.
 
 ```python
-# config/project.py
+# config/app.py
 from forgeapi import env
-config = {"name": "My App", "debug": env("APP_DEBUG", False), "providers": []}
-
-# config/http.py
-config = {"cors": ["*"], "rate_limit": 60, "request_id": True, "access_log": True}
-
-# config/auth.py
-config = {"default": "api", "guards": {
-    "api": {"strategy": "cookie",
-            "model": "database.models.user.User"}   # model is required
-}}
-
-# config/storage.py
-config = {"driver": "local", "root": "storage/app", "base_url": "/storage"}
+config = {
+    "name": "My App", "debug": env("APP_DEBUG", False), "providers": [],
+    "http": {"cors": ["*"], "rate_limit": 60, "request_id": True, "access_log": True},
+    "auth": {"default": "api", "guards": {
+        "api": {"strategy": "cookie",
+                "model": "database.models.user.User",                 # model is required
+                "session_model": "database.models.session.Session"}   # cookie strategy
+    }},
+    "storage": {"driver": "local", "root": "storage/app", "base_url": "/storage"},
+}
 
 # config/database.py — TORTOISE_ORM lives here (no config dict needed)
 TORTOISE_ORM = {"connections": {...}, "apps": {...}}
@@ -247,12 +244,12 @@ class MetricsProvider(Provider):
     def boot(self) -> None: ...       # discovery — runs after all register()s
 ```
 
-Register in `config/project.py`: `config = {"providers": [MetricsProvider]}`
+Register in `config/app.py`: `config = {"providers": [MetricsProvider]}`
 
 ## Post-setup API
 
 ```python
-core.auth       # Auth facade | None (None when config/auth.py absent)
+core.auth       # Auth facade | None (None when config/app.py has no "auth" key)
 core.config     # KitConfig — access any section
 core.providers  # list of active Provider instances
 core.use(MiddlewareClass, **kwargs)          # add middleware after boot
@@ -420,18 +417,21 @@ Both projects use same `namespace`, handlers receive plain `dict` — no shared 
 "auth": """\
 # forge-kits: Authentication
 
-Auth boots automatically when `config/auth.py` exists. Strategies: `cookie`, `telegram`.
+Auth boots automatically when `config/app.py` has an `"auth"` key. Strategies: `cookie`, `telegram`.
 
-## config/auth.py
+## config/app.py, the "auth" key
 ```python
 from forgeapi import env
 
 config = {
-    "default": "api",
-    "guards": {
-        "api": {
-            "strategy": "cookie",
-            "model": "database.models.user.User",   # required — user is always loaded from the DB
+    "auth": {
+        "default": "api",
+        "guards": {
+            "api": {
+                "strategy": "cookie",
+                "model": "database.models.user.User",   # required — user is always loaded from the DB
+                "session_model": "database.models.session.Session",   # cookie strategy: where sessions are kept
+            },
         },
     },
 }
@@ -453,8 +453,8 @@ async def feed(self, user: OptionalUser) -> dict:
 
 ## What `user` is
 `CurrentUser` / `OptionalUser` always return an instance of the guard's DB `model`
-(looked up by pk from the session). A guard without `"model"` in
-`config/auth.py` raises ForgeAPIConfigError at startup.
+(looked up by pk from the session). A guard without `"model"` in the
+`"auth"` section raises ForgeAPIConfigError at startup.
 
 ## Cookie session operations
 Sessions live in the project's own `Session` model (`database/models/session.py`, made by `forgeapi init`,
@@ -504,7 +504,7 @@ from forgeapi.auth import auth
 from forgeapi.auth.strategies.base import AuthStrategy
 
 auth.extend("apikey", ApiKeyStrategy)
-# now "apikey" is a valid strategy name in config/auth.py
+# now "apikey" is a valid strategy name in the "auth" section of config/app.py
 ```
 `authenticate(request)` returns only the user id (str or int), or `None` when credentials are absent.
 The guard loads the user from the DB by that id via the guard's `user_model`.
@@ -512,11 +512,13 @@ The guard loads the user from the DB by that id via the guard's `user_model`.
 ## Telegram strategy
 Client sends `window.Telegram.WebApp.initData` via `X-Telegram-Init-Data` or `Authorization: tma <initData>`.
 ```python
-# config/auth.py
+# config/app.py
 config = {
-    "default": "api",
-    "guards": {
-        "api": {"strategy": "telegram", "bot_token": env("BOT_TOKEN")},
+    "auth": {
+        "default": "api",
+        "guards": {
+            "api": {"strategy": "telegram", "bot_token": env("BOT_TOKEN")},
+        },
     },
 }
 ```
@@ -664,13 +666,15 @@ await Cache.decrement("stock:item:5")       # → int
 await Cache.increment("counter", amount=5)
 ```
 
-## Configuration (config/cache.py)
+## Configuration ("cache" in config/app.py)
 ```python
 config = {
-    "driver": "database",                      # "database" | "redis"
-    "prefix": "myapp:",
-    "ttl": None,                               # default TTL in seconds (None = no expiry)
-    "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
+    "cache": {
+        "driver": "database",                      # "database" | "redis"
+        "prefix": "myapp:",
+        "ttl": None,                               # default TTL in seconds (None = no expiry)
+        "redis_url": "redis://localhost:6379/0",   # used when driver = "redis"
+    },
 }
 ```
 
@@ -679,7 +683,7 @@ config = {
   Requires `"forgeapi.cache.models"` in the TORTOISE_ORM models list (then migrate)
 - **redis** — faster, shared across workers; requires `pip install forge-kits[redis]`
 
-Core auto-configures Cache from `config/cache.py` on startup (database driver by default).
+Core auto-configures Cache from the `"cache"` section of `config/app.py` on startup (database driver by default).
 """,
 
 "support": """\
@@ -774,11 +778,13 @@ Returns `CursorResponse` with opaque `next_cursor`/`prev_cursor`.
 - `?page` (or `?cursor`) is always read automatically from the request.
 - Query params: `?page=2&per_page=50`
 
-## Global configuration (config/pagination.py)
+## Global configuration ("pagination" in config/app.py)
 ```python
 config = {
-    "default_limit": 20,
-    "max_limit": 100,
+    "pagination": {
+        "default_limit": 20,
+        "max_limit": 100,
+    },
 }
 ```
 """,
@@ -985,7 +991,7 @@ Section name = filename. All sections optional. `forgeapi.toml` is NOT supported
 ## Known sections
 
 ```python
-# config/project.py
+# config/app.py
 from forgeapi import env
 config = {
     "name": "my-api",
@@ -993,43 +999,44 @@ config = {
     "debug": env("APP_DEBUG", False),   # verbose forgeapi logging — never in production
     "timezone": env("APP_TIMEZONE", "UTC"),  # IANA name; scheduler runs in this timezone (default: server local time)
     "providers": [],                    # extra Provider dotted paths
-}
 
-# config/http.py
-config = {
-    "cors": ["*"],        # True = all origins; list = specific; False = off
-    "rate_limit": 60,     # req/min per IP
-    "request_id": True,
-    "access_log": True,
-    "middleware": [],     # [MyMiddleware] or [(MyMiddleware, {"key": val})]
-}
-
-# config/auth.py  — guards: cookie | telegram | custom
-config = {
-    "default": "api",
-    "guards": {
-        "api": {"strategy": "cookie",
-                "model": "database.models.user.User"},
+    "http": {
+        "cors": ["*"],        # True = all origins; list = specific; False = off
+        "rate_limit": 60,     # req/min per IP
+        "request_id": True,
+        "access_log": True,
+        "middleware": [],     # [MyMiddleware] or [(MyMiddleware, {"key": val})]
     },
-}
 
-# config/pagination.py
-config = {"default_limit": 20, "max_limit": 100}
+    # guards: cookie | telegram | custom
+    "auth": {
+        "default": "api",
+        "guards": {
+            "api": {"strategy": "cookie",
+                    "model": "database.models.user.User",
+                    "session_model": "database.models.session.Session"},
+        },
+    },
 
-# config/cache.py
-config = {
-    "driver": "database",   # "database" | "redis"
-    "prefix": "",
-    "ttl": None,
-    "redis_url": "redis://localhost:6379/0",
-}
+    "pagination": {"default_limit": 20, "max_limit": 100},
 
-# config/storage.py
-config = {
-    "driver": "local",
-    "root": "storage/app",
-    "base_url": "/storage",
-    # S3: "bucket", "region", "access_key", "secret_key", "endpoint_url"
+    "cache": {
+        "driver": "database",   # "database" | "redis"
+        "prefix": "",
+        "ttl": None,
+        "redis_url": "redis://localhost:6379/0",
+    },
+
+    "storage": {
+        "driver": "local",
+        "root": "storage/app",
+        "base_url": "/storage",
+        # S3: "bucket", "region", "access_key", "secret_key", "endpoint_url"
+    },
+
+    # opt-in, each needs its models in config/database.py
+    # "scheduler": {"schedule": "schedule.py"},
+    # "queue": {"queue": "default"},
 }
 
 # config/database.py  — TORTOISE_ORM lives here (no config dict needed)
@@ -1038,12 +1045,19 @@ TORTOISE_ORM = {"connections": {...}, "apps": {...}}
 
 ## Custom sections
 ```python
-# config/services.py
-config = {"stripe": {"key": env("STRIPE_KEY")}}
+# config/app.py
+config = {
+    # ...
+    "services": {"stripe": {"key": env("STRIPE_KEY")}},
+}
 
-# Access in code:
+# Access in code, from anywhere (read once, config.clear() forgets it):
+from forgeapi.config import config
+config("services.stripe.key")            # config("services.stripe.key", "") for a default
+config("name")                           # project settings by their plain name
+config("auth.guards.api.strategy")
+# or through the Core object:
 core.config.get("services.stripe.key")
-core.config.get("auth.guards.api.strategy")
 ```
 
 ## env() helper
@@ -1231,20 +1245,22 @@ rows = await conn.execute_query_dict(
 Import: `from forgeapi import Storage`
 Install extras: `pip install forge-kits[s3]` (S3) / `pip install forge-kits[images]` (Pillow)
 
-## Configuration (config/storage.py)
+## Configuration ("storage" in config/app.py)
 ```python
 from forgeapi import env
 
 config = {
-    "driver": "local",        # "local" | "s3"
-    "root": "storage/app",    # local: filesystem root
-    "base_url": "/storage",   # local: public URL prefix
-    # S3 / MinIO / Cloudflare R2:
-    # "bucket": "my-bucket",
-    # "region": "us-east-1",
-    # "access_key": env("AWS_ACCESS_KEY_ID"),
-    # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
-    # "endpoint_url": "",
+    "storage": {
+        "driver": "local",        # "local" | "s3"
+        "root": "storage/app",    # local: filesystem root
+        "base_url": "/storage",   # local: public URL prefix
+        # S3 / MinIO / Cloudflare R2:
+        # "bucket": "my-bucket",
+        # "region": "us-east-1",
+        # "access_key": env("AWS_ACCESS_KEY_ID"),
+        # "secret_key": env("AWS_SECRET_ACCESS_KEY"),
+        # "endpoint_url": "",
+    },
 }
 ```
 
@@ -1337,7 +1353,7 @@ scheduler.call(ping).every_minute().name("health")
 
 ## Timing methods
 
-**Timezone:** schedules run in `timezone` from `config/project.py` (e.g. `env("APP_TIMEZONE", "Europe/Sofia")`),
+**Timezone:** schedules run in `timezone` from `config/app.py` (e.g. `env("APP_TIMEZONE", "Europe/Sofia")`),
 or `Scheduler(timezone="Europe/Sofia")`. Without either, the server's local time is used.
 Stored `next_run_at` / `last_run_at` are wall-clock times in that timezone, so changing it shifts existing schedules.
 Daylight saving is not compensated: a job scheduled in an hour that does not exist runs right after the clock jumps.
@@ -1520,7 +1536,7 @@ from forgeapi import Mail, Mailable
 ```python
 class Welcome(Mailable):
     subject = "Welcome!"
-    template = "welcome.html"        # Jinja2, from the templates dir (config/mail.py "templates")
+    template = "welcome.html"        # Jinja2, from the templates dir ("templates" in the "mail" section of config/app.py)
     text_template = "welcome.txt"    # optional plain-text part
 
     def __init__(self, user):
@@ -1546,15 +1562,17 @@ await Mail.queue(Welcome(user), to=user.email, delay=60, queue="mail")   # via q
 it needs `forgeapi.queue.models` and a worker. Message without recipients/body/sender, or with a
 line break in a header, is rejected before sending/queueing.
 
-## Configuration (config/mail.py — activates MailProvider)
+## Configuration ("mail" in config/app.py, activates MailProvider)
 ```python
 config = {
-    "driver": "log",                          # "log" (writes to log, sends nothing) | "smtp"
-    "from_address": "noreply@example.com",
-    "from_name": "My App",
-    "templates": "app/templates/mail",
-    "smtp": {"host": "smtp.example.com", "port": 587, "username": "", "password": "",
-             "encryption": "starttls", "timeout": 30},   # "starttls" | "ssl" | None
+    "mail": {
+        "driver": "log",                          # "log" (writes to log, sends nothing) | "smtp"
+        "from_address": "noreply@example.com",
+        "from_name": "My App",
+        "templates": "app/templates/mail",
+        "smtp": {"host": "smtp.example.com", "port": 587, "username": "", "password": "",
+                 "encryption": "starttls", "timeout": 30},   # "starttls" | "ssl" | None
+    },
 }
 ```
 The smtp driver needs `pip install forge-kits[mail]`.
@@ -1607,7 +1625,7 @@ await dispatch(SendWelcomeEmail(user_id=user.id), queue="high")  # override queu
 
 ## CLI commands
 ```bash
-forgeapi queue:work [--queue=a,b] # start infinite worker loop; queue(s) comma-separated, first = highest priority, default from config/queue.py
+forgeapi queue:work [--queue=a,b] # start infinite worker loop; queue(s) comma-separated, first = highest priority, default from the "queue" key of config/app.py
 forgeapi queue:run  [--queue=a,b] # process all pending jobs once
 forgeapi queue:failed             # list failed jobs
 forgeapi queue:retry <id>         # move a failed job back to the queue
@@ -1631,14 +1649,14 @@ async def lifespan(app):
 ## Retry behaviour
 On failure, the job is retried with exponential backoff (`attempts² × 10s`).
 
-**Timezone:** `available_at` and retry delays use `timezone` from `config/project.py`
+**Timezone:** `available_at` and retry delays use `timezone` from `config/app.py`
 (or `Queue(timezone="Europe/Sofia")`); without either, the server's local time.
 Pending jobs keep their stored `available_at` when the timezone changes.
 
 After `max_tries` attempts it moves to `failed_jobs`.
 
 Stuck jobs: a job reserved by a worker that died is re-queued once `reserved_at` is older than
-`retry_after` seconds (config/queue.py `retry_after`, default 300, or `Queue(retry_after=...)`). Each pickup counts
+`retry_after` seconds (`retry_after` in the "queue" section of config/app.py, default 300, or `Queue(retry_after=...)`). Each pickup counts
 as an attempt; when all `max_tries` are used up this way the job goes to `failed_jobs` without running
 (`MaxAttemptsExceeded`). Keep `retry_after` above the slowest job's runtime, or it may run twice.
 

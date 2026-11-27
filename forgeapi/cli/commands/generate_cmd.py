@@ -167,7 +167,7 @@ Example:
 Usage: forgeapi make:provider <Name>
 
 Generates <Name>Provider in app/providers/.
-Enable it by adding the dotted path to "providers" in config/project.py.
+Enable it by adding the dotted path to "providers" in config/app.py.
 
 Example:
   forgeapi make:provider Metrics
@@ -194,7 +194,7 @@ Usage: forgeapi make:listener <Name>
 
 Generates a broadcast listener in app/listeners/. The event name comes from the class name:
 the first CamelCase word, then ":" and the rest joined with "-". Listeners are imported on
-startup when config/broadcast.py exists.
+startup when "broadcast" is in config/app.py.
 
 Example:
   forgeapi make:listener OrderCreated
@@ -207,7 +207,7 @@ Example:
 Usage: forgeapi make:mail <Name>
 
 Generates a Mailable class in app/mail/ and its templates (.html and .txt)
-in the templates directory (app/templates/mail/ unless "templates" in config/mail.py says otherwise).
+in the templates directory (app/templates/mail/ unless "templates" in the "mail" section of config/app.py says otherwise).
 
 Example:
   forgeapi make:mail WeeklyReport
@@ -317,7 +317,7 @@ Example:
             return
 
         if kind in ("job", "policy", "observer", "factory", "provider", "command", "listener"):
-            self._gen_simple(kind, class_name, st)
+            self._gen_simple(kind, class_name, st, cfg)
             ui.success("Done.")
             return
 
@@ -475,7 +475,7 @@ Example:
         "command": "Command", "listener": "Listener",
     }
 
-    def _gen_simple(self, kind: str, class_name: str, st) -> None:
+    def _gen_simple(self, kind: str, class_name: str, st, cfg) -> None:
         """job / policy / observer / provider / command: one file, no flags."""
         suffix = self._SIMPLE_SUFFIX.get(kind, "")
         if suffix and class_name.endswith(suffix) and len(class_name) > len(suffix):
@@ -522,9 +522,9 @@ Example:
         created = self._write(Path(directory) / file_name, self._render(f"{kind}.py.jinja2", **context))
 
         if created and kind == "provider":
-            ui.file_event("next", f'add "{context["dotted_path"]}" to "providers" in config/project.py')
-        if created and kind == "listener" and not Path("config/broadcast.py").exists():
-            ui.file_event("next", "create config/broadcast.py, otherwise listeners are not loaded")
+            ui.file_event("next", f'add "{context["dotted_path"]}" to "providers" in config/app.py')
+        if created and kind == "listener" and not cfg.provided("broadcast"):
+            ui.file_event("next", 'add a "broadcast" section to config/app.py, otherwise listeners are not loaded')
         if created and kind == "command":
             ui.file_event("next", f'run it with: forgeapi {context["command_name"]}')
         if created and kind == "observer":

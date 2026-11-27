@@ -18,17 +18,16 @@ class Core:
         app = FastAPI()
         Core(app)
 
-    What runs is decided by the ``config/`` directory (convention over
-    configuration):
+    What runs is decided by ``config/app.py`` (convention over configuration):
 
-    * middleware stack        — ``config/http.py`` (cors, rate_limit, ...)
-    * auth guards             — boot when ``config/auth.py`` exists
-    * storage                 — boot when ``config/storage.py`` exists
-    * mail                    — boots when ``config/mail.py`` exists
+    * middleware stack        — ``"http"`` in ``config/app.py`` (cors, rate_limit, ...)
+    * auth guards             — boot when ``"auth"`` is in ``config/app.py``
+    * storage                 — boot when ``"storage"`` is in ``config/app.py``
+    * mail                    — boots when ``"mail"`` is in ``config/app.py``
     * permissions             — boot when a model in ``database/models`` inherits ``PermissionsMixin``
     * controllers / listeners / policies — boot when their directory exists
     * pagination and cache    — always configured (from their sections or defaults)
-    * custom providers        — ``"providers"`` in ``config/project.py``
+    * custom providers        — ``"providers"`` in ``config/app.py``
 
     ``Core`` itself is a thin orchestrator: it collects module
     :class:`~forgeapi.foundation.Provider` instances, calls ``register()``
@@ -46,6 +45,9 @@ class Core:
 
         self._app = app
         self._cfg: KitConfig = config or load_config()
+        from .config.access import _use
+
+        _use(self._cfg)   # the one config, also for ``forgeapi.config.config(...)``
         self._debug = self._cfg.project.debug
 
         _forge_logger = _logging.getLogger("forgeapi")

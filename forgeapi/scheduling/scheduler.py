@@ -193,7 +193,7 @@ class Scheduler:
 
         "models": ["database.models", "forgeapi.scheduling.models", "forgeapi.permissions.models"]
 
-    Times use the ``timezone`` from ``config/project.py`` (or ``Scheduler(timezone="Europe/Sofia")``);
+    Times use the ``timezone`` from ``config/app.py`` (or ``Scheduler(timezone="Europe/Sofia")``);
     without either, the server's local time.
 
     Define jobs in ``schedule.py`` at the project root::
@@ -228,7 +228,7 @@ class Scheduler:
     @property
     def timezone(self) -> str | None:
         """IANA timezone used for schedules: ``Scheduler(timezone=...)``, else
-        ``timezone`` from ``config/project.py``, else the server's local time."""
+        ``timezone`` from ``config/app.py``, else the server's local time."""
         if not self._tz_resolved:
             from forgeapi.support.clock import config_timezone
 

@@ -78,7 +78,7 @@ def cmd_project(tmp_path, monkeypatch):
 
     purge()
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "project.py").write_text("config = {}\n")
+    (tmp_path / "config" / "app.py").write_text("config = {}\n")
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "__init__.py").touch()
     monkeypatch.chdir(tmp_path)
