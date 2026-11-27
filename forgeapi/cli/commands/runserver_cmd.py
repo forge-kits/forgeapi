@@ -17,9 +17,9 @@ def plan_processes(cfg, *, app_path: str, host: str, port: int, reload: bool) ->
     from forgeapi.support.workers import EXTERNAL_WORKERS_ENV
 
     workers: list[Proc] = []
-    if cfg.provided("queue") and cfg.queue.enabled:
+    if cfg.provided("queue"):
         workers.append(Proc("queue", _forgeapi_argv("queue:work"), ready="Queue worker started"))
-    if cfg.provided("scheduler") and cfg.scheduler.enabled and Path(cfg.scheduler.schedule).exists():
+    if cfg.provided("scheduler") and Path(cfg.scheduler.schedule).exists():
         workers.append(Proc("schedule", _forgeapi_argv("schedule:work"), ready="Scheduler running"))
 
     web_argv = [sys.executable, "-m", "uvicorn", app_path, "--host", host, "--port", str(port), "--use-colors"]

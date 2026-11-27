@@ -457,8 +457,8 @@ async def feed(self, user: OptionalUser) -> dict:
 `config/auth.py` raises ForgeAPIConfigError at startup.
 
 ## Cookie session operations
-Sessions live in the `auth_sessions` table (add `"forgeapi.auth.models"` to the models list in
-`config/database.py`, then migrate). The cookie holds a random token. No `response` is needed,
+Sessions live in the project's own `Session` model (`database/models/session.py`, made by `forgeapi init`,
+referenced by `"session_model"` in the guard). The cookie holds a random token. No `response` is needed,
 `AuthMiddleware` (added by `Core`) sets the cookie.
 ```python
 from forgeapi.auth import auth
@@ -523,7 +523,7 @@ config = {
 """,
 
 "permissions": """\
-# forge-kits: Permissions (Spatie-style RBAC)
+# forge-kits: Permissions (RBAC)
 
 ## Model setup
 ```python
@@ -900,6 +900,7 @@ forgeapi make:controller Post              # app/controllers/post_controller.py
 forgeapi make:controller AdminUser         # app/controllers/admin/user_controller.py
 forgeapi make:model Post                   # database/models/post.py
 forgeapi make:seed User                    # database/seeds/user_seeder.py
+forgeapi make:factory User                 # database/factories/user_factory.py (test factory)
 forgeapi make:job SendWelcomeEmail      # app/jobs/send_welcome_email.py
 forgeapi make:policy Post               # app/policies/post_policy.py (@gate.policy(Post))
 forgeapi make:observer Post             # app/observers/post_observer.py (register with Post.observe(...))

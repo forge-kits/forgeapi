@@ -135,7 +135,6 @@ class TestBroadcastConfig:
     def test_defaults(self):
         from forgeapi.config import BroadcastConfig
         cfg = BroadcastConfig()
-        assert cfg.enabled is True
         assert cfg.driver == "redis"
         assert cfg.driver_options == {}
 
@@ -148,12 +147,6 @@ class TestBroadcastConfig:
         assert cfg.broadcast.driver_options["mode"] == "stream"
         assert cfg.provided("broadcast")
 
-    def test_broadcast_disabled(self, config_dir):
-        (config_dir / "broadcast.py").write_text("config = {'enabled': False}\n")
-        cfg = load_config()
-        assert cfg.broadcast.enabled is False
-        assert cfg.provided("broadcast")
-
     def test_not_provided_when_no_file(self, config_dir):
         cfg = load_config()
         assert not cfg.provided("broadcast")
@@ -163,7 +156,6 @@ class TestSchedulerConfig:
     def test_defaults(self):
         from forgeapi.config import SchedulerConfig
         cfg = SchedulerConfig()
-        assert cfg.enabled is True
         assert cfg.schedule == "schedule.py"
 
     def test_load_from_file(self, config_dir):
@@ -183,7 +175,6 @@ class TestQueueConfig:
     def test_defaults(self):
         from forgeapi.config import QueueConfig
         cfg = QueueConfig()
-        assert cfg.enabled is True
         assert cfg.queue == "default"
 
     def test_load_from_file(self, config_dir):

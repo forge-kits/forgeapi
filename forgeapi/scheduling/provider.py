@@ -17,7 +17,6 @@ class SchedulerProvider(Provider):
 
         # config/scheduler.py
         config = {
-            "enabled": True,
             "schedule": "schedule.py",  # path to your schedule definition
         }
 
@@ -39,9 +38,6 @@ class SchedulerProvider(Provider):
         from forgeapi.support.workers import workers_run_externally
 
         cfg = self.config.scheduler
-        if not cfg.enabled:
-            _log.debug("SchedulerProvider: disabled via config")
-            return
         if workers_run_externally():
             _log.debug("SchedulerProvider: scheduler runs as a separate process, not starting it here")
             return

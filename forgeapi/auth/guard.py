@@ -37,7 +37,7 @@ class Guard:
         from forgeapi.auth import auth, Guard
         from forgeapi.auth.strategies import CookieStrategy
 
-        api_guard = Guard("web", CookieStrategy(), user_model=User)
+        api_guard = Guard("web", CookieStrategy(Session), user_model=User)
         auth.register("web", api_guard)
 
     Usage in controllers::

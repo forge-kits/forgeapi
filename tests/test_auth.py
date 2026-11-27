@@ -8,7 +8,7 @@ from forgeapi.auth.guard import Guard
 from forgeapi.auth.facade import Auth
 from types import SimpleNamespace
 from forgeapi.exceptions import ForgeAPIConfigError
-from tests.fakes import FakeUser
+from tests.fakes import FakeSession, FakeUser
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ def fresh_auth() -> Auth:
 
 class TestCookieStrategyConstruction:
     def test_defaults(self):
-        s = CookieStrategy()
+        s = CookieStrategy(FakeSession)
         assert s._cookie_name == "session"
         assert s._lifetime == 3600
         assert s._absolute_lifetime is None
@@ -48,6 +48,7 @@ class TestCookieStrategyConstruction:
 
     def test_from_config_reads_keys(self):
         s = CookieStrategy.from_config({
+            "session_model": "tests.fakes.FakeSession",
             "cookie_name": "auth", "lifetime": 60, "absolute_lifetime": 600,
             "secure": False, "samesite": "strict",
         })
@@ -55,10 +56,15 @@ class TestCookieStrategyConstruction:
         assert s._secure is False and s._samesite == "strict"
 
     def test_from_config_ignores_the_old_secret_key(self):
-        assert CookieStrategy.from_config({"secret": "left over from a signed-cookie config"})._cookie_name == "session"
+        cfg = {"secret": "left over from a signed-cookie config", "session_model": "tests.fakes.FakeSession"}
+        assert CookieStrategy.from_config(cfg)._cookie_name == "session"
+
+    def test_from_config_needs_the_session_model(self):
+        with pytest.raises(ForgeAPIConfigError, match="session_model"):
+            CookieStrategy.from_config({"lifetime": 60})
 
     def test_guard_binds_its_name(self):
-        s = CookieStrategy()
+        s = CookieStrategy(FakeSession)
         Guard("admin", s, FakeUser)
         assert s._guard == "admin"
 
@@ -70,7 +76,7 @@ class TestCookieStrategyConstruction:
 class TestGuardWithCookie:
     @pytest.fixture
     def strategy(self):
-        return CookieStrategy(secure=False)
+        return CookieStrategy(FakeSession, secure=False)
 
     @pytest.fixture
     def guard(self, strategy):
@@ -139,7 +145,7 @@ class TestAuthFacade:
     @pytest.fixture
     def facade(self):
         a = fresh_auth()
-        g = Guard(name="web", strategy=CookieStrategy(secure=False), user_model=FakeUser)
+        g = Guard(name="web", strategy=CookieStrategy(FakeSession, secure=False), user_model=FakeUser)
         a.register("web", g)
         a.set_default("web")
         return a
@@ -155,8 +161,8 @@ class TestAuthFacade:
 
     def test_multiple_guards_registered(self):
         a = fresh_auth()
-        a.register("web", Guard("web", CookieStrategy(secure=False), FakeUser))
-        a.register("admin", Guard("admin", CookieStrategy(cookie_name="admin", secure=False), FakeUser))
+        a.register("web", Guard("web", CookieStrategy(FakeSession, secure=False), FakeUser))
+        a.register("admin", Guard("admin", CookieStrategy(FakeSession, cookie_name="admin", secure=False), FakeUser))
         assert a.guard("web").name == "web"
         assert a.guard("admin").name == "admin"
 
@@ -168,7 +174,7 @@ class TestAuthFacade:
 class TestContracts:
     def test_cookie_is_session_issuer(self):
         from forgeapi.auth.contracts import SessionIssuer
-        assert isinstance(CookieStrategy(secure=False), SessionIssuer)
+        assert isinstance(CookieStrategy(FakeSession, secure=False), SessionIssuer)
 
     def test_telegram_is_not_session_issuer(self):
         from forgeapi.auth.contracts import SessionIssuer
@@ -184,7 +190,7 @@ class TestContracts:
 class TestStrategyFactories:
     def test_create_builtin_cookie(self):
         a = fresh_auth()
-        s = a.create_strategy("cookie", {"lifetime": 7200})
+        s = a.create_strategy("cookie", {"lifetime": 7200, "session_model": "tests.fakes.FakeSession"})
         assert isinstance(s, CookieStrategy)
         assert s._lifetime == 7200
 
@@ -217,7 +223,7 @@ class TestStrategyFactories:
 class TestGuardErrorTranslation:
     @pytest.fixture
     def guard(self):
-        return Guard("web", CookieStrategy(secure=False), FakeUser)
+        return Guard("web", CookieStrategy(FakeSession, secure=False), FakeUser)
 
     @pytest.mark.anyio
     async def test_missing_credentials_raises_401(self, guard):

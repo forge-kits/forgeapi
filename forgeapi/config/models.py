@@ -147,7 +147,6 @@ class BroadcastConfig(BaseModel):
     """The ``broadcast`` config section (``config/broadcast.py``)::
 
         config = {
-            "enabled": True,
             "driver": "redis",
             "driver_options": {
                 "url": "redis://localhost:6379",
@@ -161,7 +160,6 @@ class BroadcastConfig(BaseModel):
         }
     """
 
-    enabled: bool = True
     driver: str = "redis"
     driver_options: dict = {}
 
@@ -170,12 +168,10 @@ class SchedulerConfig(BaseModel):
     """The ``scheduler`` config section (``config/scheduler.py``)::
 
         config = {
-            "enabled": True,
             "schedule": "schedule.py",  # path to the schedule definition file
         }
     """
 
-    enabled: bool = True
     schedule: str = "schedule.py"
 
 
@@ -183,13 +179,11 @@ class QueueConfig(BaseModel):
     """The ``queue`` config section (``config/queue.py``)::
 
         config = {
-            "enabled": True,
             "queue": "default",  # default queue name for the worker
             "retry_after": 300,  # seconds before a reserved (stuck) job is picked up again
         }
     """
 
-    enabled: bool = True
     queue: str = "default"
     #: A job reserved longer than this is treated as stuck (worker died) and re-queued.
     #: Must be longer than your slowest job, or it may run twice.

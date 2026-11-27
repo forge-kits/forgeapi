@@ -121,19 +121,19 @@ def test_plan_with_nothing_configured_is_just_the_server():
 
 
 def test_plan_adds_queue_worker_and_disables_the_embedded_one(monkeypatch):
-    procs = _plan(_cfg(provided={"queue"}, queue={"enabled": True}))
+    procs = _plan(_cfg(provided={"queue"}))
     assert [p.name for p in procs] == ["server", "queue"]
     assert procs[0].env[EXTERNAL_WORKERS_ENV] == "1"
     assert procs[1].argv[-1] == "queue:work" and not procs[1].critical
 
 
-def test_plan_skips_disabled_workers():
-    assert [p.name for p in _plan(_cfg(provided={"queue"}, queue={"enabled": False}))] == ["server"]
+def test_plan_has_no_workers_without_their_config_files():
+    assert [p.name for p in _plan(_cfg(provided=set()))] == ["server"]
 
 
 def test_plan_scheduler_needs_its_schedule_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    cfg = _cfg(provided={"scheduler"}, scheduler={"enabled": True, "schedule": "schedule.py"})
+    cfg = _cfg(provided={"scheduler"}, scheduler={"schedule": "schedule.py"})
     assert [p.name for p in _plan(cfg)] == ["server"]
     (tmp_path / "schedule.py").write_text("x = 1\n")
     procs = _plan(cfg)
@@ -167,7 +167,7 @@ def test_embedded_workers_are_not_started_when_external(monkeypatch, tmp_path):
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "schedule.py").write_text("from forgeapi import Scheduler\nscheduler = Scheduler()\n")
-    cfg = _cfg(provided={"queue", "scheduler"}, queue={"enabled": True}, scheduler={"enabled": True})
+    cfg = _cfg(provided={"queue", "scheduler"})
 
     def hooks(provider_cls):
         app = FastAPI()

@@ -43,7 +43,7 @@ def _resolve_guard(target: Union[type, object], guard: str | None) -> str:
 
 
 class PermissionsMixin(Model):
-    """Add to any Tortoise model to get Spatie-style roles and permissions.
+    """Add to any Tortoise model to get roles and permissions.
 
     Uses two polymorphic pivot tables (``model_has_roles``,
     ``model_has_permissions``) so no per-model junction tables are created.

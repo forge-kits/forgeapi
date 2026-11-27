@@ -1,0 +1,13 @@
+from forgeapi.database import Factory, fake
+from {{ models_import }} import {{ class_name }}
+
+
+class {{ class_name }}Factory(Factory[{{ class_name }}]):
+    model = {{ class_name }}
+
+    def definition(self):
+        # every required field of {{ class_name }}, for example:
+        #   "name": fake.name(),
+        #   "email": fake.unique.email(),
+        #   "author": UserFactory(),        # a relation: another factory
+        return {}

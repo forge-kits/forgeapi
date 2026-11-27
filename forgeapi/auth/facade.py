@@ -58,7 +58,7 @@ class Auth:
             from forgeapi.auth import auth, Guard
             from forgeapi.auth.strategies import CookieStrategy
 
-            g = Guard("web", CookieStrategy(), user_model=User)
+            g = Guard("web", CookieStrategy(Session), user_model=User)
             auth.register("web", g)
 
         Args:

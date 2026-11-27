@@ -19,7 +19,6 @@ class BroadcastProvider(Provider):
     config/broadcast.py example::
 
         config = {
-            "enabled": True,
             "driver": "redis",
             "driver_options": {
                 "url": "redis://localhost:6379",
@@ -31,7 +30,6 @@ class BroadcastProvider(Provider):
     Stream mode example::
 
         config = {
-            "enabled": True,
             "driver": "redis",
             "driver_options": {
                 "url": "redis://localhost:6379",
@@ -48,9 +46,6 @@ class BroadcastProvider(Provider):
         if not self.config.provided("broadcast"):
             return
         cfg = self.config.broadcast
-        if not cfg.enabled:
-            _log.debug("BroadcastProvider: disabled via config")
-            return
         from .facade import configure
         configure(driver=cfg.driver, **cfg.driver_options)
         _log.debug("BroadcastProvider: driver=%s", cfg.driver)
@@ -68,9 +63,6 @@ class BroadcastProvider(Provider):
             return
 
         cfg = self.config.broadcast
-        if not cfg.enabled:
-            return
-
         self._load_listeners(listeners_dir)
         self._register_lifespan()
 

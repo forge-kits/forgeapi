@@ -40,7 +40,6 @@ _CONFIG_BROADCAST_TEMPLATE = '''\
 from forgeapi import env
 
 config = {{
-    "enabled": True,
     "driver": "redis",
     "driver_options": {{
         "url": env("REDIS_URL", "redis://localhost:6379"),
@@ -51,20 +50,6 @@ config = {{
         # "consumer": "worker-1",
     }},
 }}
-'''
-
-_CONFIG_SCHEDULER_TEMPLATE = '''\
-config = {
-    "enabled": True,
-    "schedule": "schedule.py",   # path to your schedule.py relative to project root
-}
-'''
-
-_CONFIG_QUEUE_TEMPLATE = '''\
-config = {
-    "enabled": True,
-    "queue": "default",   # queue name the in-process worker will consume
-}
 '''
 
 _CONFIG_CACHE_TEMPLATE = '''\
@@ -121,6 +106,7 @@ config = {
         "web": {
             "strategy": "cookie",
             "model": "database.models.user.User",
+            "session_model": "database.models.session.Session",
             "cookie_name": "session",
             "lifetime": 3600,   # seconds of inactivity until the session expires
             "httponly": True,
@@ -192,10 +178,54 @@ class User(ModelMixin, Model):
 ''',
 }
 
-_USER_MODELS_INIT = '''\
+_MODELS_INIT = {
+    "cookie": '''\
+from .password_reset_token import PasswordResetToken
+from .session import Session
+from .user import User
+
+__all__ = ["PasswordResetToken", "Session", "User"]
+''',
+    "telegram": '''\
 from .user import User
 
 __all__ = ["User"]
+''',
+}
+
+# cookie strategy: the session and password reset tables belong to the project, so they can be changed
+_SESSION_MODEL_TEMPLATE = '''\
+from tortoise import fields
+from tortoise.models import Model
+
+
+class Session(Model):
+    # the cookie holds a random token, this table holds only its SHA-256 hash
+    id = fields.CharField(max_length=64, primary_key=True)
+    user_id = fields.CharField(max_length=255, db_index=True)
+    guard = fields.CharField(max_length=64)    # a session of one guard never logs in to another
+    ip_address = fields.CharField(max_length=45, null=True)
+    user_agent = fields.CharField(max_length=255, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    last_activity = fields.DatetimeField()
+    expires_at = fields.DatetimeField(db_index=True)
+
+    class Meta:
+        table = "sessions"
+'''
+
+_PASSWORD_RESET_TOKEN_MODEL_TEMPLATE = '''\
+from tortoise import fields
+from tortoise.models import Model
+
+
+class PasswordResetToken(Model):
+    email = fields.CharField(max_length=255, primary_key=True)
+    token = fields.CharField(max_length=255)   # store a hash, never the plain token
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "password_reset_tokens"
 '''
 
 _CONFIG_PAGINATION_TEMPLATE = '''\
@@ -235,11 +265,11 @@ TORTOISE_ORM = {{
         "models": {{
             "models": [
                 "database.models",
-                "forgeapi.scheduling.models",
-                "forgeapi.queue.models",
-                "forgeapi.cache.models",
-                "forgeapi.auth.models",
-                "forgeapi.permissions.models",
+                # opt-in tables of the built-in features: uncomment, then run `forgeapi db:makemigrations`
+                # "forgeapi.queue.models",         # queue jobs
+                # "forgeapi.scheduling.models",    # scheduler
+                # "forgeapi.cache.models",         # cache driver "database"
+                # "forgeapi.permissions.models",   # roles and permissions
             ],
             "default_connection": "default",
             "migrations":         "database.migrations",
@@ -268,11 +298,11 @@ TORTOISE_ORM = {{
         "models": {{
             "models": [
                 "database.models",
-                "forgeapi.scheduling.models",
-                "forgeapi.queue.models",
-                "forgeapi.cache.models",
-                "forgeapi.auth.models",
-                "forgeapi.permissions.models",
+                # opt-in tables of the built-in features: uncomment, then run `forgeapi db:makemigrations`
+                # "forgeapi.queue.models",         # queue jobs
+                # "forgeapi.scheduling.models",    # scheduler
+                # "forgeapi.cache.models",         # cache driver "database"
+                # "forgeapi.permissions.models",   # roles and permissions
             ],
             "default_connection": "default",
             "migrations":         "database.migrations",
@@ -305,11 +335,11 @@ TORTOISE_ORM = {{
         "models": {{
             "models": [
                 "database.models",
-                "forgeapi.scheduling.models",
-                "forgeapi.queue.models",
-                "forgeapi.cache.models",
-                "forgeapi.auth.models",
-                "forgeapi.permissions.models",
+                # opt-in tables of the built-in features: uncomment, then run `forgeapi db:makemigrations`
+                # "forgeapi.queue.models",         # queue jobs
+                # "forgeapi.scheduling.models",    # scheduler
+                # "forgeapi.cache.models",         # cache driver "database"
+                # "forgeapi.permissions.models",   # roles and permissions
             ],
             "default_connection": "default",
             "migrations":         "database.migrations",
@@ -367,21 +397,6 @@ register_tortoise(
 )
 """
 
-_SCHEDULE_TEMPLATE = """\
-from forgeapi import Scheduler
-
-scheduler = Scheduler()
-
-# scheduler.call(my_task).daily_at("09:00").name("my-task")
-# scheduler.call(cleanup).every(30).name("cleanup")
-#
-# Run via CLI:
-#   forgeapi schedule:work          # dev loop
-#   forgeapi schedule:run           # run due tasks once (cron)
-#   forgeapi schedule:run my-task   # run specific task manually
-#   forgeapi schedule:list          # show all tasks and status
-"""
-
 _CONTROLLER_BASE = """\
 from forgeapi.controllers import Controller, route
 
@@ -402,7 +417,8 @@ Scaffolds a new ForgeAPI project. Asks for:
 Creates:
   <project-name>/
     main.py  .env
-    config/  app/  database/   (incl. database/models/user.py, the auth user model)
+    config/  app/  database/   (incl. database/models/user.py, the auth user model,
+                               and session.py + password_reset_token.py for the cookie strategy)
 """
 
     def handle(self, cmd: str, args: list[str]) -> None:
@@ -439,16 +455,21 @@ Creates:
 
         # policies, commands, mail, listeners, ... are not scaffolded: their make:* command creates the folder
         for d in ["app/controllers", "app/schemas",
-                  "database/models", "database/migrations", "database/seeds"]:
+                  "database/models", "database/migrations", "database/seeds", "database/factories"]:
             p = root / d
             p.mkdir(parents=True, exist_ok=True)
             (p / "__init__.py").touch()
 
         (root / "app" / "__init__.py").touch()
 
-        (root / "database/models/__init__.py").write_text(_USER_MODELS_INIT, encoding="utf-8")
+        (root / "database/models/__init__.py").write_text(_MODELS_INIT[strategy], encoding="utf-8")
         ui.file_event("created", str(root / "database/models/__init__.py"))
         self._write(root / "database/models/user.py", _USER_MODEL_TEMPLATES[strategy], typer)
+        if strategy == "cookie":
+            self._write(root / "database/models/session.py", _SESSION_MODEL_TEMPLATE, typer)
+            self._write(
+                root / "database/models/password_reset_token.py", _PASSWORD_RESET_TOKEN_MODEL_TEMPLATE, typer
+            )
         self._write(root / "app/controllers/controller.py", _CONTROLLER_BASE, typer)
         self._write(root / "config/project.py", _CONFIG_PROJECT_TEMPLATE.format(name=name), typer)
         self._write(root / "config/http.py", _CONFIG_HTTP_TEMPLATE, typer)
@@ -456,8 +477,6 @@ Creates:
         self._write(root / "config/pagination.py", _CONFIG_PAGINATION_TEMPLATE, typer)
         self._write(root / "config/storage.py", _CONFIG_STORAGE_TEMPLATE, typer)
         self._write(root / "config/broadcast.py", _CONFIG_BROADCAST_TEMPLATE.format(name=name), typer)
-        self._write(root / "config/scheduler.py", _CONFIG_SCHEDULER_TEMPLATE, typer)
-        self._write(root / "config/queue.py", _CONFIG_QUEUE_TEMPLATE, typer)
         self._write(root / "config/cache.py", _CONFIG_CACHE_TEMPLATE, typer)
         self._write(root / "config/mail.py", _CONFIG_MAIL_TEMPLATE.format(name=name), typer)
         self._write(
@@ -474,7 +493,6 @@ Creates:
             typer,
         )
         self._write(root / "main.py", _MAIN_TEMPLATE.format(name=name), typer)
-        self._write(root / "schedule.py", _SCHEDULE_TEMPLATE, typer)
 
         migrated = self._make_initial_migration(root)
 
@@ -494,7 +512,9 @@ Creates:
     def _make_initial_migration(root: Path) -> bool:
         """Run ``db:init`` + ``db:makemigrations`` inside the new project.
 
-        Returns ``True`` when ``database/migrations/0001_*.py`` was generated.
+        The first migration creates the tables of the generated models (the users table,
+        plus the session and password reset tables for the cookie strategy).
+        Returns ``True`` when ``database/migrations/0001_create_users_table.py`` was generated.
         On any failure prints a warning and returns ``False`` so the caller can
         fall back to the manual commands - scaffolding itself never fails here.
         """
@@ -507,17 +527,17 @@ Creates:
 
         env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         orm = "config.database.TORTOISE_ORM"   # the default path, same as KitConfig.database.tortoise_orm
-        for sub in ("init", "makemigrations"):
+        for sub in (["init"], ["makemigrations", "--name", "create_users_table"]):
             try:
                 result = subprocess.run(
-                    [tortoise_bin, "-c", orm, sub],
+                    [tortoise_bin, "-c", orm, *sub],
                     cwd=root, env=env, capture_output=True, text=True, timeout=120,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 ui.warn(f"initial migration skipped: {exc}")
                 return False
             if result.returncode != 0:
-                ui.warn(f"initial migration skipped: 'tortoise {sub}' failed.")
+                ui.warn(f"initial migration skipped: 'tortoise {sub[0]}' failed.")
                 ui.indented((result.stderr or result.stdout).strip()[-600:])
                 return False
 

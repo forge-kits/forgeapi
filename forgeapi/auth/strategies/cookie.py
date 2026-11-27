@@ -3,7 +3,7 @@ from typing import Optional, Union
 from fastapi import Request
 from tortoise import timezone
 
-from forgeapi.exceptions import SessionExpiredError, SessionInvalidError
+from forgeapi.exceptions import ForgeAPIConfigError, SessionExpiredError, SessionInvalidError
 from forgeapi.logging import log
 
 from ..contracts import SessionCookie
@@ -14,11 +14,11 @@ _log = log.channel("auth.cookie")
 
 
 class CookieStrategy(AuthStrategy):
-    """Login sessions kept in the ``auth_sessions`` table, identified by a cookie.
+    """Login sessions kept in a table of the project, identified by a cookie.
 
     The cookie holds only a random token.  A logout deletes the session, so a
-    copied cookie stops working at once.  Needs ``"forgeapi.auth.models"`` in the
-    models list of ``config/database.py``.
+    copied cookie stops working at once.  The table is the ``Session`` model that
+    ``forgeapi init`` puts in ``database/models/session.py``.
 
     Log in and out with the facade, it sets the cookie itself::
 
@@ -26,6 +26,8 @@ class CookieStrategy(AuthStrategy):
         await auth.logout()
 
     Args:
+        session_model: The model whose table holds the sessions (see
+            :class:`~forgeapi.auth.sessions.SessionStore` for its fields).
         cookie_name: Name of the session cookie.  Defaults to ``"session"``.
         lifetime: Seconds of inactivity after which the session expires.  Every
             request moves the expiry forward.  Defaults to ``3600``.
@@ -43,10 +45,21 @@ class CookieStrategy(AuthStrategy):
     def from_config(cls, cfg: dict) -> "CookieStrategy":
         """Build from a guard config dict.
 
-        Recognised keys: ``cookie_name``, ``lifetime`` (seconds),
+        Recognised keys: ``session_model`` (required, dotted path), ``cookie_name``, ``lifetime`` (seconds),
         ``absolute_lifetime`` (seconds), ``httponly``, ``secure``, ``samesite``.
         """
+        model = cfg.get("session_model")
+        if model is None:
+            raise ForgeAPIConfigError(
+                "The cookie guard has no session_model.",
+                hint='add "session_model": "database.models.session.Session" to the guard in config/auth.py',
+            )
+        if isinstance(model, str):
+            from forgeapi.foundation import import_string
+
+            model = import_string(model)
         return cls(
+            model,
             cookie_name=cfg.get("cookie_name", "session"),
             lifetime=cfg.get("lifetime", 3600),
             absolute_lifetime=cfg.get("absolute_lifetime"),
@@ -57,6 +70,7 @@ class CookieStrategy(AuthStrategy):
 
     def __init__(
         self,
+        session_model: type,
         cookie_name: str = "session",
         lifetime: int = 3600,
         absolute_lifetime: Optional[int] = None,
@@ -71,7 +85,7 @@ class CookieStrategy(AuthStrategy):
         self._secure = secure
         self._samesite = samesite
         self._guard = "default"
-        self._store = SessionStore()
+        self._store = SessionStore(session_model)
         if not secure:
             _log.warning(
                 "CookieStrategy: secure=False — session cookies will be sent over plain HTTP. "

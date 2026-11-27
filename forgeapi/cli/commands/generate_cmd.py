@@ -19,6 +19,7 @@ _ALLOWED_EXTRA: dict[str, set[str]] = {
     "model":      {"controller", "schema"},
     "schema":     {"model", "controller"},
     "seed":       set(),
+    "factory":    set(),
     "job":        set(),
     "policy":     set(),
     "observer":   set(),
@@ -28,7 +29,7 @@ _ALLOWED_EXTRA: dict[str, set[str]] = {
     "listener":   set(),
 }
 
-_MAKE_KINDS = ("controller", "model", "schema", "seed", "job", "policy", "observer", "provider", "command", "mail", "listener")
+_MAKE_KINDS = ("controller", "model", "schema", "seed", "factory", "job", "policy", "observer", "provider", "command", "mail", "listener")
 
 
 class MakeCommand(Command):
@@ -41,6 +42,7 @@ Usage: forgeapi make:<command> <Name> [flags]
   make:model <Name>        Generate model       (-c -s)
   make:schema <Name>       Generate Create / Update / Response schemas (-m -c)
   make:seed <Name>         Generate a seeder
+  make:factory <Model>     Generate a test factory for a model
   make:job <Name>          Generate a queue job
   make:policy <Model>      Generate a policy for a model
   make:observer <Model>    Generate a model observer
@@ -150,6 +152,16 @@ at startup.
 Example:
   forgeapi make:observer Post
   # → app/observers/post_observer.py
+""",
+        "factory": """\
+Usage: forgeapi make:factory <Model>
+
+Generates <Model>Factory in database/factories/, for tests.
+List the values of a new record in definition().
+
+Example:
+  forgeapi make:factory Post
+  # → database/factories/post_factory.py
 """,
         "provider": """\
 Usage: forgeapi make:provider <Name>
@@ -304,7 +316,7 @@ Example:
             ui.success("Done.")
             return
 
-        if kind in ("job", "policy", "observer", "provider", "command", "listener"):
+        if kind in ("job", "policy", "observer", "factory", "provider", "command", "listener"):
             self._gen_simple(kind, class_name, st)
             ui.success("Done.")
             return
@@ -459,7 +471,7 @@ Example:
             ui.file_event("next", f'await Mail.send({class_name}("..."), to="user@example.com")')
 
     _SIMPLE_SUFFIX = {
-        "policy": "Policy", "observer": "Observer", "provider": "Provider",
+        "policy": "Policy", "observer": "Observer", "factory": "Factory", "provider": "Provider",
         "command": "Command", "listener": "Listener",
     }
 
@@ -473,6 +485,7 @@ Example:
             "job": st.jobs_dir,
             "policy": st.policies_dir,
             "observer": st.observers_dir,
+            "factory": st.factories_dir,
             "provider": st.providers_dir,
             "command": st.commands_dir,
             "listener": st.listeners_dir,
@@ -486,6 +499,8 @@ Example:
         elif kind == "observer":
             context["models_import"] = ".".join(Path(st.models_dir).parts)
             context["observer_import"] = ".".join([*Path(directory).parts, file_name[:-3]])
+        elif kind == "factory":
+            context["models_import"] = ".".join(Path(st.models_dir).parts)
         elif kind == "command":
             command_name = self._command_name(class_name)
             from forgeapi.cli.main import _registry

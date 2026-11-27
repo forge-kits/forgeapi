@@ -45,6 +45,7 @@
     - [Soft Deletes](#soft-deletes)
     - [Query Scopes](#query-scopes)
     - [Observers](#observers)
+    - [Factories](#factories)
 12. [Permissions](#12-permissions)
     - [Setup](#setup)
     - [PermissionsMixin](#permissionsmixin)
@@ -92,6 +93,7 @@
 23. [CLI reference](#23-cli-reference)
 24. [Configuration reference (config/)](#24-configuration-reference-config)
 25. [MCP Server](#25-mcp-server)
+26. [Testing](#26-testing)
     - [Install](#install)
     - [Global setup for Claude Code](#global-setup-for-claude-code)
     - [Per-project setup](#per-project-setup)
@@ -118,6 +120,7 @@ SQLite + auth are included in the base package. Install extras only for producti
 | `images` | `Pillow` | ImageProcessor helper |
 | `mcp` | `mcp` | forge-kits MCP server for AI-assisted development |
 | `dev` | `textual` | tabbed interface of `forgeapi runserver` |
+| `testing` | `faker` | `Factory` fake data |
 
 ```bash
 pip install forge-kits               # SQLite included by default
@@ -137,7 +140,7 @@ forgeapi db:migrate
 forgeapi runserver --reload
 ```
 
-`forgeapi init` asks for auth strategy (cookie / telegram) and DB driver (asyncpg / aiosqlite / aiomysql). It scaffolds the auth user model (`database/models/user.py`: `id`, `name`, `email`, `password`, `created_at`, `updated_at`) and generates the initial migration (`database/migrations/0001_initial.py`) covering `users`, the queue, scheduler and permissions tables, so only `forgeapi db:migrate` is left. If the migration cannot be generated (missing DB driver, no `tortoise` binary) `init` prints a warning and you run `forgeapi db:init && forgeapi db:makemigrations` yourself.
+`forgeapi init` asks for auth strategy (cookie / telegram) and DB driver (asyncpg / aiosqlite / aiomysql). It scaffolds the auth user model (`database/models/user.py`: `id`, `name`, `email`, `password`, `created_at`, `updated_at`) and, for the cookie strategy, `database/models/session.py` and `database/models/password_reset_token.py`. It generates the first migration (`database/migrations/0001_create_users_table.py`) for these tables, so only `forgeapi db:migrate` is left. The queue, scheduler, cache and permissions tables are not in it: `config/database.py` has their models as commented lines, uncomment the ones you use and run `forgeapi db:makemigrations`. `init` does not create `config/queue.py`, `config/scheduler.py` and `schedule.py`: a feature starts when its config file exists, so create the file once the tables are migrated. `config/broadcast.py` is created and switches broadcasting on, delete it if you do not use Redis. If the migration cannot be generated (missing DB driver, no `tortoise` binary) `init` prints a warning and you run `forgeapi db:init && forgeapi db:makemigrations` yourself.
 
 ---
 
@@ -157,8 +160,8 @@ my-project/
     database.py              # TORTOISE_ORM dict lives here
     storage.py               # driver, root, base_url (or S3 config)
     broadcast.py             # redis url, mode (pubsub/stream), namespace — activates BroadcastProvider
-    scheduler.py             # enabled, schedule file path — activates SchedulerProvider
-    queue.py                 # enabled, queue name — activates QueueProvider
+    scheduler.py             # schedule file path — the file activates SchedulerProvider
+    queue.py                 # queue name — the file activates QueueProvider
     cache.py                 # driver (database / redis), prefix, default ttl
     mail.py                  # driver (log / smtp), sender, templates — activates MailProvider
   app/
@@ -177,6 +180,7 @@ The directory layout is fixed (not configurable). Paths are relative to the proj
 |---|---|
 | `database/models` | Tortoise models |
 | `database/seeds` | seeders |
+| `database/factories` | test factories (`make:factory`) |
 | `app/controllers` | `*_controller.py`, discovered recursively |
 | `app/schemas` | Pydantic schemas |
 | `app/listeners` | broadcast event listeners |
@@ -471,14 +475,15 @@ Strategies raise **only** `ForgeAPIAuthError` subclasses — never
 
 ### Cookie strategy
 
-Keeps login sessions in the `auth_sessions` table. The cookie holds only a random token, the table holds its SHA-256 hash. A logout deletes the session, so a copied cookie stops working at once.
+Keeps login sessions in the `sessions` table of your project. The cookie holds only a random token, the table holds its SHA-256 hash. A logout deletes the session, so a copied cookie stops working at once.
 
-Needs `"forgeapi.auth.models"` in the models list of `config/database.py` (`forgeapi init` adds it) and a migration. `Core` adds `AuthMiddleware` when `config/auth.py` exists, it sets the cookie for `auth.login()` and `auth.logout()`.
+`forgeapi init` creates the model in `database/models/session.py` (and `password_reset_token.py` next to it), so you can change the table. The guard points to it with `"session_model"`. The model needs the fields `id` (64 characters, primary key), `user_id`, `guard`, `ip_address`, `user_agent`, `created_at`, `last_activity` and `expires_at`, add your own freely. `Core` adds `AuthMiddleware` when `config/auth.py` exists, it sets the cookie for `auth.login()` and `auth.logout()`.
 
 Expired sessions are deleted when they are read, and one login in 50 deletes all the expired ones.
 
 | Config key | Default | Description |
 |---|---|---|
+| `session_model` | required | Dotted path of the model that holds the sessions, `"database.models.session.Session"` after `init` |
 | `cookie_name` | `"session"` | Cookie name |
 | `lifetime` | `3600` | Seconds of inactivity after which the session expires, every request moves it forward |
 | `absolute_lifetime` | `None` | Seconds after which the session ends however active it is |
@@ -599,7 +604,6 @@ All driver-specific options go under `driver_options` — the manager itself is 
 from forgeapi import env
 
 config = {
-    "enabled": True,
     "driver": "redis",
     "driver_options": {
         "url": env("REDIS_URL", "redis://localhost:6379"),
@@ -614,7 +618,6 @@ config = {
 from forgeapi import env
 
 config = {
-    "enabled": True,
     "driver": "redis",
     "driver_options": {
         "url": env("REDIS_URL", "redis://localhost:6379"),
@@ -1479,11 +1482,54 @@ Post.observe(PostObserver)
 Register observers at startup (e.g. in `main.py` or a custom Provider's
 `boot()`) — before any requests arrive.
 
+### Factories
+
+A factory creates a model with fake data. `definition()` lists the values of a new record, and `fake` (Faker) gives the data:
+
+```python
+from forgeapi.database import Factory, fake
+
+class UserFactory(Factory[User]):
+    model = User
+
+    def definition(self):
+        return {
+            "name": fake.name(),
+            "email": fake.unique.email(),
+            "password": "password",
+        }
+
+    def admin(self):                 # a named state
+        return self.state(role="admin")
+
+user   = await UserFactory.create()
+admin  = await UserFactory.admin().create(name="Ann")
+users  = await UserFactory.count(5).create()
+data   = await UserFactory.make()            # a dict, nothing is saved
+```
+
+A relation is another factory used as a value, it is created together with the record:
+
+```python
+class PostFactory(Factory[Post]):
+    model = Post
+
+    def definition(self):
+        return {"author": UserFactory(), "title": fake.sentence()}
+
+post = await PostFactory.create()                       # creates its author too
+post = await PostFactory.create(author=some_user)       # uses an existing one
+```
+
+Values passed to `create()` and `state()` win over `definition()`. A required field that `definition()` does not list is not filled in: the model raises its usual validation error.
+
+Tests use them as plain pytest: see [Testing](#26-testing).
+
 ---
 
 ## 12. Permissions
 
-Spatie-style roles and permissions using polymorphic pivot tables.
+Roles and permissions using polymorphic pivot tables.
 
 ### How it works
 
@@ -2282,7 +2328,6 @@ Add `config/scheduler.py` — `Core(app)` starts the scheduler as a background t
 ```python
 # config/scheduler.py
 config = {
-    "enabled": True,
     "schedule": "schedule.py",   # path to your schedule.py
 }
 ```
@@ -2411,7 +2456,6 @@ Add `config/queue.py` — `Core(app)` starts the queue worker as a background ta
 ```python
 # config/queue.py
 config = {
-    "enabled": True,
     "queue": "default",   # queue name to consume
 }
 ```
@@ -2742,6 +2786,7 @@ forgeapi make:mail -h               # help for one generator
 | `make:seed User` | `database/seeds/user_seeder.py` | |
 | `make:job SendWelcomeEmail` | `app/jobs/send_welcome_email.py` | A queue `Job`, see [Queue](#21-queue). |
 | `make:policy Post` | `app/policies/post_policy.py` | `@gate.policy(Post)`. Imports the model, so create it first. A trailing `Policy` in the name is dropped. |
+| `make:factory Post` | `database/factories/post_factory.py` | Test factory, list the values in `definition()`. |
 | `make:observer Post` | `app/observers/post_observer.py` | Register it with `Post.observe(PostObserver)`. |
 | `make:provider Metrics` | `app/providers/metrics_provider.py` | Add its dotted path to `"providers"` in `config/project.py`. |
 | `make:command SendWeeklyReport` | `app/commands/send_weekly_report_command.py` | Runs as `forgeapi send:weekly-report`, see [Custom commands](#custom-commands). |
@@ -2851,8 +2896,8 @@ forgeapi runserver
 | Process | Starts when | Command it runs |
 |---|---|---|
 | `server` | always | `uvicorn <app> --reload` (reload is on, `--no-reload` turns it off) |
-| `queue` | `config/queue.py` exists and `"enabled"` is true | `forgeapi queue:work` |
-| `schedule` | `config/scheduler.py` exists, `"enabled"` is true and the schedule file exists | `forgeapi schedule:work` |
+| `queue` | `config/queue.py` exists | `forgeapi queue:work` |
+| `schedule` | `config/scheduler.py` exists and the schedule file exists | `forgeapi schedule:work` |
 
 The `logs` tab is not a process: it collects what the application and forgeapi log in the server process (broadcast, auth, cache, mail, your own `Log.channel(...)`), so `server` keeps only uvicorn and the HTTP requests (`forgeapi.access`). A line is routed by the name of the logger that wrote it.
 
@@ -2985,7 +3030,6 @@ config = {
 
 # config/broadcast.py — activates BroadcastProvider (see §7)
 config = {
-    "enabled": True,
     "driver": "redis",          # driver alias — register custom with register_driver()
     "driver_options": {
         "url": env("REDIS_URL", "redis://localhost:6379"),
@@ -3000,13 +3044,11 @@ config = {
 
 # config/scheduler.py — activates SchedulerProvider (see §20)
 config = {
-    "enabled": True,
     "schedule": "schedule.py",   # path to your schedule.py relative to project root
 }
 
 # config/queue.py — activates QueueProvider (see §21)
 config = {
-    "enabled": True,
     "queue": "default",   # queue name the in-process worker will consume
 }
 
@@ -3262,3 +3304,31 @@ scan_project(".")
 ```
 
 Returns a structured report of all models, controllers, schemas, events, listeners, seeders, pyproject.toml dependencies, and .env keys (values hidden). Call this at the start of every session on a forge-kits project.
+
+---
+
+## 26. Testing
+
+Tests are plain pytest. forge-kits adds only [factories](#factories) (`pip install forge-kits[testing]` for Faker).
+
+A factory needs a database, so a test sets one up the usual pytest way, in `tests/conftest.py`:
+
+```python
+import pytest
+from tortoise import Tortoise
+
+
+@pytest.fixture
+async def db():
+    await Tortoise.init(db_url="sqlite://:memory:", modules={"models": ["database.models"]})
+    await Tortoise.generate_schemas()
+    yield
+    await Tortoise.close_connections()
+```
+
+```python
+async def test_user_is_saved(db):
+    user = await UserFactory.create(name="Ann")
+
+    assert await User.filter(name="Ann").exists()
+```

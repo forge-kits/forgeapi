@@ -219,6 +219,19 @@ def test_make_policy_strips_suffix(mk_project, name):
     compile(src, "policy.py", "exec")
 
 
+@pytest.mark.parametrize("name", ["Post", "PostFactory"])
+def test_make_factory_strips_suffix(mk_project, name):
+    # arrange: an empty project, act: make:factory, assert: the file imports the model and compiles
+    _run_make("factory", name)
+
+    src = (mk_project / "database/factories/post_factory.py").read_text()
+    assert "class PostFactory(Factory[Post]):" in src and "model = Post" in src
+    assert "from database.models import Post" in src
+    assert (mk_project / "database/factories/__init__.py").exists()
+    assert not (mk_project / "database/factories/post_factory_factory.py").exists()
+    compile(src, "factory.py", "exec")
+
+
 def test_make_observer_and_provider(mk_project, capsys):
     _run_make("observer", "Post")
     _run_make("provider", "Metrics")
@@ -642,17 +655,26 @@ def test_init_creates_user_model_and_guard_points_to_it(tmp_path, monkeypatch, s
     assert '"model": "database.models.user.User"' in (root / "config/auth.py").read_text()
 
 
+@pytest.mark.parametrize("name", ["config/queue.py", "config/scheduler.py", "schedule.py"])
+def test_init_leaves_out_queue_and_scheduler(tmp_path, monkeypatch, name):
+    root = _init_project(tmp_path, monkeypatch, "cookie")
+    assert not (root / name).exists()
+
+
 def test_init_generates_initial_migration(tmp_path, monkeypatch):
     from forgeapi.cli.commands.db_cmd import DbCommand
 
     if DbCommand._find_tortoise_bin() is None:
         pytest.skip("tortoise binary not available")
     root = _init_project(tmp_path, monkeypatch, "cookie")
+    # one migration with the tables of the generated models and nothing else
     migrations = sorted((root / "database/migrations").glob("0001_*.py"))
-    assert len(migrations) == 1
+    assert [m.name for m in migrations] == ["0001_create_users_table.py"]
     body = migrations[0].read_text()
-    for table in ("users", "queued_jobs", "failed_jobs", "scheduled_tasks"):
+    for table in ("users", "sessions", "password_reset_tokens"):
         assert f"'table': '{table}'" in body
+    for table in ("queued_jobs", "failed_jobs", "scheduled_tasks", "cache"):
+        assert f"'table': '{table}'" not in body
 
 
 # ── make:command + project commands ───────────────────────────────────────────

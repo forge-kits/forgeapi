@@ -43,6 +43,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("make:model <Name>", "Create a model (-c controller, -s schemas)"),
         ("make:schema <Name>", "Create Create/Update/Response schemas (-m model, -c controller)"),
         ("make:seed <Name>", "Create a seeder"),
+        ("make:factory <Model>", "Create a test factory for a model"),
         ("make:job <Name>", "Create a queue job"),
         ("make:policy <Model>", "Create a policy for a model"),
         ("make:observer <Model>", "Create a model observer"),

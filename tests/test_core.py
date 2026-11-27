@@ -97,7 +97,7 @@ class TestConventions:
         (in_tmp_cwd / "config").mkdir()
         (in_tmp_cwd / "config" / "auth.py").write_text(
             "config = {'guards': {'api': "
-            "{'strategy': 'cookie', 'secret': 'conv_secret_key_for_tests!!!!!!', "
+            "{'strategy': 'cookie', 'session_model': 'tests.fakes.FakeSession', "
             "'model': 'tests.fakes.FakeUser'}}}\n"
         )
         core = Core(FastAPI())
@@ -109,7 +109,7 @@ class TestConventions:
         (in_tmp_cwd / "config").mkdir()
         (in_tmp_cwd / "config" / "auth.py").write_text(
             "config = {'guards': {'api': "
-            "{'strategy': 'cookie', 'secret': 'conv_secret_key_for_tests!!!!!!'}}}\n"
+            "{'strategy': 'cookie', 'session_model': 'tests.fakes.FakeSession'}}}\n"
         )
         with pytest.raises(ForgeAPIConfigError, match="no user model"):
             Core(FastAPI())
@@ -194,9 +194,10 @@ class TestMultiGuardConfig:
             "config = {\n"
             "    'default': 'api',\n"
             "    'guards': {\n"
-            "        'api':   {'strategy': 'cookie', 'model': 'tests.fakes.FakeUser'},\n"
+            "        'api':   {'strategy': 'cookie', 'model': 'tests.fakes.FakeUser',\n"
+            "                  'session_model': 'tests.fakes.FakeSession'},\n"
             "        'admin': {'strategy': 'cookie', 'cookie_name': 'admin_session',\n"
-            "                  'model': 'tests.fakes.FakeUser'},\n"
+            "                  'model': 'tests.fakes.FakeUser', 'session_model': 'tests.fakes.FakeSession'},\n"
             "    },\n"
             "}\n"
         )

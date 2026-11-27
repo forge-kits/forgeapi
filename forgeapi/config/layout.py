@@ -16,6 +16,7 @@ class Layout:
     commands_dir = "app/commands"
     mail_dir = "app/mail"
     seeds_dir = "database/seeds"
+    factories_dir = "database/factories"
     #: Default location of the scheduler definition; ``config/scheduler.py`` may point elsewhere.
     schedule_file = "schedule.py"
 
